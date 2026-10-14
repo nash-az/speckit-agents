@@ -1,0 +1,27 @@
+# speckit-agents run config. Read by /sdd-run and bin/sdd-tasks.py.
+
+[run]
+# Feature folder, e.g. "specs/001-my-feature". Empty: follow .specify/feature.json.
+feature = ""
+# Implementer attempts after the first rejection by the verifier.
+max_retries = 2
+# Runs commit on a new branch named <branch_prefix><run id>; protected branches are never committed to.
+branch_prefix = "auto/"
+protected_branches = ["main", "master"]
+# Subagents may not edit these during a run (globs: * within a segment, ** across).
+protected_paths = [
+  ".specify/memory/constitution.md",
+  "specs/*/spec.md",
+  ".claude/settings.json",
+  ".claude/settings.local.json",
+  ".sdd/**",
+]
+
+[checks]
+# Every command must pass before a task is committed. Run from the project root.
+commands = []
+
+[allow]
+# Tasks tagged [dep] / [download] run only when these are true.
+dependencies = false
+downloads = false

@@ -1,0 +1,7 @@
+{
+  "name": "speckit-agents",
+  "owner": { "name": "Nash" },
+  "plugins": [
+    { "name": "speckit-agents", "source": "./", "description": "Unattended Spec Kit implementation with Claude Code subagents" }
+  ]
+}
