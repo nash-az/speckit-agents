@@ -142,6 +142,15 @@ class SuperviseTest(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(child, 0)
 
+    def test_usage_goes_into_status_and_progress_lines(self):
+        week = {"emit": {"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed", "rateLimitType": "five_hour",
+            "unifiedWindows": {"five_hour": {"utilization": 0.42, "resetsAt": int(time.time()) + 3600},
+                               "seven_day": {"utilization": 0.51, "resetsAt": int(time.time()) + 86400}}}}}
+        out, _, _ = self.supervise([[{"transcript": True}, week, {"sleep": 0.5}, *DONE]])
+        self.assertIn("usage five_hour 42%", out.stdout)
+        self.assertIn("usage seven_day 51%", out.stdout)
+
     def test_needs_an_initialised_project(self):
         (self.project / ".sdd" / "config.toml").unlink()
         out, calls, _ = self.supervise([[*DONE]])

@@ -84,9 +84,12 @@ class Usage:
 class Cycle:
     """One headless /sdd-run, watched until it ends or is stopped."""
 
-    def __init__(self, args: argparse.Namespace, log_path: Path) -> None:
+    def __init__(self, args: argparse.Namespace, log_path: Path, status: Path | None = None, cycle_no: int = 1) -> None:
         self.args = args
         self.log_path = log_path
+        self.status = status
+        self.cycle_no = cycle_no
+        self.last_step: dict[str, int] = {}  # window → last 5 % step reported
         self.usage = Usage()
         self.workflow_dir: Path | None = None
         self.result_seen = False
@@ -114,13 +117,22 @@ class Cycle:
     def on_event(self, event: dict, raw: str) -> None:
         kind = event.get("type")
         if kind == "rate_limit_event":
-            before = self.usage.highest()[1]
+            before = {k: v.get("utilization") for k, v in self.usage.windows.items()}
             self.usage.update(event.get("rate_limit_info") or {})
-            name, u, _ = self.usage.highest()
             if self.usage.status == "rejected":
                 say(f"usage limit reached ({self.usage.limit_type})")
-            elif u > before and u >= 0.9:
-                say(f"usage {name} {u:.0%}")
+            for name, window in self.usage.windows.items():
+                u = window.get("utilization")
+                if u is None:
+                    continue
+                step = int(u * 100) // 5 * 5
+                if step != self.last_step.get(name) and (u >= 0.9 or step > self.last_step.get(name, -1)):
+                    self.last_step[name] = step
+                    resets = window.get("resets_at")
+                    say(f"usage {name} {u:.0%}" + (f", resets {time.strftime('%a %H:%M', time.localtime(resets))}" if resets else ""))
+            if self.status and before != {k: v.get("utilization") for k, v in self.usage.windows.items()}:
+                write_status(self.status, state="running", cycle=self.cycle_no, stream=str(self.log_path),
+                             usage=self.usage.windows, threshold=self.args.threshold)
         elif kind == "result":
             self.result_seen = True
         if self.workflow_dir is None and "Transcript dir:" in raw:
@@ -242,8 +254,8 @@ def main(argv: list[str]) -> int:
     for cycle_no in range(1, args.max_cycles + 1):
         log_path = logs / f"{time.strftime('%Y%m%d-%H%M%S')}-cycle{cycle_no}.jsonl"
         say(f"cycle {cycle_no}: starting /sdd-run")
-        cycle = Cycle(args, log_path)
-        write_status(status, state="running", cycle=cycle_no, stream=str(log_path))
+        cycle = Cycle(args, log_path, status, cycle_no)
+        write_status(status, state="running", cycle=cycle_no, stream=str(log_path), threshold=args.threshold)
         outcome = cycle.run()
         name, u, _ = cycle.usage.highest()
         if outcome == "finished" and (args.project / ".sdd" / "run.json").exists():
@@ -272,7 +284,7 @@ def main(argv: list[str]) -> int:
             write_status(status, state="stopped", reason=f"{window} resets too late", resets_at=resets_at, cycle=cycle_no)
             return 3
         say(f"{outcome}: waiting until {time.strftime('%H:%M', time.localtime(resets_at + RESET_MARGIN_S))} for the {window} window to reset")
-        write_status(status, state="waiting", window=window, resets_at=resets_at, cycle=cycle_no)
+        write_status(status, state="waiting", window=window, resets_at=resets_at, cycle=cycle_no, usage=cycle.usage.windows)
         if not args.no_sleep:
             time.sleep(wait)
     say(f"stopping after {args.max_cycles} cycles")
