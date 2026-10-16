@@ -59,6 +59,12 @@ class PlanTest(unittest.TestCase):
         held = {h["id"]: h["tag"] for h in self.plan()["held"]}
         self.assertEqual(held, {"T006": "blocked", "T008": "manual", "T010": "dep"})
 
+    def test_wontfix_stays_held(self):
+        # An entry dropped with `status: wontfix` must not send its open task back to the agents.
+        config = sdd.load_config(None)
+        result = sdd.plan(sdd.parse_tasks(TASKS), {"T006": "wontfix"}, config, None, None)
+        self.assertIn({"id": "T006", "tag": "wontfix", "reason": "dropped in BLOCKED.md (wontfix)"}, result["held"])
+
     def test_allow_dependencies(self):
         held = {h["id"] for h in self.plan(dependencies=True)["held"]}
         self.assertNotIn("T010", held)
@@ -103,6 +109,33 @@ class WriteTest(unittest.TestCase):
         out = subprocess.run([sys.executable, str(SCRIPT), "plan", str(self.tasks), "--config", "/nonexistent"],
                              capture_output=True, text=True, check=True)
         self.assertIn("phases", json.loads(out.stdout))
+
+
+class CheckpointTest(unittest.TestCase):
+    def setUp(self):
+        self.cp = sdd.checkpoint(HERE / "fixtures" / "journal.jsonl")
+
+    def test_committed_tasks_are_left_out(self):
+        self.assertNotIn("T001", self.cp["tasks"])
+
+    def test_approved_but_uncommitted_keeps_verdict(self):
+        # The commit agent for T002 was started but never returned.
+        t = self.cp["tasks"]["T002"]
+        self.assertEqual(t["verdict"]["verdict"], "approve")
+        self.assertEqual(t["impl"]["files_changed"], ["b.py"])
+        self.assertIn("commit:T002", self.cp["interrupted_agents"])
+
+    def test_implemented_not_verified(self):
+        self.assertEqual(self.cp["tasks"]["T003"], {"attempt": 0, "impl": {"status": "done", "summary": "three", "files_changed": ["c.py"]}})
+
+    def test_rejection_is_kept_for_the_next_attempt(self):
+        self.assertEqual(self.cp["tasks"]["T004"]["verdict"]["problems"], ["missing test"])
+
+    def test_cut_off_attempt(self):
+        self.assertEqual(self.cp["tasks"]["T005"], {"attempt": 1, "interrupted": "implement"})
+
+    def test_missing_journal(self):
+        self.assertEqual(sdd.checkpoint(Path("/nonexistent/journal.jsonl"))["found"], False)
 
 
 if __name__ == "__main__":

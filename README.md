@@ -54,6 +54,28 @@ Two things the run relies on:
 - **`Workflow` must be on the allowlist.** `/sdd-init` adds it. Without it, `dontAsk` refuses the run itself.
 - **The project must be trusted.** Claude Code ignores a project's `permissions.allow` until you have opened it interactively once and accepted the trust prompt.
 
+To run it headless, for example from a script or overnight:
+
+```
+CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 claude -p "/sdd-run --yes" --permission-mode dontAsk
+```
+
+Without that variable, `claude -p` stops background work 10 minutes after the main loop's last turn, and the workflow dies mid-task. The process exits when the run report is written.
+
+### Across usage limits
+
+A run that reaches the claude.ai usage limit is **interrupted**, not failed: the workflow stops without recording anything in `BLOCKED.md`, keeps `.sdd/run.json`, and the next `/sdd-run` **resumes** it on the same branch. It reads the run's workflow journal (`sdd-tasks.py checkpoint`) and skips what already finished: an approved task goes straight to its commit, an implemented one only to the verifier, a rejected one to its next attempt with the feedback, and an attempt that was cut off continues from the edits it left in the tree.
+
+To run unattended across several limit windows, let the supervisor start and restart the run:
+
+```
+python3 <plugin>/bin/sdd-supervise.py --project . [--run-args "--phases 15"] [--threshold 0.95]
+```
+
+It starts `/sdd-run` headless and reads the usage that Claude Code reports in its stream (`rate_limit_event`: the five-hour and seven-day windows, from 90 % up). When a window reaches the threshold, it waits for the next agent to finish, stops the run there, sleeps until the window resets, and starts `/sdd-run` again, which resumes. If the limit is hit before such a safe point (or at `--hard-stop`, 99 %), it stops at once, and only the step in flight is redone. It ends when a run finishes, when a reset is more than `--max-wait-hours` away (12 h; the seven-day window), or after `--max-cycles`. Its progress lines go to stdout, its logs and `status.json` to `~/.local/state/speckit-agents/<project>/`.
+
+The simple alternative, for runs that hit the limit at most twice: start `/sdd-run` in an **interactive** session (for example in `tmux`). There, Claude Code itself pauses a workflow at the limit and continues it after the reset (claude.ai subscription, Claude Code 2.1.271 or later, `autoContinueAtUsageLimit` on). It waits at most twice per run, the session must stay open, and after a long sleep of the computer it may need an Enter. Under `claude -p` there is no such wait; that is what the supervisor is for.
+
 ## Agent tags
 
 Agent tags are written after `[P]` and `[USn]`, as in `- [ ] T057 [US1] [manual] Record …`:
@@ -96,10 +118,12 @@ There are three layers, and each holds without the others:
 agents/           sdd-implementer, sdd-verifier, sdd-evaluator, sdd-bookkeeper
 skills/           sdd-init, sdd-tag, sdd-run, sdd-status, sdd-unblock
 workflows/        sdd-run.js (the Workflow script /sdd-run starts)
-bin/              sdd-tasks.py: parse / plan / tick / block / config (stdlib only)
+bin/              sdd-tasks.py: parse / plan / tick / block / config / checkpoint;
+                  sdd-supervise.py: pause before the usage limit, resume after (stdlib only)
 hooks/            run guard (register.ts, rules.ts)
 templates/        sdd-config.toml, settings.json, agent-tags.md
-tests/            python3 -m unittest discover -s tests; claude plugin test .
+tests/            python3 -m unittest discover -s tests; node --test tests/workflow.test.mjs;
+                  claude plugin test .
 ```
 
 ## Limits

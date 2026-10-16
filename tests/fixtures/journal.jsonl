@@ -1,0 +1,20 @@
+{"type": "launched"}
+{"type": "started", "key": "1", "agentId": "a1", "label": "impl:T001"}
+{"type": "result", "key": "1", "agentId": "a1", "result": {"status": "done", "summary": "one", "files_changed": ["a.py"]}}
+{"type": "started", "key": "2", "agentId": "a2", "label": "verify:T001"}
+{"type": "result", "key": "2", "agentId": "a2", "result": {"verdict": "approve", "problems": [], "checks_run": []}}
+{"type": "started", "key": "3", "agentId": "a3", "label": "commit:T001"}
+{"type": "result", "key": "3", "agentId": "a3", "result": {"checks_ran": true, "checks_passed": true, "failing_output": "", "commits": ["abc"], "blocked_recorded": []}}
+{"type": "started", "key": "4", "agentId": "a4", "label": "impl:T002"}
+{"type": "result", "key": "4", "agentId": "a4", "result": {"status": "done", "summary": "two", "files_changed": ["b.py"]}}
+{"type": "started", "key": "5", "agentId": "a5", "label": "verify:T002"}
+{"type": "result", "key": "5", "agentId": "a5", "result": {"verdict": "approve", "problems": [], "checks_run": []}}
+{"type": "started", "key": "6", "agentId": "a6", "label": "impl:T003"}
+{"type": "result", "key": "6", "agentId": "a6", "result": {"status": "done", "summary": "three", "files_changed": ["c.py"]}}
+{"type": "started", "key": "7", "agentId": "a7", "label": "impl:T004"}
+{"type": "result", "key": "7", "agentId": "a7", "result": {"status": "done", "summary": "four", "files_changed": ["d.py"]}}
+{"type": "started", "key": "8", "agentId": "a8", "label": "verify:T004"}
+{"type": "result", "key": "8", "agentId": "a8", "result": {"verdict": "reject", "problems": ["missing test"], "checks_run": []}}
+{"type": "started", "key": "9", "agentId": "a9", "label": "impl:T005#2"}
+{"type": "started", "key": "10", "agentId": "a10", "label": "commit:T002"}
+{"type": "result", "key": "10", "res

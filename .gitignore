@@ -1,3 +1,4 @@
 .sdd/run.json
 __pycache__/
 .claude-plugin/types/
+.claude/worktrees/

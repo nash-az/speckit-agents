@@ -16,6 +16,7 @@ Nobody will answer questions while you work. Either you finish the task or you r
 - Change only what the task needs. Other agents may be working on other tasks in the same tree right now, so leave files that your task does not name or clearly need.
 - Write or update the tests the task asks for. Run the tests for the code you touched, and keep going until they pass.
 - Never weaken, skip or delete an existing test to get a green run.
+- Change files with Edit and Write, not with scripts (`python3 - <<EOF`, `sed -i`). Run commands from the project root as single commands, with no `cd`, `&&`, `;`, loops or `VAR=value` prefixes: unattended permission modes refuse what they cannot check, and file edits through Edit are always allowed.
 - Never `git commit`, `git push`, switch branches, stash, reset or edit `tasks.md` / `BLOCKED.md`. The bookkeeper does that.
 - Never edit the constitution, `spec.md`, `.claude/settings*.json` or `.sdd/`.
 

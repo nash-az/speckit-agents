@@ -17,6 +17,7 @@
   "permissions": {
     "allow": [
       "Workflow",
+      "Skill",
       "Read",
       "Grep",
       "Glob",

@@ -7,6 +7,7 @@
   sdd-tasks.py tick   <tasks.md> T001 [T002 ...]
   sdd-tasks.py block  <BLOCKED.md> --id T057 --tag manual --reason "..." --question "..."
   sdd-tasks.py config [--config .sdd/config.toml]
+  sdd-tasks.py checkpoint <journal.jsonl>
 
 Every command prints JSON on stdout. Only the standard library is used.
 """
@@ -191,6 +192,9 @@ def plan(parsed: dict, blocked: dict[str, str], config: dict,
             if blocked.get(task["id"]) == "open":
                 held.append({"id": task["id"], "tag": "blocked", "reason": "open entry in BLOCKED.md"})
                 continue
+            if blocked.get(task["id"]) == "wontfix":
+                held.append({"id": task["id"], "tag": "wontfix", "reason": "dropped in BLOCKED.md (wontfix)"})
+                continue
             if (reason := hold_reason(task, allow)) is not None:
                 held.append({"id": task["id"], "tag": reason[0], "reason": reason[1]})
                 continue
@@ -250,6 +254,57 @@ def block(path: Path, task_id: str, tag: str, reason: str, question: str) -> dic
     return {"appended": True, "id": task_id}
 
 
+LABEL_RE = re.compile(r"^(?P<kind>impl|eval|verify|commit|repair):(?P<ids>[^#\s]+)(?:#(?P<n>\d+))?$")
+
+
+def checkpoint(journal: Path) -> dict:
+    """What an interrupted run already finished, read from its workflow journal.
+
+    Per task that was not committed: the last implementer (or evaluator) result with its attempt
+    number, the verifier's verdict on it if one came back, or `interrupted: "implement"` when an
+    attempt was cut off with nothing returned (its edits may still be in the tree). The workflow
+    skips the finished steps when it gets this as `args.resume`.
+    """
+    tasks: dict[str, dict] = {}
+    labels: dict[str, str] = {}
+    open_keys: dict[str, str] = {}
+    if not journal.exists():
+        return {"journal": str(journal), "found": False, "tasks": {}, "interrupted_agents": []}
+    for line in journal.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # a line cut off when the process was killed
+        key, kind = event.get("key"), event.get("type")
+        if kind == "started" and key:
+            labels[key] = event.get("label", "")
+            open_keys[key] = labels[key]
+            continue
+        if kind not in ("result", "failed") or not key:
+            continue
+        open_keys.pop(key, None)
+        match = LABEL_RE.match(labels.get(key, ""))
+        result = event.get("result")
+        if not match or kind == "failed" or not isinstance(result, dict):
+            continue  # a failed step leaves the last good state in place
+        ids, attempt = match["ids"].split(","), int(match["n"] or 1) - 1
+        if match["kind"] in ("impl", "eval"):
+            tasks[ids[0]] = {"attempt": attempt, "impl": result}
+        elif match["kind"] == "verify" and ids[0] in tasks:
+            tasks[ids[0]]["verdict"] = result
+        elif match["kind"] == "commit" and result.get("checks_ran") and result.get("checks_passed"):
+            for task_id in ids:
+                tasks.pop(task_id, None)
+    interrupted = []
+    for label in open_keys.values():
+        interrupted.append(label)
+        match = LABEL_RE.match(label)
+        if match and match["kind"] in ("impl", "eval"):
+            task_id, attempt = match["ids"], int(match["n"] or 1) - 1
+            tasks[task_id] = {"attempt": attempt, "interrupted": "implement"}
+    return {"journal": str(journal), "found": True, "tasks": tasks, "interrupted_agents": interrupted}
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -279,6 +334,9 @@ def main(argv: list[str]) -> int:
     p_config = sub.add_parser("config")
     p_config.add_argument("--config", type=Path, default=Path(".sdd/config.toml"))
 
+    p_checkpoint = sub.add_parser("checkpoint")
+    p_checkpoint.add_argument("journal", type=Path)
+
     args = parser.parse_args(argv)
     if args.cmd == "parse":
         result = parse_tasks(args.tasks)
@@ -291,6 +349,8 @@ def main(argv: list[str]) -> int:
         result = tick(args.tasks, args.ids)
     elif args.cmd == "block":
         result = block(args.blocked, args.id, args.tag, args.reason, args.question)
+    elif args.cmd == "checkpoint":
+        result = checkpoint(args.journal)
     else:
         result = load_config(args.config)
     json.dump(result, sys.stdout, indent=2, ensure_ascii=False)

@@ -13,13 +13,18 @@ export const meta = {
 //   run_id, root, tasks_file, blocked_file, helper,       // helper = absolute path of bin/sdd-tasks.py
 //   plan,                                                  // output of `sdd-tasks.py plan`
 //   phase_deps: { "<phase id>": ["<phase id>", ...] },
-//   checks: ["<shell command>", ...], max_retries, allow, commit_trailer
+//   checks: ["<shell command>", ...], max_retries, allow, commit_trailer,
+//   resume,                                                // optional: `sdd-tasks.py checkpoint` of an interrupted run
 // }
+// An agent that comes back null was cut off (usage limit, crash, stop), so its task is
+// `interrupted`, never `failed`: the run stops without recording anything, and the next run
+// resumes from the checkpoint, skipping the steps that already finished.
 // Held tasks (tagged manual, decision, …) never taint a phase: they are a person's work.
 if (!args?.plan) throw new Error('sdd-run needs the plan object as args; start it with the /sdd-run skill')
 const A = args
 const MAX_RETRIES = A.max_retries ?? 2
 const RESERVE = 150_000
+const RESUME = A.resume?.tasks ?? {}
 
 const IMPLEMENT_SCHEMA = {
   type: 'object',
@@ -53,12 +58,13 @@ const VERIFY_SCHEMA = {
 const BOOKKEEP_SCHEMA = {
   type: 'object',
   properties: {
+    checks_ran: { type: 'boolean' },
     checks_passed: { type: 'boolean' },
     failing_output: { type: 'string' },
     commits: { type: 'array', items: { type: 'string' } },
     blocked_recorded: { type: 'array', items: { type: 'string' } },
   },
-  required: ['checks_passed', 'failing_output', 'commits', 'blocked_recorded'],
+  required: ['checks_ran', 'checks_passed', 'failing_output', 'commits', 'blocked_recorded'],
 }
 
 const outOfBudget = () => budget.total !== null && budget.remaining() < RESERVE
@@ -78,7 +84,7 @@ const context = [
   `Allowed this run: new dependencies ${A.allow?.dependencies ? 'yes' : 'no'}, large downloads ${A.allow?.downloads ? 'yes' : 'no'}.`,
 ].join('\n')
 
-async function implement(task, feedback, attempt) {
+async function implement(task, feedback, attempt, continuing) {
   const evalTask = task.tags.includes('eval')
   const prompt = [
     context,
@@ -88,6 +94,9 @@ async function implement(task, feedback, attempt) {
     feedback
       ? `Attempt ${attempt + 1}. The verifier rejected the previous attempt. Fix these problems and keep what was right:\n- ${feedback.join('\n- ')}`
       : 'Implement this task completely.',
+    continuing
+      ? '\nAn earlier attempt at this task was cut off before it reported (usage limit or stop). Its edits may already be in the tree: check `git status` and `git diff`, keep what is right and finish the task. Report every file the task changed, including the earlier edits.'
+      : '',
   ].join('\n')
   return agent(prompt, {
     label: `${evalTask ? 'eval' : 'impl'}:${task.id}${attempt ? `#${attempt + 1}` : ''}`,
@@ -119,42 +128,64 @@ async function verify(task, result) {
 // One task: implement → verify, retried with feedback. Resolves to an outcome.
 async function runTask(task) {
   let feedback = null
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  let lastFiles = []
+  // Resume what an interrupted run finished (args.resume, from its journal).
+  const cp = RESUME[task.id]
+  let start = 0
+  let carried = null
+  let continuing = false
+  if (cp?.impl) {
+    if (cp.verdict?.verdict === 'approve') return { id: task.id, outcome: 'approved', summary: cp.impl.summary, files: cp.impl.files_changed, resumed: true }
+    if (cp.verdict) { feedback = cp.verdict.problems; start = cp.attempt + 1; lastFiles = cp.impl.files_changed ?? [] }
+    else { carried = cp.impl; start = cp.attempt }
+  } else if (cp?.interrupted === 'implement') {
+    start = cp.attempt
+    continuing = true
+  }
+  for (let attempt = start; attempt <= MAX_RETRIES; attempt++) {
     if (outOfBudget()) return { id: task.id, outcome: 'skipped', reason: 'token budget reached' }
-    const result = await implement(task, feedback, attempt)
-    if (!result) return { id: task.id, outcome: 'failed', reason: 'implementer did not finish', question: 'Re-run the task, or look at it by hand.' }
+    const result = carried ?? await implement(task, feedback, attempt, continuing)
+    carried = null
+    continuing = false
+    if (!result) return { id: task.id, outcome: 'interrupted', step: 'implement', attempt }
     if (result.status === 'blocked') {
       const b = result.blocker ?? { tag: 'decision', reason: result.summary, question: 'See the reason.' }
       return { id: task.id, outcome: 'blocked', tag: b.tag, reason: b.reason, question: b.question, files: result.files_changed }
     }
+    lastFiles = result.files_changed ?? []
     const verdict = await verify(task, result)
-    if (verdict && verdict.verdict === 'approve') {
+    if (!verdict) return { id: task.id, outcome: 'interrupted', step: 'verify', attempt }
+    if (verdict.verdict === 'approve') {
       return { id: task.id, outcome: 'approved', summary: result.summary, files: result.files_changed }
     }
-    feedback = verdict ? verdict.problems : ['The verifier did not finish; re-check the work and run the tests yourself.']
+    feedback = verdict.problems
   }
   return {
     id: task.id, outcome: 'blocked', tag: 'failed',
     reason: `rejected ${MAX_RETRIES + 1} times: ${(feedback ?? []).join('; ')}`.slice(0, 1500),
     question: 'The verifier kept rejecting this task. Is the task wrong, or does it need a different approach?',
+    files: lastFiles, stash: true,
   }
 }
 
-async function bookkeep(outcomes, mode, failing) {
+async function bookkeep(outcomes, mode, failing, note) {
   const approved = outcomes.filter(o => o.outcome === 'approved')
   const blocked = outcomes.filter(o => o.outcome === 'blocked' || o.outcome === 'failed')
   const prompt = [
     `Project root: ${A.root}. Helper: python3 ${A.helper}`,
     `Run id: ${A.run_id}. Tasks file: ${A.tasks_file}. Blocked file: ${A.blocked_file}.`,
-    `Project checks, run each from the project root: ${A.checks.length ? A.checks.map(c => `\n  ${c}`).join('') : '(none configured: report checks_passed true)'}`,
+    `Project checks. Run each from the project root as its own Bash call, exactly as written: no loops, pipes, \`;\`, \`&&\` or \`cd\`. ${A.checks.length ? A.checks.map(c => `\n  ${c}`).join('') : '(none configured: report checks_passed true)'}`,
     `Commit trailer, end every commit message with it: ${A.commit_trailer ?? '(none)'}`,
     '',
-    mode === 'discard'
+    mode === 'park'
+      ? `MODE park. No task in this group was approved, and the checks fail with the blocked tasks' partial work in the tree:\n${failing}\nStash the files of every blocked task with \`git stash push -u -m "sdd-run ${A.run_id}: partial ${blocked.map(o => o.id).join(' ')}" -- <their files>\`, record each task as blocked with the stash message added to its reason, commit BLOCKED.md, then run the checks again and report them.`
+      : mode === 'discard'
       ? `MODE discard. The checks still fail after a repair attempt:\n${failing}\nStash the uncommitted work of these tasks with \`git stash push -u -m "sdd-run ${A.run_id}: ${approved.map(o => o.id).join(' ')}"\`, record each of them as blocked (tag failed, reason: the failing checks, question: what to do), commit BLOCKED.md, and report checks_passed false.`
       : 'MODE commit.',
     '',
     `Approved tasks (JSON): ${JSON.stringify(approved.map(o => ({ id: o.id, summary: o.summary, files: o.files })))}`,
-    `Blocked tasks to record (JSON): ${JSON.stringify(blocked.map(o => ({ id: o.id, tag: o.tag ?? 'failed', reason: o.reason, question: o.question ?? '' })))}`,
+    `Blocked tasks to record (JSON): ${JSON.stringify(blocked.map(o => ({ id: o.id, tag: o.tag ?? 'failed', reason: o.reason, question: o.question ?? '', files: o.files ?? [], stash: !!o.stash })))}`,
+    note ? `\n${note}` : '',
   ].join('\n')
   return agent(prompt, { label: `commit:${outcomes.map(o => o.id).join(',')}`, phase: 'Commit', agentType: 'speckit-agents:sdd-bookkeeper', schema: BOOKKEEP_SCHEMA, effort: 'low' })
 }
@@ -188,32 +219,79 @@ for (const phaseInfo of A.plan.phases) {
   }
   log(`Phase ${phaseInfo.id}: ${phaseInfo.title} (${Object.keys(phaseInfo.tasks).length} tasks)`)
   let tainted = false
+  // Convergence phases (from /speckit-converge) hold independent gap fixes, so a task that did not
+  // pass holds back only later tasks that name it. Other phases build in order: any failure holds the rest.
+  const independent = /^convergence/i.test(phaseInfo.title ?? '')
+  const notPassed = new Set()
+  const namesNotPassed = id => [...notPassed].some(t => new RegExp(`\\b${t}\\b`).test(phaseInfo.tasks[id].text))
 
   for (const group of phaseInfo.groups) {
     if (outOfBudget()) { stopped = 'token budget reached'; break }
-    if (tainted && !group.every(id => phaseInfo.tasks[id].parallel)) {
+    if (independent && group.some(namesNotPassed)) {
+      for (const id of group) {
+        results[id] = { id, outcome: 'skipped', reason: `it builds on ${[...notPassed].filter(t => new RegExp(`\\b${t}\\b`).test(phaseInfo.tasks[id].text)).join(', ') || 'a task in its group'}, which did not pass` }
+        notPassed.add(id)
+      }
+      continue
+    }
+    if (!independent && tainted && !group.every(id => phaseInfo.tasks[id].parallel)) {
       for (const id of group) results[id] = { id, outcome: 'skipped', reason: 'an earlier task in this phase did not pass' }
       continue
     }
     // Tasks in a group touch different files, so they build at the same time.
     const outcomes = (await parallel(group.map(id => () => runTask(phaseInfo.tasks[id]))))
       .map((o, i) => o ?? { id: group[i], outcome: 'failed', reason: 'task run crashed', question: 'Re-run the task.' })
+    // Cut off (usage limit, crash, stop): commit nothing and record nothing. The work stays in the
+    // tree and in the journal, and the next run resumes it.
+    const cut = outcomes.filter(o => o.outcome === 'interrupted')
+    if (cut.length) {
+      for (const o of outcomes) results[o.id] = o
+      stopped = `interrupted: ${cut.map(o => `${o.id} during ${o.step}`).join(', ')}; the next /sdd-run resumes from the checkpoint`
+      log(stopped)
+      break
+    }
 
     let book = await bookkeep(outcomes, 'commit')
+    // A refused command is not a failing check: never repair or stash for it.
+    if (book && !book.checks_ran) {
+      log(`Bookkeeper could not run the checks for ${group.join(', ')}; retrying once`)
+      book = await bookkeep(outcomes, 'commit', null,
+        `Your previous attempt could not run commands: ${book.failing_output}\nRun each check and each git or helper command as its own Bash call, with nothing around it.`)
+      if (book && !book.checks_ran) {
+        stopped = `bookkeeper could not run the checks: ${book.failing_output.slice(0, 500)}; the group's work is uncommitted in the tree`
+        for (const o of outcomes) results[o.id] = o
+        break
+      }
+    }
+    // Partial work of blocked tasks must not leave the tree failing for the tasks after them.
+    if (book && book.checks_ran && !book.checks_passed && !outcomes.some(o => o.outcome === 'approved')) {
+      log(`Checks fail with the partial work of ${group.join(', ')}; stashing it`)
+      book = await bookkeep(outcomes, 'park', book.failing_output)
+      if (book && !book.checks_passed) { stopped = `checks still fail after stashing the partial work of ${group.join(', ')}: ${book.failing_output.slice(0, 500)}`; for (const o of outcomes) results[o.id] = o; break }
+    }
     if (book && !book.checks_passed && outcomes.some(o => o.outcome === 'approved')) {
       log(`Checks failed after ${group.join(', ')}; trying one repair`)
       await repair(outcomes, book.failing_output)
       book = await bookkeep(outcomes, 'commit')
-      if (book && !book.checks_passed) {
+      if (book && book.checks_ran && !book.checks_passed) {
         book = await bookkeep(outcomes, 'discard', book.failing_output)
         for (const o of outcomes) if (o.outcome === 'approved') Object.assign(o, { outcome: 'blocked', tag: 'failed', reason: 'project checks failed after the group; work stashed' })
       }
+      if (book && !book.checks_ran) {
+        stopped = `bookkeeper could not run the checks after the repair: ${book.failing_output.slice(0, 500)}; the group's work is uncommitted in the tree`
+        for (const o of outcomes) results[o.id] = o
+        break
+      }
     }
-    if (!book) { stopped = 'bookkeeper did not finish; tree may hold uncommitted work'; break }
+    if (!book) {
+      for (const o of outcomes) results[o.id] = o
+      stopped = `interrupted: the bookkeeper for ${group.join(', ')} was cut off; the work is uncommitted in the tree and the next /sdd-run resumes from the checkpoint`
+      break
+    }
 
     for (const o of outcomes) {
       results[o.id] = o
-      if (o.outcome !== 'approved') tainted = true
+      if (o.outcome !== 'approved') { tainted = true; notPassed.add(o.id) }
     }
     log(`${group.join(', ')}: ${outcomes.map(o => `${o.id} ${o.outcome}`).join(', ')}`)
   }
@@ -230,5 +308,7 @@ return {
   blocked: all.filter(o => o.outcome === 'blocked' || o.outcome === 'failed').map(o => ({ id: o.id, tag: o.tag ?? 'failed', reason: o.reason, question: o.question })),
   skipped: all.filter(o => o.outcome === 'skipped').map(o => ({ id: o.id, reason: o.reason })),
   held: A.plan.held,
+  interrupted: by('interrupted'),
+  resumed: all.filter(o => o.resumed).map(o => o.id),
   phases: phaseState,
 }

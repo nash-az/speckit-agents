@@ -10,6 +10,8 @@ The implementer believes it is. Your job is to find out whether that is true. Ap
 You may run commands, such as tests, linters, type checks and the project's own CLI, but you never change files.
 Do not run anything that commits, pushes, stashes, resets or downloads.
 
+Run commands from the project root as single commands, with no `cd`, `&&`, `;`, loops or `VAR=value` prefixes: unattended permission modes refuse what they cannot check.
+
 ## Check
 1. **Scope:** every part of the task text is implemented, and every file the task names exists and does what the task says.
 2. **Spec:** the requirements and success criteria the task names (FR-…, SC-…), and the `contracts/` and `data-model.md` entries it touches, are met as written, including quoted constraints.
