@@ -229,6 +229,13 @@ def stop(proc: subprocess.Popen) -> None:
             continue
 
 
+def sleep_until(target: float) -> None:
+    """Wait for a wall-clock time. time.sleep() pauses while the computer sleeps (macOS), so one
+    long sleep would overshoot the reset by as long as the lid was closed: sleep in short steps."""
+    while (left := target - time.time()) > 0:
+        time.sleep(min(left, 30))
+
+
 def write_status(path: Path, **fields) -> None:
     fields["updated"] = int(time.time())
     path.write_text(json.dumps(fields, indent=2) + "\n", encoding="utf-8")
@@ -290,7 +297,7 @@ def main(argv: list[str]) -> int:
         say(f"{outcome}: waiting until {time.strftime('%H:%M', time.localtime(resets_at + RESET_MARGIN_S))} for the {window} window to reset")
         write_status(status, state="waiting", window=window, resets_at=resets_at, cycle=cycle_no, usage=cycle.usage.windows)
         if not args.no_sleep:
-            time.sleep(wait)
+            sleep_until(time.time() + wait)
     say(f"stopping after {args.max_cycles} cycles")
     write_status(status, state="stopped", reason="max cycles")
     return 4

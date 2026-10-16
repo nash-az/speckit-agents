@@ -33,6 +33,18 @@ def finished(key):
 DONE = [{"emit": {"type": "result", "subtype": "success"}}, {"exit": 0}]
 
 
+class SleepUntilTest(unittest.TestCase):
+    def test_wakes_by_the_wall_clock(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("sup", SCRIPT)
+        sup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sup)
+        t0 = time.time()
+        sup.sleep_until(t0 + 0.3)
+        self.assertGreaterEqual(time.time(), t0 + 0.3)
+        self.assertLess(time.time(), t0 + 2)
+
+
 class SuperviseTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
