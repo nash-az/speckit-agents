@@ -91,6 +91,7 @@ class Cycle:
         self.workflow_dir: Path | None = None
         self.result_seen = False
         self.stop_reason: str | None = None
+        self.pause_window: str | None = None  # the window that crossed the threshold
         self.lock = threading.Lock()
 
     def command(self) -> list[str]:
@@ -164,6 +165,7 @@ class Cycle:
                 break
             if pause_at is None and u >= self.args.threshold:
                 pause_at = finished
+                self.pause_window = name
                 say(f"{name} at {u:.0%}: pausing after the next agent finishes")
             if self.args.pause_after and finished >= self.args.pause_after:
                 self.args.pause_after = 0  # once, for end-to-end tests of the resume path
@@ -244,10 +246,13 @@ def main(argv: list[str]) -> int:
             say(f"cycle {cycle_no}: the run finished" + ("" if cycle.result_seen else " (no result line: check the log)"))
             write_status(status, state="done", cycle=cycle_no, stream=str(log_path))
             return 0 if cycle.result_seen else 1
-        window = cycle.usage.limit_type if outcome == "limit" else name
-        resets_at = cycle.usage.reset_of(window) or cycle.usage.highest()[2]
-        if not resets_at and args.no_sleep:
-            resets_at = int(time.time())
+        # Wait only for the window that stopped the run: the one that hit the limit, or the one that
+        # crossed the threshold. A test pause (--pause-after) has none and starts again at once.
+        window = cycle.usage.limit_type if outcome == "limit" else cycle.pause_window
+        if outcome == "paused" and window is None:
+            resets_at = int(time.time()) - RESET_MARGIN_S
+        else:
+            resets_at = cycle.usage.reset_of(window)
         if not resets_at:
             say("stopped, but no reset time is known: start again by hand")
             write_status(status, state="stopped", reason="no reset time", cycle=cycle_no)

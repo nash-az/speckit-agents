@@ -89,6 +89,27 @@ class SuperviseTest(unittest.TestCase):
         self.assertLess(took, 25)
         self.assertIn("limit was hit before a safe point", out.stdout)
 
+    def test_waits_only_for_the_window_that_crossed_the_threshold(self):
+        # The seven-day window has a far reset but is not the one near its limit.
+        week = {"emit": {"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed", "rateLimitType": "five_hour",
+            "unifiedWindows": {"seven_day": {"utilization": 0.64, "resetsAt": int(time.time()) + 3 * 86400}}}}}
+        cycle1 = [{"transcript": True}, week, started("a", "impl:T1"), rate(utilization=0.96, resets_in=60),
+                  {"sleep": 0.5}, finished("a"), {"sleep": 30}, *DONE]
+        out, calls, _ = self.supervise([cycle1, [*DONE]])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("five_hour window to reset", out.stdout)
+
+    def test_test_pause_restarts_at_once(self):
+        week = {"emit": {"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed", "rateLimitType": "five_hour",
+            "unifiedWindows": {"seven_day": {"utilization": 0.64, "resetsAt": int(time.time()) + 3 * 86400}}}}}
+        cycle1 = [{"transcript": True}, week, started("a", "impl:T1"), finished("a"), {"sleep": 30}, *DONE]
+        out, calls, _ = self.supervise([cycle1, [*DONE]], "--pause-after", "1")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 2)
+
     def test_reset_too_far_stops_the_supervisor(self):
         cycle1 = [{"transcript": True}, rate(utilization=0.97, window="seven_day", resets_in=3 * 86400), {"sleep": 30}, *DONE]
         out, calls, _ = self.supervise([cycle1])
