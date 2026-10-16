@@ -124,6 +124,24 @@ class SuperviseTest(unittest.TestCase):
         self.assertEqual(out.returncode, 1, out.stdout)
         self.assertIn("cut off by something other than the usage limit", out.stdout)
 
+    def test_terminating_the_supervisor_stops_its_run(self):
+        (self.dir / "scenario.json").write_text(json.dumps({"cycles": [[{"transcript": True}, {"sleep": 60}, *DONE]]}))
+        env = dict(os.environ, FAKE_DIR=str(self.dir), XDG_STATE_HOME=str(self.dir / "state"))
+        sup = subprocess.Popen([sys.executable, str(SCRIPT), "--project", str(self.project), "--claude", str(FAKE),
+                                "--poll", "0.1", "--no-sleep"], env=env, stdout=subprocess.PIPE, text=True)
+        pid_file = self.dir / "pid0"
+        for _ in range(100):
+            if pid_file.exists():
+                break
+            time.sleep(0.1)
+        child = int(pid_file.read_text())
+        time.sleep(0.5)
+        sup.terminate()
+        sup.wait(timeout=40)
+        time.sleep(0.5)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)
+
     def test_needs_an_initialised_project(self):
         (self.project / ".sdd" / "config.toml").unlink()
         out, calls, _ = self.supervise([[*DONE]])

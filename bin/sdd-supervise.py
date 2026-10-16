@@ -151,6 +151,15 @@ class Cycle:
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
         reader = threading.Thread(target=self.read_stream, args=(proc.stdout,), daemon=True)
         reader.start()
+        # The run has its own process group (so it can be stopped cleanly); if the supervisor is
+        # terminated, stop the run too instead of leaving it unsupervised. Its journal keeps the
+        # finished steps, so the next start resumes it.
+        def on_terminate(signum, frame):  # noqa: ANN001, ARG001
+            say(f"supervisor got signal {signum}: stopping the run first")
+            stop(proc)
+            sys.exit(128 + signum)
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            signal.signal(sig, on_terminate)
         pause_at: int | None = None  # journal 'finished' count when the pause was asked for
         while proc.poll() is None:
             time.sleep(self.args.poll)
