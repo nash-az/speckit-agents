@@ -125,7 +125,7 @@ class Cycle:
                 u = window.get("utilization")
                 if u is None:
                     continue
-                step = int(u * 100) // 5 * 5
+                step = int(round(u * 100)) if u >= 0.9 else int(u * 100) // 5 * 5
                 if step != self.last_step.get(name) and (u >= 0.9 or step > self.last_step.get(name, -1)):
                     self.last_step[name] = step
                     resets = window.get("resets_at")
@@ -198,7 +198,11 @@ class Cycle:
                 idle = started == finished
                 if finished > pause_at or idle or u >= self.args.hard_stop:
                     self.stop_reason = "paused"
-                    say("safe point: stopping the run" + (" (no agent running)" if idle else ""))
+                    if finished > pause_at or idle:
+                        say("safe point: stopping the run" + (" (no agent running)" if idle else ""))
+                    else:
+                        say(f"{name} at {u:.0%} before the agent finished: stopping now; its edits stay in the tree "
+                            "and the next run continues them")
                     stop(proc)
                     break
         proc.wait()

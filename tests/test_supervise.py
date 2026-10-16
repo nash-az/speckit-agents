@@ -76,10 +76,14 @@ class SuperviseTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stdout)
 
     def test_hard_stop_does_not_wait_for_a_safe_point(self):
-        cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.99), {"sleep": 30}, *DONE]
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.96), rate(utilization=0.97),
+                  rate(utilization=0.99), {"sleep": 30}, *DONE]
         out, calls, took = self.supervise([cycle1, [*DONE]])
         self.assertEqual(len(calls), 2)
         self.assertLess(took, 25)
+        self.assertIn("usage five_hour 97%", out.stdout)
+        self.assertIn("before the agent finished: stopping now", out.stdout)
+        self.assertNotIn("safe point", out.stdout)
 
     def test_rejected_stops_at_once_and_resumes(self):
         cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(status="rejected"), {"sleep": 30}, *DONE]
