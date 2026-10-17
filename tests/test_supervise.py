@@ -167,6 +167,18 @@ class SuperviseTest(unittest.TestCase):
         self.assertIn("usage five_hour 42%", out.stdout)
         self.assertIn("usage seven_day 51%", out.stdout)
 
+    def test_restart_keeps_waiting_for_a_reset(self):
+        state = self.dir / "state"
+        sup_dir = next(iter([None]), None)
+        out, calls, _ = self.supervise([[*DONE]])  # creates the state dir
+        status = next(state.rglob("status.json"))
+        status.write_text(json.dumps({"state": "waiting", "window": "five_hour", "resets_at": int(time.time()) + 600}))
+        (self.dir / "count").unlink()
+        (self.dir / "calls").unlink()
+        out, calls, _ = self.supervise([[*DONE]])
+        self.assertIn("an earlier supervisor was waiting for the five_hour window", out.stdout)
+        self.assertEqual(len(calls), 1)
+
     def test_needs_an_initialised_project(self):
         (self.project / ".sdd" / "config.toml").unlink()
         out, calls, _ = self.supervise([[*DONE]])

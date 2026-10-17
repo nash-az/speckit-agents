@@ -220,8 +220,8 @@ def stop(proc: subprocess.Popen) -> None:
     for sig, grace in ((signal.SIGINT, SAFE_GRACE_S), (signal.SIGTERM, KILL_GRACE_S), (signal.SIGKILL, 5)):
         try:
             os.killpg(proc.pid, sig)
-        except ProcessLookupError:
-            return
+        except (ProcessLookupError, PermissionError):
+            return  # already gone (macOS answers EPERM for a group whose leader has exited)
         try:
             proc.wait(timeout=grace)
             return
@@ -262,6 +262,17 @@ def main(argv: list[str]) -> int:
     logs = state_dir(args.project)
     status = logs / "status.json"
     say(f"project {args.project}; logs in {logs}")
+    # A supervisor restarted while an earlier one was waiting for a reset keeps waiting.
+    try:
+        last = json.loads(status.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        last = {}
+    if last.get("state") == "waiting" and (last.get("resets_at") or 0) + RESET_MARGIN_S > time.time():
+        target = last["resets_at"] + RESET_MARGIN_S
+        say(f"an earlier supervisor was waiting for the {last.get('window')} window: waiting until "
+            f"{time.strftime('%H:%M', time.localtime(target))}")
+        if not args.no_sleep:
+            sleep_until(target)
     for cycle_no in range(1, args.max_cycles + 1):
         log_path = logs / f"{time.strftime('%Y%m%d-%H%M%S')}-cycle{cycle_no}.jsonl"
         say(f"cycle {cycle_no}: starting /sdd-run")
