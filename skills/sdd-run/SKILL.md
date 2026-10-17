@@ -34,7 +34,7 @@ Arguments (`$ARGUMENTS`): `--phases a,b` runs exactly those phase ids and skips 
 ## 2. Bring tasks.md up to date with the code
 Unticked boxes are not evidence that work is missing: code often lands without its boxes being ticked. Spec Kit's `/speckit-converge` checks the code against the spec, plan and every task, and appends only the remaining work as a new `## Phase N: Convergence`. Use it; do not judge task completion yourself.
 Skip this step with `--phases` or `--no-converge`.
-1. Parse the tasks file: `python3 <helper> parse <tasks>`. If the newest phase whose title starts with `Convergence` still has open tasks, do not converge again (it would add the same gaps twice). Go to item 4.
+1. Parse the tasks file: `python3 <helper> parse <tasks>`, and plan the newest phase whose title starts with `Convergence`: `python3 <helper> plan <tasks> --blocked <blocked> --phases <its id>`. If it still has **runnable** tasks, do not converge again (it would add the same gaps twice): go to item 4. Open tasks that are only held (tagged for a person, or `wontfix` in BLOCKED.md) don't count: they may stay open for a long time, and the spec may have changed since that phase was written, so converge again.
 2. Invoke the **Skill** `speckit-converge`. It writes only `tasks.md`.
    If the `speckit-converge` skill is not installed, say that Spec Kit is older than the converge command, and go on to step 3 without converging, running all open tasks.
 3. If it reports converged and no Convergence phase has open tasks, report that the feature is built and stop.
