@@ -112,3 +112,14 @@ test('tasks without a checkpoint run normally in a resumed run', async () => {
   const { labels } = await run(['T1', 'T2'], {}, resume)
   assert.deepEqual(labels, ['commit:T1', 'impl:T2', 'verify:T2', 'commit:T2'])
 })
+
+test('the commit holds the files of every attempt, not only the last', async () => {
+  let calls_seen = 0
+  const { calls } = await run(['T1'], {
+    'impl:T1': { status: 'done', summary: 'first', files_changed: ['a.py', 'pyproject.toml'] },
+    'verify:T1': p => (calls_seen++ === 0 ? { verdict: 'reject', problems: ['no real test'], checks_run: [] } : { verdict: 'approve', problems: [], checks_run: [] }),
+    'impl:T1#2': { status: 'done', summary: 'second', files_changed: ['a.py', 'test_a.py'] },
+  })
+  const commit = calls.find(c => c.label === 'commit:T1')
+  assert.match(commit.prompt, /"files":\["a.py","pyproject.toml","test_a.py"\]/)
+})

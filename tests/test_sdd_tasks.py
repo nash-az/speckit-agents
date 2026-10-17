@@ -134,6 +134,19 @@ class CheckpointTest(unittest.TestCase):
     def test_cut_off_attempt(self):
         self.assertEqual(self.cp["tasks"]["T005"], {"attempt": 1, "interrupted": "implement"})
 
+    def test_earlier_attempts_files_are_kept(self):
+        d = Path(tempfile.mkdtemp())
+        j = d / "journal.jsonl"
+        ev = [{"type": "started", "key": "1", "label": "impl:T1"},
+              {"type": "result", "key": "1", "result": {"status": "done", "summary": "", "files_changed": ["a.py", "pyproject.toml"]}},
+              {"type": "started", "key": "2", "label": "verify:T1"},
+              {"type": "result", "key": "2", "result": {"verdict": "reject", "problems": ["x"], "checks_run": []}},
+              {"type": "started", "key": "3", "label": "impl:T1#2"},
+              {"type": "result", "key": "3", "result": {"status": "done", "summary": "", "files_changed": ["a.py"]}}]
+        j.write_text("\n".join(json.dumps(e) for e in ev))
+        self.assertEqual(sdd.checkpoint(j)["tasks"]["T1"]["files"], ["a.py", "pyproject.toml"])
+        shutil.rmtree(d)
+
     def test_missing_journal(self):
         self.assertEqual(sdd.checkpoint(Path("/nonexistent/journal.jsonl"))["found"], False)
 

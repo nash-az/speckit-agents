@@ -261,7 +261,7 @@ def checkpoint(journal: Path) -> dict:
     """What an interrupted run already finished, read from its workflow journal.
 
     Per task that was not committed: the last implementer (or evaluator) result with its attempt
-    number, the verifier's verdict on it if one came back, or `interrupted: "implement"` when an
+    number, the files earlier attempts changed (`files`, so a resumed commit still holds them), the verifier's verdict on it if one came back, or `interrupted: "implement"` when an
     attempt was cut off with nothing returned (its edits may still be in the tree). The workflow
     skips the finished steps when it gets this as `args.resume`.
     """
@@ -289,7 +289,9 @@ def checkpoint(journal: Path) -> dict:
             continue  # a failed step leaves the last good state in place
         ids, attempt = match["ids"].split(","), int(match["n"] or 1) - 1
         if match["kind"] in ("impl", "eval"):
-            tasks[ids[0]] = {"attempt": attempt, "impl": result}
+            earlier = tasks.get(ids[0], {})
+            files = sorted(set(earlier.get("files", [])) | set(earlier.get("impl", {}).get("files_changed", [])))
+            tasks[ids[0]] = {"attempt": attempt, "impl": result, **({"files": files} if files else {})}
         elif match["kind"] == "verify" and ids[0] in tasks:
             tasks[ids[0]]["verdict"] = result
         elif match["kind"] == "commit" and result.get("checks_ran") and result.get("checks_passed"):
@@ -301,7 +303,9 @@ def checkpoint(journal: Path) -> dict:
         match = LABEL_RE.match(label)
         if match and match["kind"] in ("impl", "eval"):
             task_id, attempt = match["ids"], int(match["n"] or 1) - 1
-            tasks[task_id] = {"attempt": attempt, "interrupted": "implement"}
+            earlier = tasks.get(task_id, {})
+            files = sorted(set(earlier.get("files", [])) | set(earlier.get("impl", {}).get("files_changed", [])))
+            tasks[task_id] = {"attempt": attempt, "interrupted": "implement", **({"files": files} if files else {})}
     return {"journal": str(journal), "found": True, "tasks": tasks, "interrupted_agents": interrupted}
 
 

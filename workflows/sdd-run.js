@@ -129,14 +129,19 @@ async function verify(task, result) {
 async function runTask(task) {
   let feedback = null
   let lastFiles = []
+  // Every file any attempt touched: a later attempt reports only what it changed itself, and
+  // the commit must still hold the earlier attempts' edits (T240, T247 on the language app).
+  const allFiles = new Set()
+  const touched = files => { for (const f of files ?? []) allFiles.add(f); return [...allFiles] }
   // Resume what an interrupted run finished (args.resume, from its journal).
   const cp = RESUME[task.id]
   let start = 0
   let carried = null
   let continuing = false
   if (cp?.impl) {
-    if (cp.verdict?.verdict === 'approve') return { id: task.id, outcome: 'approved', summary: cp.impl.summary, files: cp.impl.files_changed, resumed: true }
-    if (cp.verdict) { feedback = cp.verdict.problems; start = cp.attempt + 1; lastFiles = cp.impl.files_changed ?? [] }
+    if (cp.verdict?.verdict === 'approve') return { id: task.id, outcome: 'approved', summary: cp.impl.summary, files: touched([...(cp.files ?? []), ...(cp.impl.files_changed ?? [])]), resumed: true }
+    touched(cp.files)
+    if (cp.verdict) { feedback = cp.verdict.problems; start = cp.attempt + 1; lastFiles = touched(cp.impl.files_changed) }
     else { carried = cp.impl; start = cp.attempt }
   } else if (cp?.interrupted === 'implement') {
     start = cp.attempt
@@ -150,13 +155,13 @@ async function runTask(task) {
     if (!result) return { id: task.id, outcome: 'interrupted', step: 'implement', attempt }
     if (result.status === 'blocked') {
       const b = result.blocker ?? { tag: 'decision', reason: result.summary, question: 'See the reason.' }
-      return { id: task.id, outcome: 'blocked', tag: b.tag, reason: b.reason, question: b.question, files: result.files_changed }
+      return { id: task.id, outcome: 'blocked', tag: b.tag, reason: b.reason, question: b.question, files: touched(result.files_changed) }
     }
-    lastFiles = result.files_changed ?? []
+    lastFiles = touched(result.files_changed)
     const verdict = await verify(task, result)
     if (!verdict) return { id: task.id, outcome: 'interrupted', step: 'verify', attempt }
     if (verdict.verdict === 'approve') {
-      return { id: task.id, outcome: 'approved', summary: result.summary, files: result.files_changed }
+      return { id: task.id, outcome: 'approved', summary: result.summary, files: lastFiles }
     }
     feedback = verdict.problems
   }
