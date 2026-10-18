@@ -24,7 +24,7 @@ function argsFor(ids, resume) {
 }
 
 // script: label → result, or a function (prompt) → result. Unlisted labels get a default.
-async function run(ids, script = {}, resume) {
+async function run(ids, script = {}, resume, asArgs = a => a) {
   const calls = []
   const agent = async (prompt, opts) => {
     calls.push({ label: opts.label, prompt })
@@ -39,7 +39,7 @@ async function run(ids, script = {}, resume) {
   }
   const parallel = async thunks => Promise.all(thunks.map(t => t().catch(() => null)))
   const budget = { total: null, spent: () => 0, remaining: () => Infinity }
-  const out = await body(agent, parallel, null, () => {}, () => {}, argsFor(ids, resume), budget)
+  const out = await body(agent, parallel, null, () => {}, () => {}, asArgs(argsFor(ids, resume)), budget)
   return { out, labels: calls.map(c => c.label), calls }
 }
 
@@ -48,6 +48,12 @@ test('a normal task is implemented, verified and committed', async () => {
   assert.deepEqual(labels, ['impl:T1', 'verify:T1', 'commit:T1'])
   assert.deepEqual(out.approved, ['T1'])
   assert.equal(out.stopped, null)
+})
+
+test('args passed as a JSON string work like the object', async () => {
+  const { out, labels } = await run(['T1'], {}, undefined, JSON.stringify)
+  assert.deepEqual(labels, ['impl:T1', 'verify:T1', 'commit:T1'])
+  assert.deepEqual(out.approved, ['T1'])
 })
 
 test('a cut-off implementer stops the run as interrupted, records nothing and commits nothing', async () => {

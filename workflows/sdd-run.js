@@ -20,8 +20,9 @@ export const meta = {
 // `interrupted`, never `failed`: the run stops without recording anything, and the next run
 // resumes from the checkpoint, skipping the steps that already finished.
 // Held tasks (tagged manual, decision, …) never taint a phase: they are a person's work.
-if (!args?.plan) throw new Error('sdd-run needs the plan object as args; start it with the /sdd-run skill')
-const A = args
+// The main loop sometimes passes args as a JSON string instead of the object (run #20, 2026-10-18).
+const A = typeof args === 'string' ? JSON.parse(args) : args
+if (!A?.plan) throw new Error('sdd-run needs the plan object as args; start it with the /sdd-run skill')
 const MAX_RETRIES = A.max_retries ?? 2
 const RESERVE = 150_000
 const RESUME = A.resume?.tasks ?? {}
