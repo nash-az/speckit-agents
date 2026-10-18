@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Run /sdd-run unattended across usage limits: pause before the limit, resume after the reset.
 
-  sdd-supervise.py [--project DIR] [--threshold 0.95] [--run-args "--phases 15"]
+  sdd-supervise.py [--project DIR] [--threshold five_hour=0.95,seven_day=0.99] [--run-args "--phases 15"]
                    [--max-wait-hours 12] [--max-cycles 20]
 
 Each cycle starts a headless `claude -p "/sdd-run --yes …"` and reads its stream-json output.
 Claude Code reports the account's usage there as `rate_limit_event` lines (five-hour and
 seven-day windows, with `utilization` from 0.90 up and `resetsAt`). When a window reaches the
-threshold, the supervisor waits for the next agent to finish (its result is then in the workflow
+threshold (its own per window: by default 95 % for the five-hour window, 99 % for the seven-day
+one), the supervisor waits for the next agent to finish (its result is then in the workflow
 journal, so nothing it did is lost), stops the run, sleeps until the window resets, and starts
 `/sdd-run` again. That run reads the journal and resumes: finished steps are skipped and a step
 that was cut off continues from the edits in the tree. If the limit is hit before a safe point,
@@ -34,6 +35,7 @@ TRANSCRIPT_RE = re.compile(r"Transcript dir: (\S+)")
 SAFE_GRACE_S = 20     # after SIGINT, before SIGTERM
 KILL_GRACE_S = 10     # after SIGTERM, before SIGKILL
 RESET_MARGIN_S = 120  # start again this long after the window resets
+DEFAULT_THRESHOLDS = "five_hour=0.95,seven_day=0.99"  # the user's choice, 2026-10-18
 
 
 def say(message: str) -> None:
@@ -76,6 +78,16 @@ class Usage:
             if u >= best[1]:
                 best = (name, u, window.get("resets_at"))
         return best
+
+    def over(self, thresholds: dict[str, float]) -> tuple[str, float] | None:
+        """The window furthest past its own threshold ('*' for the others), or None."""
+        best = None
+        for name, window in self.windows.items():
+            u = window.get("utilization") or 0.0
+            margin = u - thresholds.get(name, thresholds["*"])
+            if margin >= -1e-9 and (best is None or margin > best[2]):
+                best = (name, u, margin)
+        return best and best[:2]
 
     def reset_of(self, name: str | None) -> int | None:
         return (self.windows.get(name or "") or {}).get("resets_at")
@@ -135,9 +147,11 @@ class Cycle:
                              usage=self.usage.windows, threshold=self.args.threshold)
         elif kind == "result":
             self.result_seen = True
-        if self.workflow_dir is None and "Transcript dir:" in raw:
+        # Follow the newest workflow: the main loop may launch it again (run #20, 2026-10-18), and the
+        # first journal then never shows the safe point.
+        if "Transcript dir:" in raw:
             match = TRANSCRIPT_RE.search(raw.replace("\\n", "\n"))
-            if match:
+            if match and Path(match.group(1)) != self.workflow_dir:
                 self.workflow_dir = Path(match.group(1))
                 say(f"workflow {self.workflow_dir.name}")
 
@@ -176,7 +190,8 @@ class Cycle:
         while proc.poll() is None:
             time.sleep(self.args.poll)
             with self.lock:
-                name, u, _ = self.usage.highest()
+                over = self.usage.over(self.args.threshold)
+                hard = self.usage.over(self.args.hard_stops)
                 rejected = self.usage.status == "rejected"
             started, finished = self.journal_counts()
             if rejected:
@@ -184,7 +199,8 @@ class Cycle:
                 say("stopping now: the limit was hit before a safe point")
                 stop(proc)
                 break
-            if pause_at is None and u >= self.args.threshold:
+            if pause_at is None and over:
+                name, u = over
                 pause_at = finished
                 self.pause_window = name
                 say(f"{name} at {u:.0%}: pausing after the next agent finishes")
@@ -196,11 +212,12 @@ class Cycle:
                 break
             if pause_at is not None:
                 idle = started == finished
-                if finished > pause_at or idle or u >= self.args.hard_stop:
+                if finished > pause_at or idle or hard:
                     self.stop_reason = "paused"
                     if finished > pause_at or idle:
                         say("safe point: stopping the run" + (" (no agent running)" if idle else ""))
                     else:
+                        name, u = hard
                         say(f"{name} at {u:.0%} before the agent finished: stopping now; its edits stay in the tree "
                             "and the next run continues them")
                     stop(proc)
@@ -241,11 +258,26 @@ def write_status(path: Path, **fields) -> None:
     path.write_text(json.dumps(fields, indent=2) + "\n", encoding="utf-8")
 
 
+def thresholds(text: str) -> dict[str, float]:
+    """'0.95' for every window, or 'five_hour=0.95,seven_day=0.99' (unnamed windows: 0.95)."""
+    out = {"*": 0.95}
+    for item in filter(None, (part.strip() for part in text.split(","))):
+        name, _, share = item.rpartition("=")
+        if name:
+            out[name] = float(share)
+        else:
+            out = {"*": float(share)}
+    return out
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--project", type=Path, default=Path.cwd())
-    parser.add_argument("--threshold", type=float, default=0.95, help="pause when a window reaches this share (0–1)")
-    parser.add_argument("--hard-stop", type=float, default=0.99, help="stop at once at this share, safe point or not")
+    parser.add_argument("--threshold", type=thresholds, default=DEFAULT_THRESHOLDS,
+                        help="pause when a window reaches this share (0–1): one for all, or per window, "
+                             f"e.g. {DEFAULT_THRESHOLDS}")
+    parser.add_argument("--hard-stop", type=float, default=0.99,
+                        help="stop at once at this share, safe point or not (at least 1 point above the window's threshold)")
     parser.add_argument("--run-args", default="", help='extra /sdd-run arguments, e.g. "--phases 15"')
     parser.add_argument("--max-wait-hours", type=float, default=12.0)
     parser.add_argument("--max-cycles", type=int, default=20)
@@ -255,6 +287,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--pause-after", type=int, default=0, help=argparse.SUPPRESS)  # e2e tests
     args = parser.parse_args(argv)
     args.project = args.project.resolve()
+    args.hard_stops = {name: min(1.0, max(args.hard_stop, round(t + 0.01, 2))) for name, t in args.threshold.items()}
     if not (args.project / ".sdd" / "config.toml").exists():
         say(f"{args.project} has no .sdd/config.toml: run /sdd-init there first")
         return 2

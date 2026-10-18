@@ -69,10 +69,10 @@ A run that reaches the claude.ai usage limit is **interrupted**, not failed: the
 To run unattended across several limit windows, let the supervisor start and restart the run:
 
 ```
-python3 <plugin>/bin/sdd-supervise.py --project . [--run-args "--phases 15"] [--threshold 0.95]
+python3 <plugin>/bin/sdd-supervise.py --project . [--run-args "--phases 15"] [--threshold five_hour=0.95,seven_day=0.99]
 ```
 
-It starts `/sdd-run` headless and reads the usage that Claude Code reports in its stream (`rate_limit_event`: the five-hour and seven-day windows, from 90 % up). When a window reaches the threshold, it waits for the next agent to finish, stops the run there, sleeps until the window resets, and starts `/sdd-run` again, which resumes. If the limit is hit before such a safe point (or at `--hard-stop`, 99 %), it stops at once, and only the step in flight is redone. It ends when a run finishes, when a reset is more than `--max-wait-hours` away (12 h; the seven-day window), or after `--max-cycles`. Its progress lines go to stdout, its logs and `status.json` to `~/.local/state/speckit-agents/<project>/`.
+It starts `/sdd-run` headless and reads the usage that Claude Code reports in its stream (`rate_limit_event`: the five-hour and seven-day windows, from 90 % up). When a window reaches its threshold (by default 95 % for the five-hour window and 99 % for the seven-day one; one number sets every window), it waits for the next agent to finish, stops the run there, sleeps until the window resets, and starts `/sdd-run` again, which resumes. If the limit is hit before such a safe point (or at `--hard-stop`, 99 %, and at least one point above that window's threshold), it stops at once, and only the step in flight is redone. It ends when a run finishes, when a reset is more than `--max-wait-hours` away (12 h; the seven-day window), or after `--max-cycles`. Its progress lines go to stdout, its logs and `status.json` to `~/.local/state/speckit-agents/<project>/`.
 
 The simple alternative, for runs that hit the limit at most twice: start `/sdd-run` in an **interactive** session (for example in `tmux`). There, Claude Code itself pauses a workflow at the limit and continues it after the reset (claude.ai subscription, Claude Code 2.1.271 or later, `autoContinueAtUsageLimit` on). It waits at most twice per run, the session must stay open, and after a long sleep of the computer it may need an Enter. Under `claude -p` there is no such wait; that is what the supervisor is for.
 

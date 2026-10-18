@@ -97,6 +97,38 @@ class SuperviseTest(unittest.TestCase):
         self.assertIn("before the agent finished: stopping now", out.stdout)
         self.assertNotIn("safe point", out.stdout)
 
+    def test_each_window_has_its_own_threshold(self):
+        # Defaults: five_hour pauses at 95 %, seven_day only at 99 %.
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.97, window="seven_day"),
+                  {"sleep": 0.5}, finished("a"), started("b", "verify:T1"), {"sleep": 1.0}, *DONE]
+        out, calls, _ = self.supervise([cycle1])
+        self.assertEqual(len(calls), 1, "97 % of the week is below its threshold: no pause")
+        self.assertNotIn("pausing", out.stdout)
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.99, window="seven_day"),
+                  {"sleep": 0.5}, finished("a"), started("b", "verify:T1"), {"sleep": 30}, *DONE]
+        shutil.rmtree(self.dir / "wf"); (self.dir / "count").unlink(); (self.dir / "calls").unlink()
+        out, calls, _ = self.supervise([cycle1, [*DONE]])
+        self.assertEqual(len(calls), 2)
+        self.assertIn("seven_day at 99%: pausing", out.stdout)
+        self.assertIn("safe point", out.stdout, "the seven-day hard stop is above 99 %, so it waits for the agent")
+
+    def test_threshold_option_per_window(self):
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.96), {"sleep": 0.5},
+                  finished("a"), started("b", "verify:T1"), {"sleep": 1.0}, *DONE]
+        out, calls, _ = self.supervise([cycle1], "--threshold", "five_hour=0.98")
+        self.assertEqual(len(calls), 1, out.stdout)
+        self.assertNotIn("pausing", out.stdout)
+
+    def test_follows_a_relaunched_workflow_to_its_safe_point(self):
+        # The first workflow is left with an agent that never finishes; the second one carries on.
+        cycle1 = [{"transcript": True}, started("a", "verify:T1"), {"transcript": "wf2"}, started("b", "impl:T2"),
+                  rate(utilization=0.96), {"sleep": 0.5}, finished("b"), started("c", "verify:T2"), {"sleep": 30}, *DONE]
+        out, calls, took = self.supervise([cycle1, [*DONE]])
+        self.assertEqual(len(calls), 2, out.stdout)
+        self.assertLess(took, 25)
+        self.assertIn("workflow wf2", out.stdout)
+        self.assertIn("safe point", out.stdout)
+
     def test_rejected_stops_at_once_and_resumes(self):
         cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(status="rejected"), {"sleep": 30}, *DONE]
         out, calls, took = self.supervise([cycle1, [{"transcript": True}, *DONE]])
@@ -127,7 +159,7 @@ class SuperviseTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
     def test_reset_too_far_stops_the_supervisor(self):
-        cycle1 = [{"transcript": True}, rate(utilization=0.97, window="seven_day", resets_in=3 * 86400), {"sleep": 30}, *DONE]
+        cycle1 = [{"transcript": True}, rate(utilization=0.99, window="seven_day", resets_in=3 * 86400), {"sleep": 30}, *DONE]
         out, calls, _ = self.supervise([cycle1])
         self.assertEqual(out.returncode, 3, out.stdout)
         self.assertEqual(len(calls), 1)

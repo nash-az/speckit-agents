@@ -3,6 +3,7 @@
 
 $FAKE_DIR/scenario.json: {"cycles": [[step, ...], ...]}. Steps: {"emit": event},
 {"journal": event}, {"transcript": true}, {"sleep": seconds}, {"exit": code}.
+{"transcript": "<name>"} launches another workflow in $FAKE_DIR/<name>; later journal steps go there.
 """
 import json
 import os
@@ -27,6 +28,9 @@ for step in steps:
         with (wf / "journal.jsonl").open("a") as j:
             j.write(json.dumps(step["journal"]) + "\n")
     elif "transcript" in step:
+        if isinstance(step["transcript"], str):
+            wf = d / step["transcript"]
+            wf.mkdir(exist_ok=True)
         text = f"Workflow launched in background. Task ID: x\nTranscript dir: {wf}\nRun ID: wf_x"
         print(json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "content": text}]}}), flush=True)
     elif "sleep" in step:
