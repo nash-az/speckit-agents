@@ -44,13 +44,12 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   - `research.md` has the disposition of every backlog item (done / in 003 / deferred).
   - Tasks are written for a cheaper implementer model: exact files, functions and the data-model section to follow.
   - Next feature after 003: the chat window (backlog item 40), on the action channel in `contracts/action-channel.md`.
-- **Next step (proposed, not yet approved):** pilot Phase 2 (T003–T012) with `/sdd-run` from a frozen copy of the plugin.
+- **Next step (decided 2026-10-25, the user: "we will use the frozen copy"):** pilot Phase 2 (T003–T012) with `/sdd-run` from a frozen copy of the plugin.
   - Running from this directory would let the run edit its own bookkeeping, guard and prompts mid-run.
   - Steps: clone the current commit to `/tmp/speckit-agents-stable` and point the installed plugin at it.
     Add the four ignore lines from data-model §7 to this repo's `.gitignore`, run `/sdd-init` here,
     and run Phase 2 with subagents on a cheaper model (`CLAUDE_CODE_SUBAGENT_MODEL`).
   - Record the learnings in `logs/` by hand, mainly verifier rejections of the cheaper model, then point the install back.
-  - Alternative: `/speckit-implement` in a supervised session.
 - **`.claude/settings.local.json.bu` and `.claude/settings.provider.example.json`:** the user's own files. Keep them untracked; never commit them.
 - **Installed** (2026-10-14) at user scope as `speckit-agents@speckit-agents` from the local marketplace `~/private/speckit-agents`. It reads from this directory, so edits here take effect in new sessions.
 
