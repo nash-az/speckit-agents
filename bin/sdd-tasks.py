@@ -27,6 +27,18 @@ LEAD_TAG_RE = re.compile(r"^\[(?P<tag>[^\]]+)\]\s*")
 CODE_RE = re.compile(r"`([^`]+)`")
 BLOCKED_HEAD_RE = re.compile(r"^## (?P<id>T\d+[a-z]?)\b")
 STATUS_RE = re.compile(r"^- status:\s*(?P<status>\w+)", re.IGNORECASE)
+TASK_REF_RE = re.compile(r"\b(T\d+[a-z]?)\b")
+
+# Terminal BLOCKED.md statuses that hold a task forever: it is never re-run.
+TERMINAL_STATUSES = {"open", "resolved", "wontfix"}
+
+# Dependency-indicating words that make a T-nn reference a real dependency.
+DEP_WORDS = {
+    "after", "per", "blocked", "by", "on", "needs", "need",
+    "depends", "waiting", "waits", "supersedes", "superseded", "follows",
+}
+# Words that mark a task as superseded by a later task (converge carries its remaining work).
+SUPERSEDED_BY_WORDS = {"superseded-by", "superseded_by", "replaced-by", "replaced_by"}
 
 # Agent tags that keep a task away from the run unless the config allows it.
 HOLD_TAGS = {
@@ -86,6 +98,22 @@ def parse_task(match: re.Match, line_no: int) -> dict:
         for part in re.split(r"\s*(?:,|→|->)\s*", span):
             if looks_like_path(part) and part not in files:
                 files.append(part)
+    # Cross-task references: after Tnnn / per Tnnn / blocked by Tnnn / needs Tnnn / …
+    deps: list[str] = []
+    superseded_by: list[str] = []
+    search_text = match.group(0) + " " + rest
+    for m in TASK_REF_RE.finditer(search_text):
+        ref = m.group(1)
+        if ref == match["id"]:
+            continue
+        before = search_text[max(0, m.start() - 20):m.start()]
+        preceding = before.split()[-1].lower().strip(".,:;[]()") if before.split() else ""
+        if preceding in SUPERSEDED_BY_WORDS:
+            if ref not in superseded_by:
+                superseded_by.append(ref)
+        elif preceding in DEP_WORDS:
+            if ref not in deps:
+                deps.append(ref)
     return {
         "id": match["id"],
         "done": match["mark"] in "xX",
@@ -93,6 +121,8 @@ def parse_task(match: re.Match, line_no: int) -> dict:
         "story": story,
         "tags": tags,
         "files": files,
+        "deps": deps,
+        "superseded_by": superseded_by,
         "text": rest.strip(),
         "line": line_no,
     }
@@ -141,7 +171,15 @@ def load_config(path: Path | None) -> dict:
     return config
 
 
-def hold_reason(task: dict, allow: dict) -> tuple[str, str] | None:
+def hold_reason(task: dict, blocked: dict[str, str], allow: dict) -> tuple[str, str] | None:
+    """Why a task is held, or None if runnable.
+
+    A task is held when it is tagged for a person (manual, decision, dep unless
+    allowed, download unless allowed), or when its BLOCKED.md entry has any
+    terminal status (open, resolved, wontfix): it is never re-entered into the
+    plan. A task whose dependency is open and held is held too (propagated in
+    plan()).
+    """
     for tag in task["tags"]:
         if tag not in HOLD_TAGS:
             continue
@@ -149,7 +187,63 @@ def hold_reason(task: dict, allow: dict) -> tuple[str, str] | None:
         if allow_key and allow.get(allow_key):
             continue
         return tag, HOLD_TAGS[tag]
+    status = blocked.get(task["id"])
+    if status in TERMINAL_STATUSES:
+        reason = {
+            "open": "open entry in BLOCKED.md",
+            "resolved": "resolved in BLOCKED.md",
+            "wontfix": "dropped in BLOCKED.md (wontfix)",
+        }[status]
+        tag = "blocked" if status == "open" else status
+        return tag, reason
     return None
+
+
+def direct_holds(parsed: dict, blocked: dict[str, str], allow: dict) -> dict[str, tuple[str, str]]:
+    """{task id: (tag, reason)} for every directly held task (by tag or BLOCKED.md).
+
+    Also holds tasks marked as superseded by a later task (converge carried their
+    remaining work), so plan() does not list them as runnable again.
+    """
+    holds: dict[str, tuple[str, str]] = {}
+    superseded: dict[str, list[str]] = {}
+    for phase in parsed["phases"]:
+        for task in phase["tasks"]:
+            if task["done"]:
+                continue
+            if (reason := hold_reason(task, blocked, allow)) is not None:
+                holds[task["id"]] = reason
+            for ref in task.get("superseded_by", []):
+                superseded.setdefault(ref, []).append(task["id"])
+    for ref, superseded_by in superseded.items():
+        holds[ref] = (
+            "superseded",
+            f"remaining work carried by {', '.join(superseded_by)}",
+        )
+    return holds
+
+
+def propagate_holds(parsed: dict, holds: dict[str, tuple[str, str]]) -> dict[str, tuple[str, str]]:
+    """Hold a task when any of its dependencies is held. Iterate to a fixpoint."""
+    by_id: dict[str, dict] = {}
+    for phase in parsed["phases"]:
+        for task in phase["tasks"]:
+            by_id[task["id"]] = task
+    changed = True
+    while changed:
+        changed = False
+        for task in by_id.values():
+            if task["id"] in holds or task["done"]:
+                continue
+            for dep in task.get("deps", []):
+                if dep in holds:
+                    holds[task["id"]] = (
+                        "held",
+                        f"depends on {dep}, which is held ({holds[dep][0]})",
+                    )
+                    changed = True
+                    break
+    return holds
 
 
 def group_phase(tasks: list[dict]) -> list[list[str]]:
@@ -182,6 +276,10 @@ def plan(parsed: dict, blocked: dict[str, str], config: dict,
          phases: list[str] | None, max_tasks: int | None) -> dict:
     allow = config.get("allow", {})
     out_phases, held, budget = [], [], max_tasks
+    # Direct holds (tag or BLOCKED.md terminal status or superseded-by converge),
+    # then propagate through dependencies.
+    direct = direct_holds(parsed, blocked, allow)
+    all_holds = propagate_holds(parsed, direct)
     for phase in parsed["phases"]:
         if phases and phase["id"] not in phases:
             continue
@@ -189,14 +287,9 @@ def plan(parsed: dict, blocked: dict[str, str], config: dict,
         for task in phase["tasks"]:
             if task["done"]:
                 continue
-            if blocked.get(task["id"]) == "open":
-                held.append({"id": task["id"], "tag": "blocked", "reason": "open entry in BLOCKED.md"})
-                continue
-            if blocked.get(task["id"]) == "wontfix":
-                held.append({"id": task["id"], "tag": "wontfix", "reason": "dropped in BLOCKED.md (wontfix)"})
-                continue
-            if (reason := hold_reason(task, allow)) is not None:
-                held.append({"id": task["id"], "tag": reason[0], "reason": reason[1]})
+            if task["id"] in all_holds:
+                tag, reason = all_holds[task["id"]]
+                held.append({"id": task["id"], "tag": tag, "reason": reason})
                 continue
             if budget is not None:
                 if budget <= 0:

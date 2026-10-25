@@ -3,7 +3,7 @@
 // phase(), args and budget as globals.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, promises as fsp } from 'node:fs'
 
 const SOURCE = readFileSync(new URL('../workflows/sdd-run.js', import.meta.url), 'utf8')
   .replace('export const meta =', 'const meta =')
@@ -24,7 +24,7 @@ function argsFor(ids, resume) {
 }
 
 // script: label → result, or a function (prompt) → result. Unlisted labels get a default.
-async function run(ids, script = {}, resume, asArgs = a => a) {
+async function run(ids, script = {}, resume, asArgs = a => a, budget = { total: null, spent: () => 0, remaining: () => Infinity }) {
   const calls = []
   const agent = async (prompt, opts) => {
     calls.push({ label: opts.label, prompt })
@@ -38,7 +38,6 @@ async function run(ids, script = {}, resume, asArgs = a => a) {
     return null
   }
   const parallel = async thunks => Promise.all(thunks.map(t => t().catch(() => null)))
-  const budget = { total: null, spent: () => 0, remaining: () => Infinity }
   const out = await body(agent, parallel, null, () => {}, () => {}, asArgs(argsFor(ids, resume)), budget)
   return { out, labels: calls.map(c => c.label), calls }
 }
@@ -128,4 +127,38 @@ test('the commit holds the files of every attempt, not only the last', async () 
   })
   const commit = calls.find(c => c.label === 'commit:T1')
   assert.match(commit.prompt, /"files":\["a.py","pyproject.toml","test_a.py"\]/)
+})
+
+test('event feed writes task.started, implemented, approved, phase.started and run.finished', async () => {
+  const dir = '/tmp/speckit-test-events'
+  const { out } = await run(['T1'], {}, undefined, a => ({ ...a, eventsDir: dir }))
+  const events = readFileSync(`${dir}/events.jsonl`, 'utf8').trim().split('\n').map(JSON.parse)
+  const kinds = events.map(e => e.kind)
+  assert.ok(kinds.includes('phase.started'))
+  assert.ok(kinds.includes('task.started'))
+  assert.ok(kinds.includes('task.implemented'))
+  assert.ok(kinds.includes('task.approved'))
+  assert.ok(kinds.includes('group.finished'))
+  assert.ok(kinds.includes('run.finished'))
+})
+
+test('credit-aware pause skips starting a new agent when remaining budget is below RESERVE', async () => {
+  const budget = { total: 1_000_000, spent: () => 860_000, remaining: () => 140_000 } // below 150_000 RESERVE
+  const { out, labels } = await run(['T1'], {}, undefined, a => a, budget)
+  assert.deepEqual(labels, []) // no agent started at all
+  assert.equal(out.stopped, 'token budget reached')
+  assert.ok(out.approved.length === 0)
+})
+
+test('credit-aware pause allows starting when remaining budget is above RESERVE', async () => {
+  const budget = { total: 1_000_000, spent: () => 800_000, remaining: () => 200_000 } // above 150_000 RESERVE
+  const { out, labels } = await run(['T1'], {}, undefined, a => a, budget)
+  assert.ok(labels.includes('impl:T1'))
+  assert.deepEqual(out.approved, ['T1'])
+})
+
+test('isolation worktree mode runs without crashing in a non-git environment', async () => {
+  const tmp = await fsp.mkdtemp('/tmp/speckit-wt-test-')
+  const { out } = await run(['T1', 'T2'], {}, undefined, a => ({ ...a, isolation: 'worktree', root: tmp }))
+  assert.deepEqual(out.approved, ['T1', 'T2'])
 })

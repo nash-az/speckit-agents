@@ -57,7 +57,7 @@ class PlanTest(unittest.TestCase):
 
     def test_holds(self):
         held = {h["id"]: h["tag"] for h in self.plan()["held"]}
-        self.assertEqual(held, {"T006": "blocked", "T008": "manual", "T010": "dep"})
+        self.assertEqual(held, {"T003": "resolved", "T006": "blocked", "T008": "manual", "T010": "dep"})
 
     def test_wontfix_stays_held(self):
         # An entry dropped with `status: wontfix` must not send its open task back to the agents.
@@ -71,7 +71,7 @@ class PlanTest(unittest.TestCase):
 
     def test_groups_split_on_shared_files_and_non_parallel(self):
         phases = {p["id"]: p["groups"] for p in self.plan()["phases"]}
-        self.assertEqual(phases["1"], [["T002", "T003"]])
+        self.assertEqual(phases["1"], [["T002"]])  # T003 is held (resolved in BLOCKED.md)
         self.assertEqual(phases["2"], [["T004"], ["T005"]])  # T005 also touches a.py
         self.assertEqual(phases["3"], [["T007", "T009"], ["T011"]])
 

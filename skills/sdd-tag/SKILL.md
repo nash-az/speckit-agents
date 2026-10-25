@@ -19,4 +19,6 @@ Tag the open tasks in the current feature's `tasks.md`. The tag meanings are in 
 4. Write each tag as a bracket after the task's existing leading tags (`[P]`, `[USn]`), keeping their order:
    `- [ ] T057 [US1] [manual] Record …`.
    Change nothing else on the line, and never touch tasks that are done.
-5. Run `parse` again and confirm that the tags were read. Say how many tasks are now held by default: those tagged `manual`, `decision`, `dep` or `download`, unless the config allows dependencies or downloads.
+5. For `[manual]` tasks, write how-to steps next to the tag (or in the task's text): where to do it, the commands to run, and what "done" looks like, so a person can act without reading code.
+6. For `[decision]` tasks, write the options and their trade-offs next to the question (or link to the research file that has them), so the person can decide without reading transcripts.
+7. Run `parse` again and confirm that the tags were read. Say how many tasks are now held by default: those tagged `manual`, `decision`, `dep` or `download`, unless the config allows dependencies or downloads.

@@ -58,6 +58,7 @@ If the section is missing or vague for a phase, make that phase depend on the Se
 Show the following in a few lines, then ask whether to start:
 - what converge found (the new Convergence phase and its task count) and the tags you gave, with reasons;
 - the number of runnable tasks and phases, the groups that will run in parallel, and the held tasks with their tags;
+- **waiting on you:** every held task as one line—`T### [tag] question`—for `manual`, `decision`, `dep`/`download` (not allowed) and any terminal BLOCKED.md entry. These are not attempted; the user answers them with `/sdd-unblock`.
 - the branch name, `auto/<run id>`, where the run id is `YYYYMMDD-HHMM` in local time;
 - what is allowed (dependencies, downloads), the retry limit, and the checks;
 - that it uses about 3 agents per task, and that the user can watch it with `/workflows`.
@@ -77,8 +78,12 @@ Remind the user that permission prompts stop an unattended run, and that a headl
      "helper": "<absolute path of sdd-tasks.py>", "plan": <plan output>, "phase_deps": { ... },
      "checks": [ ... ], "max_retries": <run.max_retries>, "allow": <allow table>,
      "commit_trailer": "<the attribution trailer your instructions give for commits, or empty>",
-     "resume": <the checkpoint from step 1 when resuming, else null> }
+     "resume": <the checkpoint from step 1 when resuming, else null>,
+     "eventsDir": "<absolute .sdd/runs/<run id>> for the event feed",
+     "taskAllow": { "<task id>": { "dependencies": true|false, "downloads": true|false }, ... },
+     "isolation": "<run.isolation: 'branch' or 'worktree'>" }
    ```
+   `taskAllow` gives per-task permission overrides (for example a `[dep:ok]` task may add a dependency even when `[allow] dependencies = false`). Build it from the tasks' tags: a task tagged `[dep:ok]` gets `{ dependencies: true }`, one tagged `[download:ok]` gets `{ downloads: true }`.
    The Workflow result names the run's `Transcript dir`. Add it to `.sdd/run.json` as `workflow_dir` right away: if the run is cut off, the next `/sdd-run` reads its journal there and resumes instead of starting the tasks over.
 5. Tell the user in one line that the run started, on which branch, and that `/workflows` shows progress. Then end your turn. The workflow notifies you when it finishes.
 
@@ -93,7 +98,11 @@ Otherwise:
    - what converge appended, and the tags with their reasons;
    - the approved tasks and their commits (`git log --oneline <base>..HEAD`);
    - the blocked tasks with their questions;
-   - the skipped tasks with their reasons, the held tasks, the phase states, and `stopped` if it is set.
+   - **waiting on you:** every held task as `T### [tag] question` (manual, decision, dep/download not allowed, terminal BLOCKED.md entry);
+   - for `[decision]` held tasks, the options and trade-offs (or link to the research file);
+   - for `[manual]` held tasks, the how-to steps (where, commands, what done looks like);
+   - the skipped tasks with their reasons, the held tasks, the phase states, and `stopped` if it is set;
+   - the event feed at `.sdd/runs/<run id>/events.jsonl` for monitoring.
 2. Commit the report as `chore(sdd): run report <run id>`, with the trailer.
 3. Remove `.sdd/run.json`.
 4. Send a push notification if the PushNotification tool is available: `sdd run <id>: <n> done, <m> blocked`.

@@ -10,6 +10,8 @@ description: Show where the current Spec Kit feature stands for unattended runs 
 1. Find the tasks file, using `.sdd/config.toml` or `.specify/feature.json`.
 2. Run `python3 <plugin>/bin/sdd-tasks.py plan <tasks> --blocked <feature>/BLOCKED.md`, plus `parse` for the totals.
    Report the tasks done and open, the runnable tasks by phase, and the held tasks by tag.
+   **Waiting on you:** list every held task as one line—`T### [tag] question`—for `manual`, `decision`, `dep`/`download` (not allowed) and any terminal BLOCKED.md entry. Include the question from the held reason or from the BLOCKED.md entry, so the user can act on it without opening BLOCKED.md.
+   Show tasks in a `moved`/`product` state apart from the others, since they are done but moved into product use rather than dropped.
 3. Open entries in `BLOCKED.md`: give the id and the question, one line each.
 4. If `.sdd/run.json` exists, a run is active or was interrupted. Give its branch and the number of commits on it so far (`git log --oneline <protected base>..<branch>`).
    If it has `workflow_dir`, run `python3 <plugin>/bin/sdd-tasks.py checkpoint <workflow_dir>/journal.jsonl` and say which tasks a resume would continue, and at which step.
