@@ -20,8 +20,11 @@ Parsing, planning, ticking and recording are done by plain code (`bin/sdd-tasks.
 ### VI. One task, one commit
 Each approved task is one commit holding only its own files, so a run can be reviewed, reverted or cherry-picked task by task.
 
+### VII. AI-free at the core
+The orchestration engine — task parsing, planning, the run guard, status and state, and anything a dashboard or CLI reports — runs and is fully usable with no AI model involved anywhere in that path. An AI-backed surface, such as a chat interface or a free-form query layer, is an optional client of the same backend the non-AI dashboard and CLI use; it is never a dependency of the plugin's core function, and the plugin stays fully operable with it absent. This is distinct from Principle V: V says where model judgement belongs inside a run; this says the plugin's own architecture never requires a model to exist at all.
+
 ## Development
 
 The framework is built with itself: Spec Kit for spec, plan and tasks; `/sdd-run` for implementation once the guard and agents are in place. Tests: `python3 -m unittest discover -s tests` and `claude plugin test .`; both must pass before a commit.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-14 | **Last Amended**: 2026-10-14
+**Version**: 1.1.0 | **Ratified**: 2026-10-14 | **Last Amended**: 2026-10-25
