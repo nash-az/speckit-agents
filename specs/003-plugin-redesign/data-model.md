@@ -133,8 +133,12 @@ Replace with:
 3. In `propagate_holds()`, a dependency held as `superseded` does **not** hold its dependents:
    change the condition to `if dep in holds and holds[dep][0] != "superseded":`.
 
-Apply rule 1, then rule 2, then the tag/BLOCKED holds — a tag or BLOCKED hold on the same task wins
-(assign it last), since it carries a question for a person.
+Order: compute the tag/BLOCKED holds first, then apply rules 1 and 2, which **overwrite** them —
+`superseded` wins. A superseded task's work has moved to its successor, so its old question no
+longer matters; and if a tag hold won instead, rule 3 would not apply and the successor (e.g. a
+Convergence task that says "per T020") would be held by the very task it replaces. Test this case:
+T020 tagged `[manual]` in an older phase, T090 "per T020" in the newest Convergence phase → T020
+`superseded`, T090 runnable.
 
 ### 3.5 Answers reach the implementer (FR-023)
 `plan()` takes the entries dict from §3.1 instead of the status dict (pass

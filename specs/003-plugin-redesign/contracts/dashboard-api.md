@@ -11,7 +11,7 @@ Implementation details: `data-model.md` §4.
 | `POST /api/project/select` | extended (FR-027) | body `{"path"?, "feature"?}`; sets in-memory project/feature only; `{"ok": true, "path", "feature"}` |
 | `GET /api/doc?name=<name>` | new (FR-001) | `name` ∈ `spec, plan, research, data-model, quickstart, tasks, blocked, decisions, constitution, learnings, config`; raw text (`text/markdown`, `config` as `text/plain`); missing file → `200 {"missing": true}`; other names → `404` |
 | `GET /api/project/spec`, `/plan`, `/decisions`, `/config` | kept as aliases | same as `/api/doc` with that name |
-| `GET /api/project/tasks` | changed (FR-002, FR-007) | `{"text", "phases": [{"id", "title", "status", "tasks": [Task]}]}` — Task per `data-model.md` §2; phase `status` is the §1 rollup of its tasks' parked/done states |
+| `GET /api/project/tasks` | changed (FR-002, FR-007) | `{"text", "phases": [{"id", "title", "status", "tasks": [Task]}]}` — Task per `data-model.md` §2; phase `status` is the §1 rollup of its tasks' parked/done states only; the page recomputes it with live transient states |
 | `GET /api/project/blocked` | changed | `{"text", "entries": [{"id", "status", "tag", "reason", "question", "answer"}]}`, last entry per id |
 | `GET /api/run/current` | new (FR-017) | `{"state": "none"\|"running"\|"paused"\|"stale", "run_id", "workflow_dir"}` |
 | `GET /api/runs` | changed (FR-006) | runs from `.sdd/runs/<id>/` directories, newest id first; item shape unchanged (`id`, `events_count`, `approved`, `blocked`, `interrupted`, `finished`, `stopped`) |

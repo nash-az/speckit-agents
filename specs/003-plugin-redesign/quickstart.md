@@ -10,8 +10,9 @@ Extend the toy project's `tasks.md` and `BLOCKED.md` with:
 - T013 with a BLOCKED.md entry `status: resolved`, answer "use option B" → runnable; `plan` output
   carries the answer.
 - T014 with `status: moved` → held as moved.
-- An older phase with open T020 before a `## Phase 9: Convergence` phase whose T090 says "per T020"
-  → T020 superseded (by Phase 9), T090 runnable (a superseded dependency does not hold it).
+- An older phase with open T020 `[manual]` before a `## Phase 9: Convergence` phase whose T090 says
+  "per T020" → T020 superseded (by Phase 9, not held as manual), T090 runnable (a superseded
+  dependency does not hold it).
 Run `python3 bin/sdd-tasks.py plan tasks.md --blocked BLOCKED.md --config .sdd/config.toml` and
 assert each id's runnable/held state and tag. Then run the existing toy e2e: it must still pass.
 

@@ -248,7 +248,8 @@ about the plugin landing in the app repo's history.
 - **SC-002**: Every status shown in the dashboard has an icon, a color and a label; no two statuses
   share both icon and color.
 - **SC-003**: The existing toy-project end-to-end test still passes, and a new one covering held →
-  blocked → resolved-and-rerun → superseded passes.
+  blocked → resolved (runnable again, with the answer in its implementer prompt) → superseded
+  passes.
 - **SC-004**: A real run's dashboard view shows its actual event timeline (not empty), and the run
   after it starts without a dirty-tree refusal.
 - **SC-005**: A run started with a profile, and an implementer role set to a different model,
