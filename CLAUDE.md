@@ -36,10 +36,22 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   - Type-check: `tsc -p` against a tsconfig that includes the engine's `claude-code.d.ts`. The engine lays it in `.claude-plugin/types/` once the plugin loads.
   - `claude plugin validate .` passes, with warnings about the missing author field only.
 - **End-to-end:** a headless `/sdd-run --yes` on a toy project passed SC-001. It produced 3 task commits and held 1 manual task, and left `main` untouched. Details, and the 5 problems found and fixed, are in `specs/001-unattended-runs/research.md`.
-- **Open tasks:**
-  - T009: script the end-to-end test in `tests/e2e/`.
-  - T010: worktree isolation for parallel groups.
-  - T011 `[decision]`: which browser tool to use for `[ui]` checks.
+- **Redesign (2026-10-25): `specs/003-plugin-redesign/` is the current work and its source of truth.**
+  - Constitution v1.1.0 adds Principle VII, "AI-free at the core".
+  - 003 supersedes `specs/002-redesign/` (kept as reference only) and `001`'s open tasks T009–T011.
+  - spec (28 FRs, 6 stories), plan, research, data-model, contracts, quickstart and tasks (42) are committed.
+    `/speckit-analyze` ran; F1–F4 fixed, low findings accepted. Nothing is implemented yet.
+  - `research.md` has the disposition of every backlog item (done / in 003 / deferred).
+  - Tasks are written for a cheaper implementer model: exact files, functions and the data-model section to follow.
+  - Next feature after 003: the chat window (backlog item 40), on the action channel in `contracts/action-channel.md`.
+- **Next step (proposed, not yet approved):** pilot Phase 2 (T003–T012) with `/sdd-run` from a frozen copy of the plugin.
+  - Running from this directory would let the run edit its own bookkeeping, guard and prompts mid-run.
+  - Steps: clone the current commit to `/tmp/speckit-agents-stable` and point the installed plugin at it.
+    Add the four ignore lines from data-model §7 to this repo's `.gitignore`, run `/sdd-init` here,
+    and run Phase 2 with subagents on a cheaper model (`CLAUDE_CODE_SUBAGENT_MODEL`).
+  - Record the learnings in `logs/` by hand, mainly verifier rejections of the cheaper model, then point the install back.
+  - Alternative: `/speckit-implement` in a supervised session.
+- **`.claude/settings.local.json.bu` and `.claude/settings.provider.example.json`:** the user's own files. Keep them untracked; never commit them.
 - **Installed** (2026-10-14) at user scope as `speckit-agents@speckit-agents` from the local marketplace `~/private/speckit-agents`. It reads from this directory, so edits here take effect in new sessions.
 
 ## Lessons from real runs
@@ -59,7 +71,8 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 ## First real target
 The user's language app (`~/private/language-app`). The app repo should not hold notes about this work.
 State (2026-10-14): the first attempt failed before any agent started (uv cache under the sandbox, then the script path); both are fixed in the plugin. The app's sdd commits were reverted, so its tree matches `97970b5` again. Its 5 uncommitted imitation-check files are the user's, so leave them alone.
-Next attempt:
-1. Run `/sdd-init`.
-2. Run `/speckit-converge`. `tasks.md` is behind the code, and converge appends only the work still missing, as a new `Phase N: Convergence`. Don't reinvent this in the plugin.
-3. Run `/sdd-tag` on the new phase, then `/sdd-run --phases N`.
+State (2026-10-25): paused until the 003 redesign is implemented (the user's decision: redesign first, then continue the app with the redesigned plugin).
+- `tasks.md` is at Phase 18: 19 open tasks, several held.
+- A stale `.sdd/run.json` (run `20261024-0014`, phase 16, no report) must be cleaned up first.
+- T296's BLOCKED.md entry uses an ad-hoc `tag: failed` that the new model gives a proper state.
+- Before its first run on the new plugin, run `/sdd-init` there so `.gitignore` gets the new lines (003 task T027).
