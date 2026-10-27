@@ -40,18 +40,25 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   - Constitution v1.1.0 adds Principle VII, "AI-free at the core".
   - 003 supersedes `specs/002-redesign/` (kept as reference only) and `001`'s open tasks T009–T011.
   - spec (28 FRs, 6 stories), plan, research, data-model, contracts, quickstart and tasks (42) are committed.
-    `/speckit-analyze` ran; F1–F4 fixed, low findings accepted. Nothing is implemented yet.
+    `/speckit-analyze` ran; F1–F4 fixed, low findings accepted.
+  - **Phase 2 (T003–T012) is implemented** (run `20261027-1352`, merged into `main` at `fa8236a`). Phases 3–9 are open.
   - `research.md` has the disposition of every backlog item (done / in 003 / deferred).
-  - Tasks are written for a cheaper implementer model: exact files, functions and the data-model section to follow.
+  - Tasks name exact files, functions and the data-model section to follow. Choosing a cheaper or local implementer model is a
+    feature of the finished plugin for its users; the plugin itself is always built with the session's model (Opus 5.5).
   - Next feature after 003: the chat window (backlog item 40), on the action channel in `contracts/action-channel.md`.
-- **Next step (decided 2026-10-25, the user: "we will use the frozen copy"):** pilot Phase 2 (T003–T012) with `/sdd-run` from a frozen copy of the plugin.
-  - Running from this directory would let the run edit its own bookkeeping, guard and prompts mid-run.
-  - Steps: clone the current commit to `/tmp/speckit-agents-stable` and point the installed plugin at it.
-    Add the four ignore lines from data-model §7 to this repo's `.gitignore`, run `/sdd-init` here,
-    and run Phase 2 with subagents on a cheaper model (`CLAUDE_CODE_SUBAGENT_MODEL`).
-  - Record the learnings in `logs/` by hand, mainly verifier rejections of the cheaper model, then point the install back.
+- **Phase 2 pilot (2026-10-27):** `/sdd-run` from a frozen copy of the plugin (`/tmp/speckit-agents-stable`), so the run
+  could not edit its own bookkeeping, guard and prompts. All 10 tasks approved on the first attempt, on Opus 5.5.
+  Details and the four failed launches before it: `logs/2026-10-27-phase2-pilot.md`.
+  - **Open 003 gap:** Workflow scripts can no longer `import()`, so `workflows/sdd-run.js` can't write
+    `.sdd/runs/<id>/events.jsonl` (research.md D6). The repo's workflow still has the `fs`/`path` imports and fails to
+    launch; the frozen copy is patched (`event()` a no-op). A 003 design fix is pending the user's approval.
+  - **Next:** approve the event-feed fix, then run Phase 3 (T013–T020) from the frozen copy. Point the install back at
+    this repo once its workflow launches again.
 - **`.claude/settings.local.json.bu` and `.claude/settings.provider.example.json`:** the user's own files. Keep them untracked; never commit them.
-- **Installed** (2026-10-14) at user scope as `speckit-agents@speckit-agents` from the local marketplace `~/private/speckit-agents`. It reads from this directory, so edits here take effect in new sessions.
+- **Installed** at user scope as `speckit-agents@speckit-agents`. Since 2026-10-27 the marketplace is the frozen copy
+  `/tmp/speckit-agents-stable` (normally `~/private/speckit-agents`). Claude Code runs the plugin from a cache pinned to a
+  git commit (`~/.claude/plugins/cache/speckit-agents/…`), so edits take effect only after commit + `claude plugin uninstall`
+  + `claude plugin marketplace update speckit-agents` + `claude plugin install`.
 
 ## Lessons from real runs
 - **Unattended mode:** use `claude --permission-mode dontAsk`.
@@ -65,6 +72,12 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 - **Sandbox and tool caches:** the sandbox blocks writes outside the project, so `uv run` fails on `~/.cache/uv` (language app, 2026-10-14). The checks passed during `/sdd-init` only because the sandbox wasn't active yet. `/sdd-init` now adds tool caches to `sandbox.filesystem.allowWrite` and runs the checks again after writing the settings.
 - **Call the workflow by name, not by path:** `scriptPath` must be a file the session can read, and a session in an app repo cannot read the plugin directory (language app, 2026-10-14). The toy test missed this. The plugin's `workflows/` scripts are saved workflows named `speckit-agents:<meta.name>`, and they resolve from any project.
 - **Usage limits (2026-10-16):** headless stream-json carries `rate_limit_event` (`status` allowed / allowed_warning / rejected, `utilization` from 0.90 in 1 % steps, `resetsAt`, `unifiedWindows.five_hour|seven_day`), also while the workflow runs. At the limit `agent()` returns null; the workflow now calls that `interrupted`, stops, keeps `run.json`, and the next `/sdd-run` resumes from `sdd-tasks.py checkpoint <workflow_dir>/journal.jsonl`. `bin/sdd-supervise.py` pauses at a threshold after the next finished agent, sleeps until the reset and restarts. Interactive sessions pause workflows at the limit by themselves (at most twice per run); `claude -p` doesn't.
+- **No `import()` in workflow scripts** (Claude Code 2.1.311): the Workflow tool refuses the script with
+  `SyntaxError: import() is not available in workflow scripts`. Workflows can't touch the file system or spawn processes.
+- **Preflight needs a clean tree, untracked files included.** Keep a user's own untracked files out with `.git/info/exclude`.
+- **Tests must not hard-code `/tmp`:** the sandbox allows only `$TMPDIR` there, so they fail the run's checks. Use `os.tmpdir()`.
+- **Start the operator session outside the repo** (e.g. `~/private`): the repo's sandbox settings also lock a session in it,
+  and the nested `claude -p` then can't start its own sandbox (EPERM on the socket).
 - **Testing kit:** stubs beneath the plugin answer `{ value }` for calls on `$`, `{ result }` for `tool.call`, and `{ deny }` to refuse.
 
 ## First real target
