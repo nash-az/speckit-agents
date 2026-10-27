@@ -324,13 +324,21 @@ def group_phase(tasks: list[dict]) -> list[list[str]]:
     return groups
 
 
-def plan(parsed: dict, blocked: dict[str, str], config: dict,
+def plan(parsed: dict, blocked: dict[str, dict], config: dict,
          phases: list[str] | None, max_tasks: int | None) -> dict:
+    """Runnable phases and held tasks.
+
+    `blocked` is the entries dict from parse_blocked_entries() (data-model §3.5); a plain
+    {id: status} dict is accepted too. A runnable task whose entry is `resolved` with a
+    non-empty answer carries `answer` and `question` into `phases[].tasks`.
+    """
     allow = config.get("allow", {})
+    entries = {i: e if isinstance(e, dict) else {"status": e} for i, e in blocked.items()}
+    statuses = {i: e.get("status", "open") for i, e in entries.items()}
     out_phases, held, budget = [], [], max_tasks
     # Direct holds (tag or BLOCKED.md terminal status or superseded-by converge),
     # then propagate through dependencies.
-    direct = direct_holds(parsed, blocked, allow)
+    direct = direct_holds(parsed, statuses, allow)
     all_holds = propagate_holds(parsed, direct)
     for phase in parsed["phases"]:
         if phases and phase["id"] not in phases:
@@ -347,6 +355,9 @@ def plan(parsed: dict, blocked: dict[str, str], config: dict,
                 if budget <= 0:
                     break
                 budget -= 1
+            entry = entries.get(task["id"])
+            if entry and entry.get("status") == "resolved" and entry.get("answer"):
+                task = dict(task, answer=entry["answer"], question=entry.get("question", ""))
             runnable.append(task)
         if runnable:
             out_phases.append({
@@ -493,7 +504,7 @@ def main(argv: list[str]) -> int:
         result["blocked"] = parse_blocked(args.blocked)
     elif args.cmd == "plan":
         phases = [p.strip() for p in args.phases.split(",")] if args.phases else None
-        result = plan(parse_tasks(args.tasks), parse_blocked(args.blocked),
+        result = plan(parse_tasks(args.tasks), parse_blocked_entries(args.blocked),
                       load_config(args.config), phases, args.max_tasks)
     elif args.cmd == "tick":
         result = tick(args.tasks, args.ids)

@@ -120,6 +120,38 @@ class PlanTest(unittest.TestCase):
         self.assertNotIn("T003", {h["id"] for h in result["held"]})
         self.assertIn("T003", {tid for p in result["phases"] for g in p["groups"] for tid in g})
 
+    def test_resolved_answer_reaches_task(self):
+        config = sdd.load_config(None)
+        entries = {"T003": {"status": "resolved", "tag": "decision", "reason": "r",
+                            "question": "Which one?", "answer": "The second."}}
+        result = sdd.plan(sdd.parse_tasks(TASKS), entries, config, None, None)
+        task = next(p["tasks"]["T003"] for p in result["phases"] if "T003" in p["tasks"])
+        self.assertEqual(task["answer"], "The second.")
+        self.assertEqual(task["question"], "Which one?")
+
+    def test_answer_needs_resolved_and_non_empty(self):
+        config = sdd.load_config(None)
+        parsed = sdd.parse_tasks(TASKS)
+        entry = {"status": "resolved", "question": "q", "answer": ""}
+        result = sdd.plan(parsed, {"T003": entry}, config, None, None)
+        task = next(p["tasks"]["T003"] for p in result["phases"] if "T003" in p["tasks"])
+        self.assertNotIn("answer", task)
+        self.assertNotIn("question", task)
+        # Other runnable tasks never get the fields, and the parsed input is not changed.
+        result = sdd.plan(parsed, sdd.parse_blocked_entries(BLOCKED), config, None, None)
+        others = [t for p in result["phases"] for tid, t in p["tasks"].items() if tid != "T003"]
+        self.assertTrue(all("answer" not in t for t in others))
+        self.assertTrue(all("answer" not in t for p in parsed["phases"] for t in p["tasks"]))
+
+    def test_plan_command_passes_answers(self):
+        out = subprocess.run([sys.executable, str(SCRIPT), "plan", str(TASKS), "--blocked", str(BLOCKED)],
+                             capture_output=True, text=True, check=True)
+        result = json.loads(out.stdout)
+        task = next(p["tasks"]["T003"] for p in result["phases"] if "T003" in p["tasks"])
+        self.assertEqual(task["answer"], "done")
+        self.assertEqual(task["question"], "")
+        self.assertIn("T006", {h["id"] for h in result["held"]})
+
     def test_moved_is_held(self):
         config = sdd.load_config(None)
         result = sdd.plan(sdd.parse_tasks(TASKS), {"T003": "moved"}, config, None, None)
