@@ -52,7 +52,13 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   data-model §3.9), because Workflow scripts can't `import()` or call `Date.now()`.
   - **Dashboard launch model (user decision):** a plugin command (`/speckit-agents:ui`) run from the project directory
     starts the API server and the UI on separate ports; one project per dashboard; the plugin stores nothing. Not in 003 yet.
-  - **Paused before Phase 4 (user):** design research for the finished dashboard is done and awaiting review:
+  - **Phase 4 (T021–T027) is implemented** (run `20261027-2024`, 7 task commits, all approved first time on Opus 5.5, no
+    blocks, 184 Python tests pass; usage peaked at 30%). T026 was built from its original wording, not the redesigned Runs view.
+    Phase 5 started right after (user go-ahead).
+  - **Run launch that pauses at the usage limit and does not resume at the refresh:**
+    `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5-5 python3 bin/sdd-supervise.py --project <repo> --run-args "--no-converge --phases N" --max-wait-hours 0 --max-cycles 1`
+    (run in the background with output to a file; a Monitor on it for `supervise:` lines). The tree must be clean first.
+  - **Was paused before Phase 4 (user):** design research for the finished dashboard is done and awaiting review:
     `logs/2026-10-27-dashboard-design.html` (also https://claude.ai/artifact/26f22opZPWvBp1wP7gJmiJ). Proposal: Home
     (waiting on you / last run / features), Features (docs + traceability), Runs (task → attempts → log), chat drawer;
     UI as plain static files on its own port, no build step. Open decisions are listed at the end of that page.
