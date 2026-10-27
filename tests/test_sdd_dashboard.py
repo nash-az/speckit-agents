@@ -678,6 +678,59 @@ class DocumentsViewTest(unittest.TestCase):
         self.assertNotIn("function loadFile(", self.html)
 
 
+class FeaturePickerTest(unittest.TestCase):
+    """T020 (FR-027, data-model.md §4.2): a 409 from a per-feature request shows a picker of `features`;
+    choosing one posts `{"feature": name}` to /api/project/select and reloads the views."""
+
+    setUpClass = classmethod(StatusSystemTest.setUpClass.__func__)
+    run_js = StatusSystemTest.run_js
+
+    def test_picker_features(self):
+        got = self.run_js("[pickerFeatures(409, {error: 'choose a feature', features: ['001-a', '002-b']}),"
+                          " pickerFeatures(404, {features: ['001-a']}), pickerFeatures(409, {error: 'x'}),"
+                          " pickerFeatures(409, null)]")
+        self.assertEqual(got, [["001-a", "002-b"], None, None, None])
+
+    def test_picker_markup(self):
+        got = self.run_js("[featurePickerHtml(['001-a', '<b>\"x']), featurePickerHtml([])]")
+        buttons, empty = got
+        self.assertEqual(buttons.count("<button"), 2)
+        self.assertIn('data-feature="001-a">001-a</button>', buttons)
+        self.assertIn('data-feature="&lt;b&gt;&quot;x">&lt;b&gt;&quot;x</button>', buttons)
+        self.assertNotIn("<button", empty)
+
+    def test_markup_and_wiring(self):
+        self.assertIn('id="feature-picker"', self.html)
+        self.assertIn('id="feature-picker-list"', self.html)
+        self.assertIn("fetchJSON('/api/project/select', 'POST', { feature: name })", self.html)
+        chooser = self.html[self.html.index("function chooseFeature("):self.html.index("function reloadViews(")]
+        self.assertIn("reloadViews();", chooser)
+        doc = self.html[self.html.index("function showDoc("):self.html.index("function docUrl(")]
+        self.assertIn("showFeaturePicker(features)", doc)
+
+    def test_fetch_json_409_shows_picker(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        fetch_json = self.html[self.html.index("function fetchJSON("):self.html.index("function escapeHtml(")]
+        script = (
+            "var shown = [];\n"
+            "function showFeaturePicker(f) { shown.push(f); }\n"
+            "function fakeRes(status, body) { return {status: status, ok: status < 300,"
+            " json: function() { return Promise.resolve(body); }}; }\n"
+            "var answers = {'/a': fakeRes(409, {error: 'choose a feature', features: ['001-a', '002-b']}),"
+            " '/b': fakeRes(200, {phases: []}), '/c': fakeRes(404, {error: 'nope'})};\n"
+            "function fetch(url) { return Promise.resolve(answers[url]); }\n"
+            + self.html[self.html.index("function pickerFeatures("):self.html.index("function featurePickerHtml(")]
+            + fetch_json +
+            "\nPromise.all([fetchJSON('/a'), fetchJSON('/b'), fetchJSON('/c')]).then(function(r) {"
+            " process.stdout.write(JSON.stringify({results: r, shown: shown})); });")
+        out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
+        got = json.loads(out.stdout)
+        self.assertEqual(got["results"], [None, {"phases": []}, None])
+        self.assertEqual(got["shown"], [["001-a", "002-b"]])
+
+
 class ReadOnlyTest(unittest.TestCase):
     """data-model.md §4.8 (FR-020): the dashboard's source has no way to write or run anything."""
 

@@ -689,6 +689,12 @@ def build_html():
   .status svg.glyph-spinner { animation: status-spin 1s linear infinite; }
   @keyframes status-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
+  /* Feature picker (data-model.md §4.2): shown when a per-feature request returns 409 */
+  .feature-picker { border-color: var(--warning); }
+  .feature-picker-hint { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.75rem; }
+  .feature-picker-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .feature-picker-list .btn { font-family: 'JetBrains Mono', monospace; }
+
   .refresh { font-size: 0.75rem; color: var(--text-muted); margin-top: 1rem; text-align: center; }
 </style>
 </head>
@@ -728,6 +734,13 @@ def build_html():
       </div>
     </div>
     <div class="content">
+      <!-- Feature picker: no active feature (409 from a per-feature request) -->
+      <div id="feature-picker" class="card feature-picker" style="display:none;">
+        <div class="card-title">Choose a feature</div>
+        <div class="feature-picker-hint">This project has several feature folders and none is marked active. Pick the one to show.</div>
+        <div id="feature-picker-list" class="feature-picker-list"></div>
+      </div>
+
       <!-- Overview -->
       <section id="section-overview" class="section">
         <div class="grid-3">
@@ -874,6 +887,14 @@ def build_html():
       if (body) opts.headers['Content-Type'] = 'application/json';
       if (body) opts.body = JSON.stringify(body);
       return fetch(url, opts).then(function(res) {
+        if (res.status === 409) {
+          // No active feature: offer the picker, and treat the response as "no data" like any other error.
+          return res.json().then(function(d) {
+            var features = pickerFeatures(res.status, d);
+            if (features) showFeaturePicker(features);
+            return null;
+          }).catch(function() { return null; });
+        }
         if (!res.ok) return null;
         return res.json();
       }).catch(function(e) { console.error('fetchJSON error', url, e); return null; });
@@ -1099,7 +1120,11 @@ def build_html():
         if (el.getAttribute('data-want') !== url) return;
         if (d.missing) el.innerHTML = docMessageHtml('Not written yet');
         else if (d.text != null) renderDoc(el, d.text, kind);
-        else if (d.status === 409) el.innerHTML = docMessageHtml('Choose a feature first.');
+        else if (d.status === 409) {
+          el.innerHTML = docMessageHtml('Choose a feature first.');
+          var features = pickerFeatures(d.status, d);
+          if (features) showFeaturePicker(features);
+        }
         else if (d.status === 404) el.innerHTML = docMessageHtml('Not found.');
         else el.innerHTML = docMessageHtml('Could not load: ' + (d.error || 'unknown error'));
       });
@@ -1111,6 +1136,20 @@ def build_html():
 
     function docKind(name) {
       return name === 'config' ? 'text' : 'markdown';
+    }
+
+    // Feature picker (data-model.md §4.2). A 409 body is {"error": "choose a feature", "features": [...]};
+    // pickerFeatures() returns that list for a 409, else null.
+    function pickerFeatures(status, body) {
+      if (status !== 409 || !body || !Array.isArray(body.features)) return null;
+      return body.features.map(String);
+    }
+
+    function featurePickerHtml(features) {
+      if (!features.length) return '<div class="empty"><div>No feature folders under specs/.</div></div>';
+      return features.map(function(name) {
+        return '<button class="btn" data-feature="' + escapeHtml(name) + '">' + escapeHtml(name) + '</button>';
+      }).join('');
     }
 
     function loadProjects() {
@@ -1138,10 +1177,56 @@ def build_html():
           return;
         }
         currentProject = path;
+        hideFeaturePicker();
         document.getElementById('page-title').textContent = path.split('/').pop();
         toast('Project loaded: ' + path.split('/').pop());
         refreshAll();
       }).catch(function(e) { console.error('selectProjectPath error', e); toast('Error selecting project'); });
+    }
+
+    // Show the picker with these feature names. The 3 s refresh calls this again on every 409,
+    // so the buttons are rebuilt only when the list changes.
+    function showFeaturePicker(features) {
+      var box = document.getElementById('feature-picker');
+      var list = document.getElementById('feature-picker-list');
+      if (!box || !list) return;
+      var key = JSON.stringify(features);
+      if (list.getAttribute('data-features') !== key) {
+        list.setAttribute('data-features', key);
+        list.innerHTML = featurePickerHtml(features);
+        list.querySelectorAll('button[data-feature]').forEach(function(btn) {
+          btn.addEventListener('click', function() { chooseFeature(btn.getAttribute('data-feature')); });
+        });
+      }
+      box.style.display = 'block';
+    }
+
+    function hideFeaturePicker() {
+      var box = document.getElementById('feature-picker');
+      var list = document.getElementById('feature-picker-list');
+      if (box) box.style.display = 'none';
+      if (list) list.removeAttribute('data-features');
+    }
+
+    // Choose a feature for this dashboard session (memory only, FR-027), then reload the views.
+    function chooseFeature(name) {
+      fetchJSON('/api/project/select', 'POST', { feature: name }).then(function(result) {
+        if (!result || !result.ok) { toast('Failed to choose feature ' + name); return; }
+        hideFeaturePicker();
+        toast('Feature: ' + name);
+        reloadViews();
+      }).catch(function(e) { console.error('chooseFeature error', e); toast('Error choosing feature'); });
+    }
+
+    // Reload the current section, the overview counters and any open raw document.
+    function reloadViews() {
+      showSection(selectedSection);
+      if (selectedSection !== 'overview') loadOverview();
+      Object.keys(RAW_DOCS).forEach(function(name) {
+        var el = document.getElementById('raw-' + name);
+        if (el && el.style.display !== 'none') showDoc(el, docUrl(name), 'markdown');
+      });
+      try { document.getElementById('refresh-time').textContent = new Date().toLocaleTimeString(); } catch(e) {}
     }
 
     function showSection(name) {
