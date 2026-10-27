@@ -131,50 +131,45 @@ def active_feature(project: Path) -> Path | None:
     return None
 
 
+TRANSCRIPT_GONE = ("This run's transcript is gone (Claude Code keeps transcripts for "
+                   "`cleanupPeriodDays`, default 30); its report is `.sdd/runs/{id}.md`.")
+
+
 def list_runs(project):
+    """Runs are `.sdd/runs/<id>/` directories holding `workflows.json` (data-model.md §4.4),
+    newest id first (ids are timestamps). Flat files such as `.sdd/runs/x.jsonl` are ignored."""
     runs_dir = project / ".sdd" / "runs"
     runs = []
     if not runs_dir.is_dir():
         return runs
-    for entry in sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-        if entry.is_file() and entry.suffix == ".jsonl":
-            run_id = entry.stem
-            events = []
-            for line in read_lines(entry):
-                try:
-                    events.append(json.loads(line))
-                except ValueError:
-                    continue
-            approved = sum(1 for e in events if e.get("kind") == "task.approved")
-            blocked = sum(1 for e in events if e.get("kind") in ("task.blocked", "task.failed"))
-            interrupted = sum(1 for e in events if e.get("kind") == "task.interrupted")
-            finished = any(e.get("kind") == "run.finished" for e in events)
-            stopped = None
-            for e in reversed(events):
-                if e.get("kind") == "run.finished":
-                    stopped = e.get("stopped")
-                    break
-            runs.append({
-                "id": run_id,
-                "events_count": len(events),
-                "approved": approved,
-                "blocked": blocked,
-                "interrupted": interrupted,
-                "finished": finished,
-                "stopped": stopped,
-            })
+    entries = [e for e in runs_dir.iterdir()
+               if e.is_dir() and RUN_ID_RE.match(e.name) and (e / "workflows.json").is_file()]
+    for entry in sorted(entries, key=lambda p: p.name, reverse=True):
+        run_id = entry.name
+        events = sdd_tasks.run_events(project, run_id)["events"]
+        runs.append({
+            "id": run_id,
+            "events_count": len(events),
+            "approved": sum(1 for e in events if e.get("kind") == "task.approved"),
+            "blocked": sum(1 for e in events if e.get("kind") in ("task.blocked", "task.failed")),
+            # The journal has no interrupted or run.finished events (§3.9); a run is finished
+            # once its report is written.
+            "interrupted": 0,
+            "finished": (runs_dir / (run_id + ".md")).is_file(),
+            "stopped": None,
+        })
     return runs
 
 
 def get_events(project, run_id):
-    events_file = project / ".sdd" / "runs" / (run_id + ".jsonl")
-    events = []
-    for line in read_lines(events_file):
-        try:
-            events.append(json.loads(line))
-        except ValueError:
-            continue
-    return events
+    """`run_events()` from sdd-tasks.py (§3.9), or None for an invalid run id. When every listed
+    workflow directory is gone and no events remain, `notice` carries the "transcript is gone" text."""
+    if not RUN_ID_RE.match(run_id):
+        return None
+    result = sdd_tasks.run_events(project, run_id)
+    if result["missing"] and not result["events"]:
+        result["notice"] = TRANSCRIPT_GONE.format(id=run_id)
+    return result
 
 
 def get_report(project, run_id):
@@ -410,7 +405,11 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         m = re.match(r"^/api/runs/([^/]+)/events$", path)
         if m:
-            self._send_json(get_events(proj, m.group(1)))
+            events = get_events(proj, m.group(1))
+            if events is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            self._send_json(events)
             return
         m = re.match(r"^/api/runs/([^/]+)/report$", path)
         if m:
@@ -1361,10 +1360,14 @@ def build_html():
         document.getElementById('events-view').innerHTML = '<div class="empty"><div class="empty-icon">📋</div><div>Select a run to see its events.</div></div>';
         return;
       }
-      fetchJSON('/api/runs/' + encodeURIComponent(selectedRunId) + '/events', 'GET').then(function(events) {
-        events = events || [];
+      fetchJSON('/api/runs/' + encodeURIComponent(selectedRunId) + '/events', 'GET').then(function(data) {
+        var events = (data && data.events) || [];
         var el = document.getElementById('events-view');
         el.innerHTML = '';
+        if (data && data.notice) {
+          el.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="transcript-gone">' + escapeHtml(data.notice) + '</div></div>';
+          return;
+        }
         if (events.length === 0) {
           el.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div>No events.</div></div>';
           return;

@@ -265,6 +265,106 @@ class HandlerTest(unittest.TestCase):
         self.assertEqual({e["id"] for e in data["entries"]}, {"T007", "T008", "T009", "T010"})
 
 
+RUN_JOURNAL = [
+    {"type": "launched"},
+    {"type": "started", "key": "v2:01", "agentId": "a01", "label": "impl:T1", "phase": "Build"},
+    {"type": "result", "key": "v2:01", "agentId": "a01",
+     "result": {"status": "done", "summary": "done", "files_changed": ["a.py"]}},
+    {"type": "started", "key": "v2:02", "agentId": "a02", "label": "verify:T1", "phase": "Build"},
+    {"type": "result", "key": "v2:02", "agentId": "a02",
+     "result": {"verdict": "approve", "problems": [], "checks_run": []}},
+    {"type": "started", "key": "v2:03", "agentId": "a03", "label": "impl:T2", "phase": "Build"},
+    {"type": "result", "key": "v2:03", "agentId": "a03",
+     "result": {"status": "blocked", "summary": "", "files_changed": [], "tag": "manual",
+                "reason": "needs a person"}},
+]
+
+
+def write_run(project, run_id, workflow_dirs):
+    """`.sdd/runs/<run_id>/workflows.json` listing `workflow_dirs` (data-model.md §3.9)."""
+    run_dir = project / ".sdd" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "workflows.json").write_text(
+        json.dumps({"workflow_dirs": [str(d) for d in workflow_dirs]}), encoding="utf-8")
+
+
+def write_workflow_dir(path, journal=RUN_JOURNAL):
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "journal.jsonl").write_text("\n".join(json.dumps(e) for e in journal) + "\n",
+                                        encoding="utf-8")
+    return path
+
+
+class RunsTest(unittest.TestCase):
+    """`/api/runs` and `/api/runs/<id>/events` from run directories (data-model.md §4.4)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve() / "project"
+        (self.root / ".sdd" / "runs").mkdir(parents=True)
+        self.wf = write_workflow_dir(Path(self.tmp.name).resolve() / "transcripts" / "wf_test")
+        write_run(self.root, "20261025-1200", [self.wf])
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
+
+    def tearDown(self):
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.saved
+        self.tmp.cleanup()
+
+    def test_run_directory_listed_with_counts(self):
+        runs = request(self, "GET", "/api/runs")
+        self.assertEqual([r["id"] for r in runs], ["20261025-1200"])
+        run = runs[0]
+        self.assertEqual((run["approved"], run["blocked"], run["events_count"]), (1, 1, 6))
+        self.assertEqual(set(run), {"id", "events_count", "approved", "blocked", "interrupted",
+                                    "finished", "stopped"})
+        self.assertFalse(run["finished"])
+        (self.root / ".sdd" / "runs" / "20261025-1200.md").write_text("# Report\n", encoding="utf-8")
+        self.assertTrue(request(self, "GET", "/api/runs")[0]["finished"])
+
+    def test_sorted_by_name_descending_not_mtime(self):
+        write_run(self.root, "20261026-0900", [self.wf])
+        write_run(self.root, "20261024-0800", [self.wf])  # written last: newest mtime
+        runs = request(self, "GET", "/api/runs")
+        self.assertEqual([r["id"] for r in runs], ["20261026-0900", "20261025-1200", "20261024-0800"])
+
+    def test_flat_jsonl_and_dirs_without_workflows_json_ignored(self):
+        runs_dir = self.root / ".sdd" / "runs"
+        (runs_dir / "x.jsonl").write_text('{"kind": "task.approved", "id": "T9"}\n', encoding="utf-8")
+        (runs_dir / "20261027-0000").mkdir()  # no workflows.json
+        (runs_dir / "20261027-0000.md").write_text("# Report\n", encoding="utf-8")
+        self.assertEqual([r["id"] for r in request(self, "GET", "/api/runs")], ["20261025-1200"])
+
+    def test_events_from_journal(self):
+        data = request(self, "GET", "/api/runs/20261025-1200/events")
+        self.assertEqual(data["missing"], [])
+        self.assertNotIn("notice", data)
+        self.assertEqual(data["workflow_dirs"], [str(self.wf)])
+        kinds = [e["kind"] for e in data["events"]]
+        self.assertEqual(kinds, ["task.started", "task.implemented", "task.verified",
+                                 "task.approved", "task.started", "task.blocked"])
+
+    def test_bad_run_id_is_404(self):
+        for bad in ("run-001", "..", "..%2F..%2Fetc", "20261025-1200X"):
+            request(self, "GET", f"/api/runs/{bad}/events", status=404)
+
+    def test_gone_transcript_shows_text(self):
+        write_run(self.root, "20261020-0800", [Path(self.tmp.name).resolve() / "gone" / "wf_gone"])
+        data = request(self, "GET", "/api/runs/20261020-0800/events")
+        self.assertEqual(data["events"], [])
+        self.assertEqual(len(data["missing"]), 1)
+        self.assertEqual(data["notice"],
+                         "This run's transcript is gone (Claude Code keeps transcripts for "
+                         "`cleanupPeriodDays`, default 30); its report is `.sdd/runs/20261020-0800.md`.")
+        html = dash.build_html()
+        self.assertIn("data.notice", html)
+
+    def test_no_workflows_json_gives_empty_events(self):
+        data = request(self, "GET", "/api/runs/20261027-0000/events")
+        self.assertEqual((data["workflow_dirs"], data["events"]), ([], []))
+        self.assertNotIn("notice", data)
+
+
 def request(test, method, path, body=None, status=200, host="127.0.0.1:8765"):
     """Run one request through DashboardHandler without a socket; returns the parsed body
     (JSON when it parses, else text). `host=None` sends no Host header."""
@@ -782,18 +882,10 @@ def main():
     (feature / "decisions.md").write_text("# Decisions\n\n- T011: Use Playwright (2026-10-24)\n")
     (PROJECT / ".sdd" / "config.toml").write_text("[run]\nfeature = \"specs/001\"\n")
 
-    # Sample events.jsonl for run-001
-    events = [
-        {"ts": 1000, "kind": "phase.started", "id": "1", "title": "Phase 1", "taskCount": 2},
-        {"ts": 1001, "kind": "task.started", "id": "T1", "tags": ["P"], "files": ["a.py"], "deps": []},
-        {"ts": 1002, "kind": "task.implemented", "id": "T1", "attempt": 0, "summary": "done", "files": ["a.py"]},
-        {"ts": 1003, "kind": "task.verified", "id": "T1", "verdict": "approve", "problems": []},
-        {"ts": 1004, "kind": "task.approved", "id": "T1", "files": ["a.py"]},
-        {"ts": 1005, "kind": "task.started", "id": "T2", "tags": ["manual"], "files": ["b.py"], "deps": []},
-        {"ts": 1006, "kind": "task.blocked", "id": "T2", "tag": "manual", "reason": "needs a person"},
-        {"ts": 1007, "kind": "run.finished", "run_id": "run-001", "stopped": None, "approved": 1, "blocked": 1, "skipped": 0},
-    ]
-    (PROJECT / ".sdd" / "runs" / "run-001.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n")
+    # Sample run 20261025-1200: workflows.json pointing at a wf_… directory with a journal
+    wf = write_workflow_dir(PROJECT.resolve() / "transcripts" / "wf_smoke")
+    write_run(PROJECT, "20261025-1200", [wf])
+    (PROJECT / ".sdd" / "runs" / "20261025-1200.md").write_text("# Run Report\n\n- approved: T1\n- blocked: T2\n")
     (PROJECT / ".sdd" / "runs" / "20261027-1431.md").write_text("# Run Report\n\n- approved: T1\n- blocked: T2\n")
 
     # Sample status.json (same slug computation as the server)
@@ -819,7 +911,7 @@ def main():
         runs = api("/api/runs")
         assert len(runs) == 1, f"expected 1 run, got {len(runs)}"
         r = runs[0]
-        assert r["id"] == "run-001", f"expected run-001, got {r['id']}"
+        assert r["id"] == "20261025-1200", f"expected 20261025-1200, got {r['id']}"
         assert r["approved"] == 1, f"expected 1 approved, got {r['approved']}"
         assert r["blocked"] == 1, f"expected 1 blocked, got {r['blocked']}"
         assert r["finished"] is True
@@ -827,11 +919,11 @@ def main():
         print("PASS: /api/runs")
 
         # /api/runs/<id>/events
-        evs = api("/api/runs/run-001/events")
-        assert len(evs) == 8, f"expected 8 events, got {len(evs)}"
-        assert evs[0]["kind"] == "phase.started"
-        assert evs[-1]["kind"] == "run.finished"
-        print("PASS: /api/runs/run-001/events")
+        evs = api("/api/runs/20261025-1200/events")["events"]
+        assert len(evs) == 6, f"expected 6 events, got {len(evs)}"
+        assert evs[0]["kind"] == "task.started"
+        assert evs[-1]["kind"] == "task.blocked"
+        print("PASS: /api/runs/20261025-1200/events")
 
         # /api/runs/<id>/report
         req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/runs/20261027-1431/report")
