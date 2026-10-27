@@ -27,6 +27,8 @@ LEAD_TAG_RE = re.compile(r"^\[(?P<tag>[^\]]+)\]\s*")
 CODE_RE = re.compile(r"`([^`]+)`")
 BLOCKED_HEAD_RE = re.compile(r"^## (?P<id>T\d+[a-z]?)\b")
 STATUS_RE = re.compile(r"^- status:\s*(?P<status>\w+)", re.IGNORECASE)
+BLOCKED_FIELD_RE = re.compile(r"^- (?P<key>\w+):\s*(?P<value>.*)$")
+BLOCKED_FIELDS = {"status", "tag", "reason", "question", "answer"}
 TASK_REF_RE = re.compile(r"\b(T\d+[a-z]?)\b")
 
 # Terminal BLOCKED.md statuses that hold a task forever: it is never re-run.
@@ -144,18 +146,54 @@ def parse_tasks(path: Path) -> dict:
     return {"tasks_file": str(path), "phases": phases}
 
 
-def parse_blocked(path: Path | None) -> dict[str, str]:
-    """Return {task id: status} for every entry in BLOCKED.md."""
+def parse_blocked_entries(path: Path | None) -> dict[str, dict]:
+    """{task id: {"status", "tag", "reason", "question", "answer"}} — the LAST entry per id wins.
+
+    An entry starts at a `## T…` line and ends at the next `## ` line. `- <key>: <value>` sets a
+    field (status lowercased, default "open"). The answer also takes the lines below `- answer:`
+    up to the next `## …` or `- <word>:` line, because `/sdd-unblock` writes answers there.
+    """
     if path is None or not path.exists():
         return {}
-    entries, current = {}, None
+    entries: dict[str, dict] = {}
+    current: dict | None = None
+    answer_lines: list[str] | None = None
+
+    def finish_answer() -> None:
+        nonlocal answer_lines
+        if current is not None and answer_lines is not None:
+            current["answer"] = "\n".join(answer_lines).strip()
+        answer_lines = None
+
     for line in path.read_text(encoding="utf-8").splitlines():
-        if (head := BLOCKED_HEAD_RE.match(line)) is not None:
-            current = head["id"]
-            entries[current] = "open"
-        elif current and (status := STATUS_RE.match(line)) is not None:
-            entries[current] = status["status"].lower()
+        if H2_RE.match(line):
+            finish_answer()
+            current = None
+            if (head := BLOCKED_HEAD_RE.match(line)) is not None:
+                current = {"status": "open", "tag": "", "reason": "", "question": "", "answer": ""}
+                entries[head["id"]] = current  # a later entry for the same id replaces this one
+            continue
+        if current is None:
+            continue
+        if (field := BLOCKED_FIELD_RE.match(line)) is not None:
+            finish_answer()
+            key, value = field["key"].lower(), field["value"].strip()
+            if key == "status":
+                if (status := STATUS_RE.match(line)) is not None:
+                    current["status"] = status["status"].lower()
+            elif key == "answer":
+                answer_lines = [value]
+            elif key in BLOCKED_FIELDS:
+                current[key] = value
+        elif answer_lines is not None:
+            answer_lines.append(line)
+    finish_answer()
     return entries
+
+
+def parse_blocked(path: Path | None) -> dict[str, str]:
+    """Return {task id: status} for every entry in BLOCKED.md (the last entry per id wins)."""
+    return {task_id: e["status"] for task_id, e in parse_blocked_entries(path).items()}
 
 
 def load_config(path: Path | None) -> dict:

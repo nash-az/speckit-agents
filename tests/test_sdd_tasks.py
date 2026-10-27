@@ -48,6 +48,61 @@ class ParseTest(unittest.TestCase):
     def test_blocked(self):
         self.assertEqual(sdd.parse_blocked(BLOCKED), {"T006": "open", "T003": "resolved"})
 
+    def test_parse_command_output_unchanged(self):
+        out = subprocess.run([sys.executable, str(SCRIPT), "parse", str(TASKS), "--blocked", str(BLOCKED)],
+                             capture_output=True, text=True, check=True)
+        result = json.loads(out.stdout)
+        self.assertEqual(result["blocked"], {"T006": "open", "T003": "resolved"})
+        self.assertEqual(result["phases"], json.loads(json.dumps(self.parsed["phases"])))
+
+
+class BlockedEntriesTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.blocked = self.dir / "BLOCKED.md"
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def test_fixture_fields(self):
+        entries = sdd.parse_blocked_entries(BLOCKED)
+        self.assertEqual(entries["T006"], {"status": "open", "tag": "decision", "reason": "r",
+                                           "question": "q", "answer": ""})
+        self.assertEqual(entries["T003"], {"status": "resolved", "tag": "", "reason": "",
+                                           "question": "", "answer": "done"})
+
+    def test_last_entry_per_id_wins(self):
+        self.blocked.write_text(
+            "# Blocked tasks\n\n"
+            "## T008\n- status: Resolved\n- tag: manual\n- reason: old\n- question: old q\n- answer: yes\n\n"
+            "## T008\n- status: open\n- tag: failed\n- reason: new\n- question: new q\n- answer:\n",
+            encoding="utf-8")
+        entries = sdd.parse_blocked_entries(self.blocked)
+        self.assertEqual(entries["T008"], {"status": "open", "tag": "failed", "reason": "new",
+                                           "question": "new q", "answer": ""})
+        self.assertEqual(sdd.parse_blocked(self.blocked), {"T008": "open"})
+
+    def test_multi_line_answer(self):
+        self.blocked.write_text(
+            "## T008\n- status: resolved\n- tag: decision\n- question: Which one?\n- answer:\n"
+            "Use the second option.\n\n  Keep the old API as well.\n"
+            "- note: not part of the answer\n"
+            "## Notes\nnot part of any entry\n",
+            encoding="utf-8")
+        entry = sdd.parse_blocked_entries(self.blocked)["T008"]
+        self.assertEqual(entry["answer"], "Use the second option.\n\n  Keep the old API as well.")
+        self.assertEqual(entry["status"], "resolved")
+        self.assertEqual(entry["question"], "Which one?")
+
+    def test_status_defaults_to_open(self):
+        self.blocked.write_text("## T008\n- tag: manual\n", encoding="utf-8")
+        self.assertEqual(sdd.parse_blocked_entries(self.blocked)["T008"]["status"], "open")
+
+    def test_missing_file(self):
+        self.assertEqual(sdd.parse_blocked_entries(self.dir / "nope.md"), {})
+        self.assertEqual(sdd.parse_blocked_entries(None), {})
+        self.assertEqual(sdd.parse_blocked(self.dir / "nope.md"), {})
+
 
 class PlanTest(unittest.TestCase):
     def plan(self, **allow):
