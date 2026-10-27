@@ -79,11 +79,11 @@ Remind the user that permission prompts stop an unattended run, and that a headl
      "checks": [ ... ], "max_retries": <run.max_retries>, "allow": <allow table>,
      "commit_trailer": "<the attribution trailer your instructions give for commits, or empty>",
      "resume": <the checkpoint from step 1 when resuming, else null>,
-     "eventsDir": "<absolute .sdd/runs/<run id>> for the event feed",
      "taskAllow": { "<task id>": { "dependencies": true|false, "downloads": true|false }, ... } }
    ```
    `taskAllow` gives per-task permission overrides (for example a `[dep:ok]` task may add a dependency even when `[allow] dependencies = false`). Build it from the tasks' tags: a task tagged `[dep:ok]` gets `{ dependencies: true }`, one tagged `[download:ok]` gets `{ downloads: true }`.
    The Workflow result names the run's `Transcript dir`. Add it to `.sdd/run.json` as `workflow_dir` right away: if the run is cut off, the next `/sdd-run` reads its journal there and resumes instead of starting the tasks over.
+   At the same moment, record the directory in `.sdd/runs/<run id>/workflows.json`, `{"workflow_dirs": ["<absolute transcript dir>", …]}`, oldest first: create the file (and its directory) if it is missing, and when resuming, append the new directory to its list. `python3 <helper> events . <run id>` reads the run's events from these directories.
 5. Tell the user in one line that the run started, on which branch, and that `/workflows` shows progress. Then end your turn. The workflow notifies you when it finishes.
 
 ## 7. When the workflow finishes
@@ -101,7 +101,7 @@ Otherwise:
    - for `[decision]` held tasks, the options and trade-offs (or link to the research file);
    - for `[manual]` held tasks, the how-to steps (where, commands, what done looks like);
    - the skipped tasks with their reasons, the held tasks, the phase states, and `stopped` if it is set;
-   - the event feed at `.sdd/runs/<run id>/events.jsonl` for monitoring.
+   - the run's events: `python3 <helper> events . <run id>`.
 2. Commit the report as `chore(sdd): run report <run id>`, with the trailer.
 3. Remove `.sdd/run.json`.
 4. Send a push notification if the PushNotification tool is available: `sdd run <id>: <n> done, <m> blocked`.

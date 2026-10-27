@@ -3,9 +3,7 @@
 // phase(), args and budget as globals.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, promises as fsp } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
 
 const SOURCE = readFileSync(new URL('../workflows/sdd-run.js', import.meta.url), 'utf8')
   .replace('export const meta =', 'const meta =')
@@ -131,17 +129,13 @@ test('the commit holds the files of every attempt, not only the last', async () 
   assert.match(commit.prompt, /"files":\["a.py","pyproject.toml","test_a.py"\]/)
 })
 
-test('event feed writes task.started, implemented, approved, phase.started and run.finished', async () => {
-  const dir = await fsp.mkdtemp(join(tmpdir(), 'speckit-test-events-'))
-  const { out } = await run(['T1'], {}, undefined, a => ({ ...a, eventsDir: dir }))
-  const events = readFileSync(`${dir}/events.jsonl`, 'utf8').trim().split('\n').map(JSON.parse)
-  const kinds = events.map(e => e.kind)
-  assert.ok(kinds.includes('phase.started'))
-  assert.ok(kinds.includes('task.started'))
-  assert.ok(kinds.includes('task.implemented'))
-  assert.ok(kinds.includes('task.approved'))
-  assert.ok(kinds.includes('group.finished'))
-  assert.ok(kinds.includes('run.finished'))
+test('the workflow uses nothing the engine refuses: no import(), require(), clock or randomness', () => {
+  // Workflow scripts can't import(), have no file system, and Date.now() / Math.random() /
+  // argless new Date() throw (research.md D6).
+  const raw = readFileSync(new URL('../workflows/sdd-run.js', import.meta.url), 'utf8')
+  for (const banned of ['import(', 'require(', 'Date.now(', 'Math.random(', 'new Date()']) {
+    assert.ok(!raw.includes(banned), `workflows/sdd-run.js contains ${banned}`)
+  }
 })
 
 test('credit-aware pause skips starting a new agent when remaining budget is below RESERVE', async () => {

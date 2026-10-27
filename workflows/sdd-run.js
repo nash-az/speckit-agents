@@ -15,7 +15,6 @@ export const meta = {
 //   phase_deps: { "<phase id>": ["<phase id>", ...] },
 //   checks: ["<shell command>", ...], max_retries, allow, commit_trailer,
 //   resume,                                                // optional: `sdd-tasks.py checkpoint` of an interrupted run
-//   eventsDir,                                             // .sdd/runs/<run id> for the event feed
 //   taskAllow,                                             // { "<task id>": { dependencies, downloads } } per-task overrides
 // }
 // An agent that comes back null was cut off (usage limit, crash, stop), so its task is
@@ -28,25 +27,9 @@ if (!A?.plan) throw new Error('sdd-run needs the plan object as args; start it w
 const MAX_RETRIES = A.max_retries ?? 2
 const RESERVE = 150_000
 const RESUME = A.resume?.tasks ?? {}
-const EVENTS_DIR = A.eventsDir
 const TASK_ALLOW = A.taskAllow ?? {}
-
-const fs = await import('node:fs')
-const path = await import('node:path')
-
-// Event feed: one JSON line per observable step, written to .sdd/runs/<run id>/events.jsonl.
-// A monitor, phone notification or dashboard can follow this without reading agent transcripts.
-let eventsStream = null
-function event(kind, payload) {
-  const line = JSON.stringify({ ts: Date.now(), kind, ...payload }) + '\n'
-  if (EVENTS_DIR) {
-    try {
-      fs.mkdirSync(EVENTS_DIR, { recursive: true })
-      fs.appendFileSync(path.join(EVENTS_DIR, 'events.jsonl'), line)
-    } catch { /* best effort; the run must not fail because monitoring is unavailable */ }
-  }
-}
-function closeEvents() {}
+// No event feed here: workflow scripts have no file system and no clock. The run's events are
+// derived from the engine's journal by `sdd-tasks.py events` (data-model.md §3.9).
 
 const IMPLEMENT_SCHEMA = {
   type: 'object',
@@ -152,7 +135,6 @@ async function verify(task, result) {
 
 // One task: implement → verify, retried with feedback. Resolves to an outcome.
 async function runTask(task) {
-  event('task.started', { id: task.id, tags: task.tags, files: task.files, deps: task.deps })
   let feedback = null
   let lastFiles = []
   // Every file any attempt touched: a later attempt reports only what it changed itself, and
@@ -166,7 +148,6 @@ async function runTask(task) {
   let continuing = false
   if (cp?.impl) {
     if (cp.verdict?.verdict === 'approve') {
-      event('task.resumed', { id: task.id, step: 'commit', from: 'approved' })
       return { id: task.id, outcome: 'approved', summary: cp.impl.summary, files: touched([...(cp.files ?? []), ...(cp.impl.files_changed ?? [])]), resumed: true }
     }
     touched(cp.files)
@@ -175,7 +156,6 @@ async function runTask(task) {
   } else if (cp?.interrupted === 'implement') {
     start = cp.attempt
     continuing = true
-    event('task.resumed', { id: task.id, step: 'implement', from: 'interrupted' })
   }
   for (let attempt = start; attempt <= MAX_RETRIES; attempt++) {
     if (!budgetOK()) return { id: task.id, outcome: 'skipped', reason: 'token budget reached before starting' }
@@ -184,30 +164,23 @@ async function runTask(task) {
     carried = null
     continuing = false
     if (!result) {
-      event('task.interrupted', { id: task.id, step: 'implement', attempt })
       return { id: task.id, outcome: 'interrupted', step: 'implement', attempt }
     }
-    event('task.implemented', { id: task.id, attempt, summary: result.summary, files: result.files_changed })
     if (result.status === 'blocked') {
       const b = result.blocker ?? { tag: 'decision', reason: result.summary, question: 'See the reason.' }
-      event('task.blocked', { id: task.id, tag: b.tag, reason: b.reason })
       return { id: task.id, outcome: 'blocked', tag: b.tag, reason: b.reason, question: b.question, files: touched(result.files_changed) }
     }
     lastFiles = touched(result.files_changed)
     if (!budgetOK()) return { id: task.id, outcome: 'skipped', reason: 'token budget reached before verify' }
     const verdict = await verify(task, result)
     if (!verdict) {
-      event('task.interrupted', { id: task.id, step: 'verify', attempt })
       return { id: task.id, outcome: 'interrupted', step: 'verify', attempt }
     }
-    event('task.verified', { id: task.id, verdict: verdict.verdict, problems: verdict.problems })
     if (verdict.verdict === 'approve') {
-      event('task.approved', { id: task.id, files: lastFiles })
       return { id: task.id, outcome: 'approved', summary: result.summary, files: lastFiles }
     }
     feedback = verdict.problems
   }
-  event('task.failed', { id: task.id, reason: (feedback ?? []).join('; ') })
   return {
     id: task.id, outcome: 'blocked', tag: 'failed',
     reason: `rejected ${MAX_RETRIES + 1} times: ${(feedback ?? []).join('; ')}`.slice(0, 1500),
@@ -261,12 +234,10 @@ for (const phaseInfo of A.plan.phases) {
   const unmet = (A.phase_deps[phaseInfo.id] ?? []).filter(dep => phaseState[dep] && phaseState[dep] !== 'complete')
   if (unmet.length) {
     phaseState[phaseInfo.id] = 'skipped'
-    event('phase.skipped', { id: phaseInfo.id, title: phaseInfo.title, reason: `depends on ${unmet.join(', ')}` })
     for (const id of Object.keys(phaseInfo.tasks)) results[id] = { id, outcome: 'skipped', reason: `phase ${unmet.join(', ')} is not complete` }
     log(`Phase ${phaseInfo.id} skipped: depends on ${unmet.join(', ')}`)
     continue
   }
-  event('phase.started', { id: phaseInfo.id, title: phaseInfo.title, taskCount: Object.keys(phaseInfo.tasks).length })
   log(`Phase ${phaseInfo.id}: ${phaseInfo.title} (${Object.keys(phaseInfo.tasks).length} tasks)`)
   let tainted = false
   // Convergence phases (from /speckit-converge) hold independent gap fixes, so a task that did not
@@ -292,7 +263,6 @@ for (const phaseInfo of A.plan.phases) {
     // Tasks in a group touch different files, so they build at the same time.
     const outcomes = (await parallel(group.map(id => () => runTask(phaseInfo.tasks[id]))))
       .map((o, i) => o ?? { id: group[i], outcome: 'failed', reason: 'task run crashed', question: 'Re-run the task.' })
-    event('group.finished', { phase: phaseInfo.id, group, outcomes: outcomes.map(o => ({ id: o.id, outcome: o.outcome })) })
     // Cut off (usage limit, crash, stop): commit nothing and record nothing. The work stays in the
     // tree and in the journal, and the next run resumes it.
     const cut = outcomes.filter(o => o.outcome === 'interrupted')
@@ -353,8 +323,6 @@ for (const phaseInfo of A.plan.phases) {
 phase('Report')
 const all = Object.values(results)
 const by = kind => all.filter(o => o.outcome === kind).map(o => o.id)
-closeEvents()
-event('run.finished', { run_id: A.run_id, stopped, approved: by('approved').length, blocked: by('blocked').length, skipped: by('skipped').length })
 return {
   run_id: A.run_id,
   stopped: stopped,
