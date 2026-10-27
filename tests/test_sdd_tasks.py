@@ -299,6 +299,41 @@ class HeldDependencyTest(unittest.TestCase):
         self.assertEqual(runnable, {"T004"})
 
 
+class ConvergeAgainTest(unittest.TestCase):
+    """FR-010, research.md "Converge blocked by held tasks": a Convergence phase with only held tasks
+    plans as `runnable: 0`, with its tasks under `held`.
+
+    skills/sdd-run/SKILL.md step 2.1 reads this to decide to converge again: "Open tasks that are only
+    held (tagged for a person, or `wontfix` in BLOCKED.md) don't count: they may stay open for a long
+    time, and the spec may have changed since that phase was written, so converge again."
+    """
+
+    def test_held_only_convergence_phase_has_nothing_runnable(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        tasks = tmp / "tasks.md"
+        blocked = tmp / "BLOCKED.md"
+        tasks.write_text(
+            "## Phase 1: Setup\n\n- [x] T001 Set up in `a.py`\n\n"
+            "## Phase 8: Convergence\n\n- [x] T080 First converge in `b.py`\n\n"
+            "## Phase 9: Convergence\n\n"
+            "- [ ] T090 [manual] Record the audio in `c.wav`\n"
+            "- [ ] T091 Dropped work in `d.py`\n"
+            "- [x] T092 Done work in `e.py`\n",
+            encoding="utf-8")
+        blocked.write_text(
+            "# Blocked tasks\n\n## T091\n- status: wontfix\n- tag: decision\n- reason: r\n"
+            "- question: q\n- answer: not needed\n",
+            encoding="utf-8")
+        out = subprocess.run([sys.executable, str(SCRIPT), "plan", str(tasks), "--blocked", str(blocked),
+                              "--phases", "9"], capture_output=True, text=True, check=True)
+        result = json.loads(out.stdout)
+        self.assertEqual(result["runnable"], 0)
+        held = {h["id"]: h["tag"] for h in result["held"]}
+        self.assertEqual(held, {"T090": "manual", "T091": "wontfix"})
+        self.assertEqual([tid for p in result["phases"] for g in p["groups"] for tid in g], [])
+
+
 class WriteTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
