@@ -316,6 +316,54 @@ class WriteTest(unittest.TestCase):
         self.assertIn("phases", json.loads(out.stdout))
 
 
+class SnapshotTest(unittest.TestCase):
+    """data-model §3.6: only edits to text, tags, files, deps or story count as changes."""
+
+    BASE = ("## Phase 1: Setup\n\n"
+            "- [ ] T001 [P] Add the parser in `a.py`\n"
+            "- [ ] T002 Wire it per T001 in `b.py`\n")
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.tasks = self.dir / "tasks.md"
+        self.tasks.write_text(self.BASE, encoding="utf-8")
+        self.old = sdd.snapshot(sdd.parse_tasks(self.tasks))
+
+    def changed_after(self, text):
+        self.tasks.write_text(text, encoding="utf-8")
+        return sdd.changed(sdd.parse_tasks(self.tasks), self.old)
+
+    def test_snapshot_fields(self):
+        self.assertEqual(self.old["T002"], {"text": "Wire it per T001 in `b.py`", "tags": [],
+                                            "files": ["b.py"], "deps": ["T001"], "story": None})
+
+    def test_edited_description_is_listed(self):
+        self.assertEqual(self.changed_after(self.BASE.replace("Add the parser", "Add the lexer")), ["T001"])
+
+    def test_ticked_checkbox_is_not_listed(self):
+        self.assertEqual(self.changed_after(self.BASE.replace("- [ ] T001", "- [x] T001")), [])
+
+    def test_moved_task_is_not_listed(self):
+        self.assertEqual(self.changed_after("## Phase 1: Setup\n\nSome intro.\n\n"
+                                            "- [ ] T002 Wire it per T001 in `b.py`\n"
+                                            "- [ ] T001 [P] Add the parser in `a.py`\n"), [])
+
+    def test_cli_snapshot_and_changed(self):
+        out = subprocess.run([sys.executable, str(SCRIPT), "snapshot", str(self.tasks)],
+                             capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(out.stdout), self.old)
+        run_json = self.dir / "run.json"
+        run_json.write_text(json.dumps({"task_snapshot": self.old}), encoding="utf-8")
+        self.tasks.write_text(self.BASE.replace("`b.py`", "`c.py`"), encoding="utf-8")
+        cmd = [sys.executable, str(SCRIPT), "changed", str(self.tasks), "--run-json", str(run_json)]
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(out.stdout), {"changed": ["T002"]})
+        run_json.write_text(json.dumps({"run_id": "x"}), encoding="utf-8")
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(out.stdout), {"changed": []})
+
+
 class CheckpointTest(unittest.TestCase):
     def setUp(self):
         self.cp = sdd.checkpoint(HERE / "fixtures" / "journal.jsonl")

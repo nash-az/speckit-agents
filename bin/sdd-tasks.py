@@ -8,6 +8,8 @@
   sdd-tasks.py block  <BLOCKED.md> --id T057 --tag manual --reason "..." --question "..."
   sdd-tasks.py config [--config .sdd/config.toml]
   sdd-tasks.py checkpoint <journal.jsonl>
+  sdd-tasks.py snapshot <tasks.md>
+  sdd-tasks.py changed  <tasks.md> --run-json .sdd/run.json
 
 Every command prints JSON on stdout. Only the standard library is used.
 """
@@ -411,6 +413,20 @@ def block(path: Path, task_id: str, tag: str, reason: str, question: str) -> dic
     return {"appended": True, "id": task_id}
 
 
+# Resume safety (data-model §3.6): the task fields whose edit makes a finished step stale.
+SNAPSHOT_FIELDS = ("text", "tags", "files", "deps", "story")
+
+
+def snapshot(parsed: dict) -> dict[str, dict]:
+    return {t["id"]: {f: t[f] for f in SNAPSHOT_FIELDS} for p in parsed["phases"] for t in p["tasks"]}
+
+
+def changed(parsed: dict, old: dict[str, dict]) -> list[str]:
+    """Ids present in both whose snapshot fields differ. Checkbox (`done`) and `line` are ignored."""
+    new = snapshot(parsed)
+    return sorted(i for i in old if i in new and old[i] != new[i])
+
+
 LABEL_RE = re.compile(r"^(?P<kind>impl|eval|verify|commit|repair):(?P<ids>[^#\s]+)(?:#(?P<n>\d+))?$")
 
 
@@ -498,6 +514,13 @@ def main(argv: list[str]) -> int:
     p_checkpoint = sub.add_parser("checkpoint")
     p_checkpoint.add_argument("journal", type=Path)
 
+    p_snapshot = sub.add_parser("snapshot")
+    p_snapshot.add_argument("tasks", type=Path)
+
+    p_changed = sub.add_parser("changed")
+    p_changed.add_argument("tasks", type=Path)
+    p_changed.add_argument("--run-json", type=Path, required=True)
+
     args = parser.parse_args(argv)
     if args.cmd == "parse":
         result = parse_tasks(args.tasks)
@@ -512,6 +535,11 @@ def main(argv: list[str]) -> int:
         result = block(args.blocked, args.id, args.tag, args.reason, args.question)
     elif args.cmd == "checkpoint":
         result = checkpoint(args.journal)
+    elif args.cmd == "snapshot":
+        result = snapshot(parse_tasks(args.tasks))
+    elif args.cmd == "changed":
+        run = json.loads(args.run_json.read_text(encoding="utf-8"))
+        result = {"changed": changed(parse_tasks(args.tasks), run.get("task_snapshot") or {})}
     else:
         result = load_config(args.config)
     json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
