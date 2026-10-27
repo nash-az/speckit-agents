@@ -478,6 +478,8 @@ def build_html():
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>speckit-agents Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Document rendering (data-model.md §4.3): pinned browser builds from jsDelivr -->
+<link href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github-dark.min.css" rel="stylesheet">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -596,6 +598,16 @@ def build_html():
   .markdown table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; }
   .markdown th, .markdown td { border: 1px solid var(--border); padding: 0.5rem; text-align: left; font-size: 0.875rem; }
   .markdown th { background: var(--surface); color: var(--text-muted); }
+  .markdown pre code.hljs { padding: 0; background: transparent; }
+  .markdown a { color: var(--accent); }
+  .doc-toc { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.875rem; }
+  .doc-toc-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; margin-bottom: 0.375rem; }
+  .doc-toc ul { list-style: none; margin: 0; }
+  .doc-toc li { margin: 0.125rem 0; }
+  .doc-toc li.toc-h3 { padding-left: 1rem; }
+  .doc-notice { font-size: 0.8125rem; color: var(--warning); margin-bottom: 0.5rem; }
+  .doc-plain { white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; font-size: 0.875rem; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; }
+  .raw-doc { margin-top: 0.75rem; }
 
   /* Task board */
   .task-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; cursor: pointer; transition: all 0.15s; }
@@ -695,9 +707,15 @@ def build_html():
       <div class="nav-item active" data-section="overview"><span class="icon">📊</span>Overview</div>
       <div class="nav-item" data-section="spec"><span class="icon">📄</span>Spec</div>
       <div class="nav-item" data-section="plan"><span class="icon">🗺️</span>Plan</div>
+      <div class="nav-item" data-section="research"><span class="icon">🔎</span>Research</div>
+      <div class="nav-item" data-section="data-model"><span class="icon">🧩</span>Data model</div>
+      <div class="nav-item" data-section="quickstart"><span class="icon">🚀</span>Quickstart</div>
       <div class="nav-item" data-section="tasks"><span class="icon">✅</span>Tasks</div>
       <div class="nav-item" data-section="blocked"><span class="icon">🚫</span>Blocked</div>
       <div class="nav-item" data-section="decisions"><span class="icon">⚖️</span>Decisions</div>
+      <div class="nav-item" data-section="constitution"><span class="icon">📜</span>Constitution</div>
+      <div class="nav-item" data-section="learnings"><span class="icon">💡</span>Learnings</div>
+      <div class="nav-item" data-section="config"><span class="icon">⚙️</span>Config</div>
       <div class="nav-item" data-section="runs"><span class="icon">🔄</span>Runs</div>
       <div class="nav-item" data-section="status"><span class="icon">⚡</span>Status</div>
     </div>
@@ -755,25 +773,24 @@ def build_html():
           <div style="display: grid; gap: 0.5rem;">
             <a href="#" data-file="spec" class="btn">View spec.md</a>
             <a href="#" data-file="plan" class="btn">View plan.md</a>
+            <a href="#" data-file="research" class="btn">View research.md</a>
+            <a href="#" data-file="data-model" class="btn">View data-model.md</a>
+            <a href="#" data-file="quickstart" class="btn">View quickstart.md</a>
             <a href="#" data-file="tasks" class="btn">View tasks.md</a>
             <a href="#" data-file="blocked" class="btn">View BLOCKED.md</a>
             <a href="#" data-file="decisions" class="btn">View decisions.md</a>
+            <a href="#" data-file="constitution" class="btn">View constitution.md</a>
+            <a href="#" data-file="learnings" class="btn">View .sdd/learnings.md</a>
             <a href="#" data-file="config" class="btn">View .sdd/config.toml</a>
           </div>
         </div>
       </section>
 
-      <!-- Spec / Plan viewer (shared) -->
-      <section id="section-spec" class="section" style="display:none;">
+      <!-- Document viewer, shared by every /api/doc name except tasks and blocked -->
+      <section id="section-doc" class="section" style="display:none;">
         <div class="card">
-          <div class="card-title">Feature Specification</div>
-          <div id="spec-content" class="markdown"></div>
-        </div>
-      </section>
-      <section id="section-plan" class="section" style="display:none;">
-        <div class="card">
-          <div class="card-title">Implementation Plan</div>
-          <div id="plan-content" class="markdown"></div>
+          <div class="card-title" id="doc-title">Document</div>
+          <div id="doc-content" class="markdown"></div>
         </div>
       </section>
 
@@ -787,18 +804,20 @@ def build_html():
           <div class="card-title">Tasks by Phase</div>
           <div id="tasks-list"></div>
         </div>
+        <div class="card">
+          <div class="card-title">Raw document <button class="btn" data-raw="tasks">Show tasks.md</button></div>
+          <div id="raw-tasks" class="markdown raw-doc" style="display:none;"></div>
+        </div>
       </section>
 
       <!-- Blocked -->
       <section id="section-blocked" class="section" style="display:none;">
         <div class="card-title">BLOCKED.md entries</div>
         <div id="blocked-list"></div>
-      </section>
-
-      <!-- Decisions -->
-      <section id="section-decisions" class="section" style="display:none;">
-        <div class="card-title">Decisions Register</div>
-        <div id="decisions-content" class="markdown"></div>
+        <div class="card">
+          <div class="card-title">Raw document <button class="btn" data-raw="blocked">Show BLOCKED.md</button></div>
+          <div id="raw-blocked" class="markdown raw-doc" style="display:none;"></div>
+        </div>
       </section>
 
       <!-- Runs -->
@@ -808,6 +827,10 @@ def build_html():
         <div class="card" style="margin-top:1rem;">
           <div class="card-title">Event Feed</div>
           <div id="events-view" class="events-list"></div>
+        </div>
+        <div class="card" id="report-card" style="margin-top:1rem;display:none;">
+          <div class="card-title"><span>Run report <span class="mono" id="report-run"></span></span></div>
+          <div id="report-view" class="markdown"></div>
         </div>
       </section>
 
@@ -824,6 +847,11 @@ def build_html():
 
 <div class="toast-container" id="toasts"></div>
 
+<!-- Document rendering (data-model.md §4.3). Exact pinned URLs; if any fails to load (offline), docLibs()
+     returns null and documents fall back to the plain <pre> view with a one-line notice. -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <script>
   (function() {
     var currentProject = null;
@@ -980,6 +1008,111 @@ def build_html():
         '<div class="blocked-tags">' + tagsHtml(e.tag ? [e.tag] : []) + '</div></div>';
     }
 
+    // Documents (data-model.md §4.3): every /api/doc name. tasks and blocked keep their structured views
+    // and show the document only under a "Raw document" toggle; the others open in the shared doc view.
+    var DOC_TITLES = {
+      spec: 'Spec', plan: 'Plan', research: 'Research', 'data-model': 'Data model', quickstart: 'Quickstart',
+      decisions: 'Decisions', constitution: 'Constitution', learnings: 'Learnings', config: 'Config',
+      tasks: 'tasks.md', blocked: 'BLOCKED.md'
+    };
+    var RAW_DOCS = { tasks: true, blocked: true };
+    var DOC_NOTICE = 'The document renderer did not load (offline?), so this is the plain text.';
+
+    // marked, DOMPurify and highlight.js, or null when any of them failed to load.
+    function docLibs() {
+      var g = typeof window !== 'undefined' ? window : {};
+      return g.marked && g.DOMPurify && g.hljs ? { marked: g.marked, DOMPurify: g.DOMPurify, hljs: g.hljs } : null;
+    }
+
+    function slugify(text) {
+      return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    }
+
+    // Table of contents for h2/h3 headings ([{level: 'h2', text}]): null below 4 headings, else
+    // {ids, html} with one unique id per heading (prefixed so it cannot clash with the page's own ids).
+    function tocFor(headings, prefix) {
+      if (headings.length < 4) return null;
+      var seen = {};
+      var ids = headings.map(function(h) {
+        var base = prefix + '-' + (slugify(h.text) || 'section'), id = base, n = 2;
+        while (seen[id]) id = base + '-' + (n++);
+        seen[id] = true;
+        return id;
+      });
+      var items = headings.map(function(h, i) {
+        return '<li class="toc-' + escapeHtml(h.level) + '"><a href="#' + escapeHtml(ids[i]) + '">' + escapeHtml(h.text) + '</a></li>';
+      }).join('');
+      return { ids: ids, html: '<nav class="doc-toc"><div class="doc-toc-title">Contents</div><ul>' + items + '</ul></nav>' };
+    }
+
+    // The old plain view, used when a library is missing; the notice is one line above it.
+    function fallbackHtml(text, notice) {
+      return (notice ? '<div class="doc-notice">' + escapeHtml(notice) + '</div>' : '') +
+        '<pre class="doc-plain">' + escapeHtml(text) + '</pre>';
+    }
+
+    function docMessageHtml(msg) {
+      return '<div class="empty"><div>' + escapeHtml(msg) + '</div></div>';
+    }
+
+    // Render text into el: sanitized markdown (agents write these files, so never unsanitized HTML),
+    // highlighted code blocks and a table of contents. kind 'text' (config) is one highlighted code block.
+    function renderDoc(el, text, kind, libs) {
+      if (libs === undefined) libs = docLibs();
+      if (!libs) { el.innerHTML = fallbackHtml(text, DOC_NOTICE); return; }
+      try {
+        if (kind === 'text') {
+          el.innerHTML = '<pre><code class="language-ini">' + escapeHtml(text) + '</code></pre>';
+        } else {
+          el.innerHTML = libs.DOMPurify.sanitize(libs.marked.parse(text));
+        }
+        el.querySelectorAll('pre code').forEach(function(code) { libs.hljs.highlightElement(code); });
+        var hs = Array.prototype.slice.call(el.querySelectorAll('h2, h3'));
+        var toc = tocFor(hs.map(function(h) { return { level: h.tagName.toLowerCase(), text: h.textContent }; }), el.id || 'doc');
+        if (toc) {
+          hs.forEach(function(h, i) { h.id = toc.ids[i]; });
+          el.insertAdjacentHTML('afterbegin', toc.html);
+        }
+      } catch (e) {
+        console.error('renderDoc error', e);
+        el.innerHTML = fallbackHtml(text, DOC_NOTICE);
+      }
+    }
+
+    // GET a document: {text} on success, the JSON body plus its status otherwise
+    // ({"missing": true} for a file not written yet, 409 for no active feature, 404 for no such thing).
+    function fetchDoc(url) {
+      return fetch(url).then(function(res) {
+        var type = res.headers.get('Content-Type') || '';
+        if (type.indexOf('application/json') === 0) {
+          return res.json().then(function(d) { d = d || {}; d.status = res.status; return d; });
+        }
+        if (!res.ok) return { error: 'HTTP ' + res.status, status: res.status };
+        return res.text().then(function(text) { return { text: text }; });
+      }).catch(function(e) { return { error: String(e) }; });
+    }
+
+    // Show the document at url in el; a slower earlier request never overwrites a newer one.
+    function showDoc(el, url, kind) {
+      el.setAttribute('data-want', url);
+      return fetchDoc(url).then(function(d) {
+        if (el.getAttribute('data-want') !== url) return;
+        if (d.missing) el.innerHTML = docMessageHtml('Not written yet');
+        else if (d.text != null) renderDoc(el, d.text, kind);
+        else if (d.status === 409) el.innerHTML = docMessageHtml('Choose a feature first.');
+        else if (d.status === 404) el.innerHTML = docMessageHtml('Not found.');
+        else el.innerHTML = docMessageHtml('Could not load: ' + (d.error || 'unknown error'));
+      });
+    }
+
+    function docUrl(name) {
+      return '/api/doc?name=' + encodeURIComponent(name);
+    }
+
+    function docKind(name) {
+      return name === 'config' ? 'text' : 'markdown';
+    }
+
     function loadProjects() {
       fetchJSON('/api/projects', 'GET').then(function(projects) {
         projects = projects || [];
@@ -1017,19 +1150,35 @@ def build_html():
         var target = document.querySelector('.nav-item[data-section="' + name + '"]');
         if (target) target.classList.add('active');
         document.querySelectorAll('section').forEach(function(el) { el.style.display = 'none'; });
-        var sec = document.getElementById('section-' + name);
+        var isDoc = DOC_TITLES[name] && !RAW_DOCS[name];
+        var sec = document.getElementById(isDoc ? 'section-doc' : 'section-' + name);
         if (sec) sec.style.display = 'block';
-        document.getElementById('page-title').textContent = name.charAt(0).toUpperCase() + name.slice(1);
+        document.getElementById('page-title').textContent = isDoc ? DOC_TITLES[name] : name.charAt(0).toUpperCase() + name.slice(1);
         selectedSection = name;
         if (name === 'overview') loadOverview();
         if (name === 'tasks') loadTasks();
         if (name === 'blocked') loadBlocked();
         if (name === 'runs') loadRuns();
         if (name === 'status') loadStatus();
-        if (name === 'spec') loadFile('spec');
-        if (name === 'plan') loadFile('plan');
-        if (name === 'decisions') loadFile('decisions');
+        if (isDoc) loadDoc(name);
       } catch(e) { console.error('showSection error', e); }
+    }
+
+    function loadDoc(name) {
+      document.getElementById('doc-title').textContent = DOC_TITLES[name];
+      var el = document.getElementById('doc-content');
+      if (el.getAttribute('data-want') !== docUrl(name)) el.innerHTML = '';
+      showDoc(el, docUrl(name), docKind(name));
+    }
+
+    // "Raw document" toggle under the Tasks and Blocked views.
+    function setRawDoc(name, open) {
+      var el = document.getElementById('raw-' + name);
+      var btn = document.querySelector('button[data-raw="' + name + '"]');
+      if (!el) return;
+      el.style.display = open ? 'block' : 'none';
+      if (btn) btn.textContent = (open ? 'Hide ' : 'Show ') + DOC_TITLES[name];
+      if (open) showDoc(el, docUrl(name), 'markdown');
     }
 
     function loadOverview() {
@@ -1083,23 +1232,10 @@ def build_html():
       }).catch(function(e) { console.error('loadBlocked error', e); });
     }
 
-    function loadFile(kind) {
-      fetch('/api/project/' + kind).then(function(res) {
-        if (!res.ok) return;
-        if (kind === 'tasks') return res.json().then(function(d) { return d.text || ''; });
-        return res.text();
-      }).then(function(text) {
-        if (text == null) return;
-        var contentEl = document.getElementById(kind + '-content');
-        if (contentEl) contentEl.innerHTML = '<pre style="white-space:pre-wrap;font-family:JetBrains Mono,monospace;font-size:0.875rem;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem;">' + escapeHtml(text) + '</pre>';
-      }).catch(function(e) { console.error('loadFile error', kind, e); });
-    }
-
     function viewFile(kind) {
-      var map = { spec: 'spec', plan: 'plan', tasks: 'tasks', blocked: 'blocked', decisions: 'decisions', config: 'spec' };
-      var section = map[kind];
-      showSection(section);
-      loadFile(kind);
+      if (!DOC_TITLES[kind]) return;
+      showSection(kind);
+      if (RAW_DOCS[kind]) setRawDoc(kind, true);
     }
 
     function loadRuns() {
@@ -1160,16 +1296,13 @@ def build_html():
       }).catch(function(e) { console.error('loadEvents error', e); });
     }
 
+    // Run reports render like every other document (data-model.md §4.3).
     function viewReport(runId) {
-      fetch('/api/runs/' + encodeURIComponent(runId) + '/report').then(function(res) {
-        if (!res.ok) {
-          document.getElementById('events-view').innerHTML = '<div style="padding:1rem;color:var(--danger);">Report not found.</div>';
-          return;
-        }
-        return res.text();
-      }).then(function(text) {
-        document.getElementById('events-view').innerHTML = '<div style="padding:1rem;white-space:pre-wrap;font-family:JetBrains Mono,monospace;font-size:0.875rem;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:6px;">' + escapeHtml(text) + '</div>';
-      }).catch(function(e) { console.error('viewReport error', e); });
+      document.getElementById('report-card').style.display = 'block';
+      document.getElementById('report-run').textContent = '#' + runId;
+      var el = document.getElementById('report-view');
+      el.innerHTML = '';
+      showDoc(el, '/api/runs/' + encodeURIComponent(runId) + '/report', 'markdown');
     }
 
     function loadStatus() {
@@ -1228,6 +1361,14 @@ def build_html():
           ev.preventDefault();
           var kind = link.getAttribute('data-file');
           viewFile(kind);
+        });
+      });
+
+      document.querySelectorAll('button[data-raw]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var name = btn.getAttribute('data-raw');
+          var el = document.getElementById('raw-' + name);
+          setRawDoc(name, !el || el.style.display === 'none');
         });
       });
 

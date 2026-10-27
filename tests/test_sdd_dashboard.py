@@ -608,6 +608,76 @@ class TasksViewTest(unittest.TestCase):
         self.assertIn("Waiting on you", self.html)
 
 
+class DocumentsViewTest(unittest.TestCase):
+    """T019 (FR-001, data-model.md §4.3): pinned renderer URLs, sanitized markdown, TOC, offline fallback."""
+
+    setUpClass = classmethod(StatusSystemTest.setUpClass.__func__)
+    run_js = StatusSystemTest.run_js
+
+    URLS = ('<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>',
+            '<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>',
+            '<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>',
+            '<link href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github-dark.min.css" rel="stylesheet">')
+
+    def test_pinned_urls(self):
+        for tag in self.URLS:
+            self.assertIn(tag, self.html)
+        self.assertNotIn("npm/highlight.js", self.html)
+
+    def test_nav_entry_per_doc_name(self):
+        got = self.run_js("DOC_TITLES")
+        self.assertEqual(set(got), set(dash.DOC_NAMES))
+        for name in dash.DOC_NAMES:
+            if name in ("tasks", "blocked"):
+                self.assertIn('data-raw="%s"' % name, self.html)
+            else:
+                self.assertIn('class="nav-item" data-section="%s"' % name, self.html)
+        self.assertIn("Raw document", self.html)
+        self.assertIn("'Not written yet'", self.html)
+
+    def test_toc_needs_four_headings(self):
+        got = self.run_js("[tocFor([{level: 'h2', text: 'A'}, {level: 'h2', text: 'B'}, {level: 'h3', text: 'C'}], 'doc'),"
+                          " tocFor([{level: 'h2', text: 'One thing'}, {level: 'h3', text: 'One thing'},"
+                          " {level: 'h2', text: '<b>x</b>'}, {level: 'h3', text: '§4.3 Docs'}], 'doc-content')]")
+        none, toc = got
+        self.assertIsNone(none)
+        self.assertEqual(toc["ids"], ["doc-content-one-thing", "doc-content-one-thing-2",
+                                      "doc-content-b-x-b", "doc-content-4-3-docs"])
+        self.assertIn('<li class="toc-h3"><a href="#doc-content-one-thing-2">One thing</a></li>', toc["html"])
+        self.assertIn("&lt;b&gt;x&lt;/b&gt;", toc["html"])
+
+    def test_fallback_without_libraries(self):
+        got = self.run_js("(function() { var el = {innerHTML: ''}; renderDoc(el, '# T <script>', 'markdown');"
+                          " return [docLibs(), el.innerHTML, fallbackHtml('x', DOC_NOTICE)]; })()")
+        libs, html, plain = got
+        self.assertIsNone(libs)
+        self.assertIn('<div class="doc-notice">', html)
+        self.assertIn('<pre class="doc-plain"># T &lt;script&gt;</pre>', html)
+        self.assertEqual(html.count("<div"), 1)  # one notice line, then the old <pre> view
+
+    def test_markdown_is_sanitized_then_highlighted(self):
+        got = self.run_js(
+            "(function() { var calls = [], codes = [{c: 1}, {c: 2}];"
+            " var libs = {marked: {parse: function(t) { calls.push('parse'); return '<p>' + t + '</p>'; }},"
+            " DOMPurify: {sanitize: function(h) { calls.push('sanitize'); return 'CLEAN' + h; }},"
+            " hljs: {highlightElement: function(c) { calls.push('hl' + c.c); }}};"
+            " var el = {id: 'doc-content', innerHTML: '', querySelectorAll: function(s) { return s === 'pre code' ? codes : []; }};"
+            " renderDoc(el, 'hi', 'markdown', libs); var md = el.innerHTML;"
+            " renderDoc(el, 'a = <1>', 'text', libs);"
+            " return {calls: calls, md: md, text: el.innerHTML}; })()")
+        self.assertEqual(got["calls"], ["parse", "sanitize", "hl1", "hl2", "hl1", "hl2"])
+        self.assertEqual(got["md"], "CLEAN<p>hi</p>")
+        self.assertEqual(got["text"], '<pre><code class="language-ini">a = &lt;1&gt;</code></pre>')
+
+    def test_doc_helpers(self):
+        got = self.run_js("[docUrl('data-model'), docKind('config'), docKind('spec')]")
+        self.assertEqual(got, ["/api/doc?name=data-model", "text", "markdown"])
+
+    def test_reports_render_as_documents(self):
+        self.assertIn("showDoc(el, '/api/runs/' + encodeURIComponent(runId) + '/report', 'markdown')", self.html)
+        self.assertNotIn("function loadFile(", self.html)
+
+
 class ReadOnlyTest(unittest.TestCase):
     """data-model.md §4.8 (FR-020): the dashboard's source has no way to write or run anything."""
 
