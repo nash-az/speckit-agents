@@ -54,10 +54,12 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
     starts the API server and the UI on separate ports; one project per dashboard; the plugin stores nothing. Not in 003 yet.
   - **Phase 4 (T021–T027) is implemented** (run `20261027-2024`, 7 task commits, all approved first time on Opus 5.5, no
     blocks, 184 Python tests pass; usage peaked at 30%). T026 was built from its original wording, not the redesigned Runs view.
-    Phase 5 started right after (user go-ahead).
+    **Phase 5 (T028–T031) is implemented** (run `20261027-2149`, 4 task commits, no blocks; Python tests pass).
   - **Run launch that pauses at the usage limit and does not resume at the refresh:**
     `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5-5 python3 bin/sdd-supervise.py --project <repo> --run-args "--no-converge --phases N" --max-wait-hours 0 --max-cycles 1`
-    (run in the background with output to a file; a Monitor on it for `supervise:` lines). The tree must be clean first.
+    (run in the background with output to a file). The tree must be clean first, so commit doc edits before launching and make none during the run.
+    Watch it with a Monitor that polls `pgrep -f "sdd-supervise.py.*--phases N"` and exits when the process is gone; never `tail -f`,
+    which keeps the watch armed until its timeout (see memory `feedback-monitor-must-end`).
   - **Was paused before Phase 4 (user):** design research for the finished dashboard is done and awaiting review:
     `logs/2026-10-27-dashboard-design.html` (also https://claude.ai/artifact/26f22opZPWvBp1wP7gJmiJ). Proposal: Home
     (waiting on you / last run / features), Features (docs + traceability), Runs (task → attempts → log), chat drawer;
