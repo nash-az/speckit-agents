@@ -112,7 +112,23 @@ class PlanTest(unittest.TestCase):
 
     def test_holds(self):
         held = {h["id"]: h["tag"] for h in self.plan()["held"]}
-        self.assertEqual(held, {"T003": "resolved", "T006": "blocked", "T008": "manual", "T010": "dep"})
+        self.assertEqual(held, {"T006": "blocked", "T008": "manual", "T010": "dep"})
+
+    def test_resolved_is_runnable(self):
+        config = sdd.load_config(None)
+        result = sdd.plan(sdd.parse_tasks(TASKS), {"T003": "resolved"}, config, None, None)
+        self.assertNotIn("T003", {h["id"] for h in result["held"]})
+        self.assertIn("T003", {tid for p in result["phases"] for g in p["groups"] for tid in g})
+
+    def test_moved_is_held(self):
+        config = sdd.load_config(None)
+        result = sdd.plan(sdd.parse_tasks(TASKS), {"T003": "moved"}, config, None, None)
+        self.assertIn({"id": "T003", "tag": "moved", "reason": "moved to product/admin use"}, result["held"])
+
+    def test_open_is_held_as_blocked(self):
+        config = sdd.load_config(None)
+        result = sdd.plan(sdd.parse_tasks(TASKS), {"T003": "open"}, config, None, None)
+        self.assertIn({"id": "T003", "tag": "blocked", "reason": "open entry in BLOCKED.md"}, result["held"])
 
     def test_wontfix_stays_held(self):
         # An entry dropped with `status: wontfix` must not send its open task back to the agents.
@@ -126,7 +142,7 @@ class PlanTest(unittest.TestCase):
 
     def test_groups_split_on_shared_files_and_non_parallel(self):
         phases = {p["id"]: p["groups"] for p in self.plan()["phases"]}
-        self.assertEqual(phases["1"], [["T002"]])  # T003 is held (resolved in BLOCKED.md)
+        self.assertEqual(phases["1"], [["T002", "T003"]])  # T003 is resolved in BLOCKED.md: runnable
         self.assertEqual(phases["2"], [["T004"], ["T005"]])  # T005 also touches a.py
         self.assertEqual(phases["3"], [["T007", "T009"], ["T011"]])
 
@@ -159,6 +175,16 @@ class WriteTest(unittest.TestCase):
         self.assertTrue(sdd.block(blocked, "T008", "manual", "needs a person", "Record it")["appended"])
         self.assertFalse(sdd.block(blocked, "T008", "manual", "again", "again")["appended"])
         self.assertEqual(sdd.parse_blocked(blocked), {"T008": "open"})
+
+    def test_block_writes_new_header(self):
+        blocked = self.dir / "BLOCKED.md"
+        sdd.block(blocked, "T008", "manual", "needs a person", "Record it")
+        self.assertTrue(blocked.read_text(encoding="utf-8").startswith(
+            "# Blocked tasks\n\n"
+            "Tasks an unattended run could not finish. Answer the question under `- answer:` and set\n"
+            "`status: resolved`: the next `/sdd-run` runs the task again with your answer.\n"
+            "Set `status: wontfix` to drop the task, or `status: moved` if it became work outside this project.\n"
+            "\n## T008\n"))
 
     def test_cli_prints_json(self):
         out = subprocess.run([sys.executable, str(SCRIPT), "plan", str(self.tasks), "--config", "/nonexistent"],

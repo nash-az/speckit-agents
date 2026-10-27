@@ -31,8 +31,10 @@ BLOCKED_FIELD_RE = re.compile(r"^- (?P<key>\w+):\s*(?P<value>.*)$")
 BLOCKED_FIELDS = {"status", "tag", "reason", "question", "answer"}
 TASK_REF_RE = re.compile(r"\b(T\d+[a-z]?)\b")
 
-# Terminal BLOCKED.md statuses that hold a task forever: it is never re-run.
-TERMINAL_STATUSES = {"open", "resolved", "wontfix"}
+# BLOCKED.md statuses that hold a task: open (waiting for an answer), wontfix
+# (dropped) and moved (became work outside this project). A resolved entry does
+# not hold: the task is runnable again, with its answer.
+HOLDING_STATUSES = {"open", "wontfix", "moved"}
 
 # Dependency-indicating words that make a T-nn reference a real dependency.
 DEP_WORDS = {
@@ -213,10 +215,10 @@ def hold_reason(task: dict, blocked: dict[str, str], allow: dict) -> tuple[str, 
     """Why a task is held, or None if runnable.
 
     A task is held when it is tagged for a person (manual, decision, dep unless
-    allowed, download unless allowed), or when its BLOCKED.md entry has any
-    terminal status (open, resolved, wontfix): it is never re-entered into the
-    plan. A task whose dependency is open and held is held too (propagated in
-    plan()).
+    allowed, download unless allowed), or when its BLOCKED.md entry has a
+    holding status (open, wontfix, moved). A resolved entry does not hold: the
+    task is runnable again. A task whose dependency is open and held is held
+    too (propagated in plan()).
     """
     for tag in task["tags"]:
         if tag not in HOLD_TAGS:
@@ -226,14 +228,12 @@ def hold_reason(task: dict, blocked: dict[str, str], allow: dict) -> tuple[str, 
             continue
         return tag, HOLD_TAGS[tag]
     status = blocked.get(task["id"])
-    if status in TERMINAL_STATUSES:
-        reason = {
-            "open": "open entry in BLOCKED.md",
-            "resolved": "resolved in BLOCKED.md",
-            "wontfix": "dropped in BLOCKED.md (wontfix)",
+    if status in HOLDING_STATUSES:
+        return {
+            "open": ("blocked", "open entry in BLOCKED.md"),
+            "wontfix": ("wontfix", "dropped in BLOCKED.md (wontfix)"),
+            "moved": ("moved", "moved to product/admin use"),
         }[status]
-        tag = "blocked" if status == "open" else status
-        return tag, reason
     return None
 
 
@@ -369,8 +369,9 @@ def block(path: Path, task_id: str, tag: str, reason: str, question: str) -> dic
         return {"appended": False, "id": task_id, "note": "already open"}
     header = "" if path.exists() else (
         "# Blocked tasks\n\n"
-        "Tasks an unattended run skipped. Answer the question, set `status: resolved`,\n"
-        "then run `/sdd-unblock` or the next `/sdd-run` picks the task up again.\n"
+        "Tasks an unattended run could not finish. Answer the question under `- answer:` and set\n"
+        "`status: resolved`: the next `/sdd-run` runs the task again with your answer.\n"
+        "Set `status: wontfix` to drop the task, or `status: moved` if it became work outside this project.\n"
     )
     entry = (
         f"\n## {task_id}\n"
