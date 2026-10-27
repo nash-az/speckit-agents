@@ -493,6 +493,17 @@ def build_html():
     --warning: #eab308;
     --danger: #ef4444;
     --info: #06b6d4;
+    /* Status taxonomy (data-model.md §1): one color per status key */
+    --st-queued: #8b93a1;
+    --st-running: #3b82f6;
+    --st-retrying: #eab308;
+    --st-paused: #64748b;
+    --st-done: #22c55e;
+    --st-held: #f59e0b;
+    --st-blocked: #ef4444;
+    --st-wontfix: #6b7280;
+    --st-moved: #a78bfa;
+    --st-superseded: #94a3b8;
   }
   body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
   a { color: var(--accent); text-decoration: none; }
@@ -649,6 +660,22 @@ def build_html():
   .toast-container { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 100; display: flex; flex-direction: column; gap: 0.5rem; pointer-events: none; }
   .toast { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1rem; color: var(--text); font-size: 0.875rem; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.3); pointer-events: auto; animation: slideIn 0.2s ease-out; }
   @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  /* Status badge (data-model.md §1): glyph + color + label, always all three (FR-003) */
+  .status { display: inline-flex; align-items: center; gap: 0.3125rem; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
+  .status svg { width: 14px; height: 14px; flex-shrink: 0; }
+  .status-queued { color: var(--st-queued); }
+  .status-running { color: var(--st-running); }
+  .status-retrying { color: var(--st-retrying); }
+  .status-paused { color: var(--st-paused); }
+  .status-done { color: var(--st-done); }
+  .status-held { color: var(--st-held); }
+  .status-blocked { color: var(--st-blocked); }
+  .status-wontfix { color: var(--st-wontfix); }
+  .status-moved { color: var(--st-moved); }
+  .status-superseded { color: var(--st-superseded); }
+  .status svg.glyph-spinner { animation: status-spin 1s linear infinite; }
+  @keyframes status-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
   .refresh { font-size: 0.75rem; color: var(--text-muted); margin-top: 1rem; text-align: center; }
 </style>
@@ -827,6 +854,49 @@ def build_html():
       return String(s).replace(/[&<>"']/g, function(c) {
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
       });
+    }
+
+    // Status system (data-model.md §1). Keys match ROLLUP_ORDER in the Python code byte for byte.
+    // Inline SVGs only: no icon font, no CDN.
+    var SVG_OPEN = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+    function glyph(name, body) { return SVG_OPEN + ' class="glyph-' + name + '">' + body + '</svg>'; }
+    var GLYPHS = {
+      'circle-outline': glyph('circle-outline', '<circle cx="12" cy="12" r="9"/>'),
+      'spinner': glyph('spinner', '<path d="M21 12a9 9 0 1 1-6.22-8.56"/>'),
+      'rotate-arrow': glyph('rotate-arrow', '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/>'),
+      'pause-bars': glyph('pause-bars', '<line x1="9" y1="5" x2="9" y2="19"/><line x1="15" y1="5" x2="15" y2="19"/>'),
+      'check': glyph('check', '<polyline points="20 6 9 17 4 12"/>'),
+      'clock': glyph('clock', '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>'),
+      'alert-triangle': glyph('alert-triangle', '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
+      'slash-circle': glyph('slash-circle', '<circle cx="12" cy="12" r="9"/><line x1="5.64" y1="5.64" x2="18.36" y2="18.36"/>'),
+      'arrow-up-right': glyph('arrow-up-right', '<line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/>'),
+      'arrow-right': glyph('arrow-right', '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>')
+    };
+    var STATUS = {
+      queued: { glyph: 'circle-outline', label: 'Queued' },
+      running: { glyph: 'spinner', label: 'Running: {step}' },
+      retrying: { glyph: 'rotate-arrow', label: 'Retry {n}/{max}' },
+      paused: { glyph: 'pause-bars', label: 'Paused' },
+      done: { glyph: 'check', label: 'Done' },
+      held: { glyph: 'clock', label: 'Held: {tag}' },
+      blocked: { glyph: 'alert-triangle', label: 'Blocked' },
+      wontfix: { glyph: 'slash-circle', label: "Won't fix" },
+      moved: { glyph: 'arrow-up-right', label: 'Moved' },
+      superseded: { glyph: 'arrow-right', label: 'Superseded by {by}' }
+    };
+
+    // statusBadge('held', {tag: 'manual'}) -> glyph + color + label (FR-003).
+    // vars fill the label template; vars.label replaces the template (e.g. "Answered — runs next").
+    // A placeholder with no value is dropped together with a trailing ": ".
+    function statusBadge(key, vars) {
+      vars = vars || {};
+      var st = STATUS[key] || { glyph: 'circle-outline', label: String(key) };
+      var label = vars.label != null ? String(vars.label) : st.label.replace(/[{]([a-z]+)[}]/g, function(m, name) {
+        return vars[name] != null ? String(vars[name]) : '';
+      }).replace(/[:][ ]*$/, '');
+      var safe = escapeHtml(label);
+      return '<span class="status status-' + escapeHtml(key) + '" title="' + safe + '">' + GLYPHS[st.glyph] +
+        '<span class="status-label">' + safe + '</span></span>';
     }
 
     function loadProjects() {

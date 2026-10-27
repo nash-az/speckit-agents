@@ -477,6 +477,72 @@ class HostAndDiscoveryTest(unittest.TestCase):
         self.assertEqual(len(request(self, "GET", "/api/projects")), 1)
 
 
+class StatusSystemTest(unittest.TestCase):
+    """data-model.md §1 (FR-003, SC-002): CSS colors, GLYPHS, STATUS and statusBadge() in build_html()."""
+
+    COLORS = {"queued": "#8b93a1", "running": "#3b82f6", "retrying": "#eab308", "paused": "#64748b",
+              "done": "#22c55e", "held": "#f59e0b", "blocked": "#ef4444", "wontfix": "#6b7280",
+              "moved": "#a78bfa", "superseded": "#94a3b8"}
+    GLYPH_OF = {"queued": "circle-outline", "running": "spinner", "retrying": "rotate-arrow",
+                "paused": "pause-bars", "done": "check", "held": "clock", "blocked": "alert-triangle",
+                "wontfix": "slash-circle", "moved": "arrow-up-right", "superseded": "arrow-right"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = dash.build_html()
+        start = cls.html.index("function escapeHtml(")
+        cls.js = cls.html[start:cls.html.index("function loadProjects(")]
+
+    def test_css_variable_per_key(self):
+        self.assertEqual(set(self.COLORS), set(dash.ROLLUP_ORDER))
+        for key, color in self.COLORS.items():
+            self.assertIn("--st-%s: %s;" % (key, color), self.html)
+            self.assertIn(".status-%s { color: var(--st-%s); }" % (key, key), self.html)
+
+    def test_no_glyph_and_color_shared(self):
+        pairs = {(self.GLYPH_OF[k], self.COLORS[k]) for k in self.COLORS}
+        self.assertEqual(len(pairs), len(self.COLORS))
+
+    def test_spinner_animates(self):
+        self.assertRegex(self.html, r"svg\.glyph-spinner \{ animation: [a-z-]+ 1s linear infinite; \}")
+
+    def test_no_icon_font_or_cdn(self):
+        for needle in ("font-awesome", "fontawesome", "material-icons", "Material+Icons", "lucide", "feather"):
+            self.assertNotIn(needle.lower(), self.html.lower())
+
+    def run_js(self, expr):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        script = self.js + "\nprocess.stdout.write(JSON.stringify(" + expr + "));"
+        out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_glyphs_and_status_objects(self):
+        got = self.run_js("{glyphs: GLYPHS, status: STATUS}")
+        self.assertEqual(set(got["glyphs"]), set(self.GLYPH_OF.values()))
+        for svg in got["glyphs"].values():
+            for attr in ('viewBox="0 0 24 24"', 'stroke="currentColor"', 'fill="none"', 'stroke-width="2"'):
+                self.assertIn(attr, svg)
+        self.assertEqual({k: v["glyph"] for k, v in got["status"].items()}, self.GLYPH_OF)
+
+    def test_status_badge_markup(self):
+        got = self.run_js("[statusBadge('held', {tag: 'manual'}), statusBadge('running', {step: 'Verifying'}),"
+                          " statusBadge('retrying', {n: 1, max: 2}), statusBadge('superseded', {by: 'T020'}),"
+                          " statusBadge('wontfix'), statusBadge('queued', {label: 'Answered — runs next'}),"
+                          " statusBadge('held'), GLYPHS['clock']]")
+        held, running, retry, sup, wontfix, answered, bare, clock = got
+        self.assertEqual(held, '<span class="status status-held" title="Held: manual">' + clock +
+                         '<span class="status-label">Held: manual</span></span>')
+        self.assertIn('title="Running: Verifying"', running)
+        self.assertIn('class="glyph-spinner"', running)
+        self.assertIn('>Retry 1/2<', retry)
+        self.assertIn('>Superseded by T020<', sup)
+        self.assertIn('>Won&#39;t fix<', wontfix)
+        self.assertIn('>Answered — runs next<', answered)
+        self.assertIn('>Held<', bare)
+
+
 class ReadOnlyTest(unittest.TestCase):
     """data-model.md §4.8 (FR-020): the dashboard's source has no way to write or run anything."""
 
