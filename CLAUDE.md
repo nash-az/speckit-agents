@@ -46,17 +46,23 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   - Tasks name exact files, functions and the data-model section to follow. Choosing a cheaper or local implementer model is a
     feature of the finished plugin for its users; the plugin itself is always built with the session's model (Opus 5.5).
   - Next feature after 003: the chat window (backlog item 40), on the action channel in `contracts/action-channel.md`.
-- **Phase 2 pilot (2026-10-27):** `/sdd-run` from a frozen copy of the plugin (`/tmp/speckit-agents-stable`), so the run
-  could not edit its own bookkeeping, guard and prompts. All 10 tasks approved on the first attempt, on Opus 5.5.
-  Details and the four failed launches before it: `logs/2026-10-27-phase2-pilot.md`.
-  - **Open 003 gap:** Workflow scripts can no longer `import()`, so `workflows/sdd-run.js` can't write
-    `.sdd/runs/<id>/events.jsonl` (research.md D6). The repo's workflow still has the `fs`/`path` imports and fails to
-    launch; the frozen copy is patched (`event()` a no-op). A 003 design fix is pending the user's approval.
-  - **Next:** approve the event-feed fix, then run Phase 3 (T013–T020) from the frozen copy. Point the install back at
-    this repo once its workflow launches again.
+- **State (end of 2026-10-27):** Phases 2 (T003–T012, T043–T044) and 3 (T013–T020, dashboard MVP) are implemented and
+  merged; all approved on the first attempt on Opus 5.5. T001 is wontfix (BLOCKED.md); T002 and Phases 4–9 are open.
+  Run logs: `logs/2026-10-27-phase2-pilot.md`. The event feed now comes from the engine journal (`sdd-tasks.py events`,
+  data-model §3.9), because Workflow scripts can't `import()` or call `Date.now()`.
+  - **Dashboard launch model (user decision):** a plugin command (`/speckit-agents:ui`) run from the project directory
+    starts the API server and the UI on separate ports; one project per dashboard; the plugin stores nothing. Not in 003 yet.
+  - **Paused before Phase 4 (user):** design research for the finished dashboard is done and awaiting review:
+    `logs/2026-10-27-dashboard-design.html` (also https://claude.ai/artifact/26f22opZPWvBp1wP7gJmiJ). Proposal: Home
+    (waiting on you / last run / features), Features (docs + traceability), Runs (task → attempts → log), chat drawer;
+    UI as plain static files on its own port, no build step. Open decisions are listed at the end of that page.
+  - **Next:** the user reviews the design; then fold it into 003 (rewrite T026's UI part, add tasks for the UI split,
+    `/speckit-agents:ui`, removing the project picker, inbox, traceability, doc links), then run Phase 4.
+  - Known gap: the implementer prompt says `.sdd/scratch/<run>/<task>/` is allowed by the guard, but that carve-out is
+    T036 (Phase 7); the guard refused one scratch write in run 1431.
 - **`.claude/settings.local.json.bu` and `.claude/settings.provider.example.json`:** the user's own files. Keep them untracked; never commit them.
-- **Installed** at user scope as `speckit-agents@speckit-agents`. Since 2026-10-27 the marketplace is the frozen copy
-  `/tmp/speckit-agents-stable` (normally `~/private/speckit-agents`). Claude Code runs the plugin from a cache pinned to a
+- **Installed** at user scope as `speckit-agents@speckit-agents` from the marketplace `~/private/speckit-agents` (cache at
+  commit `2f4f544`; the frozen copy in `/tmp` is no longer used). Claude Code runs the plugin from a cache pinned to a
   git commit (`~/.claude/plugins/cache/speckit-agents/…`), so edits take effect only after commit + `claude plugin uninstall`
   + `claude plugin marketplace update speckit-agents` + `claude plugin install`.
 
