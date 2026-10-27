@@ -329,7 +329,8 @@ def rollup(statuses):
 
 
 def project_tasks(tasks_path, blocked_path, config_path):
-    """`GET /api/project/tasks`: {"text", "phases"} with §2 tasks and §1 phase rollups."""
+    """`GET /api/project/tasks`: {"text", "phases", "max_retries"} with §2 tasks and §1 phase rollups.
+    `max_retries` (from the config) lets the page label `retrying` as n/max (data-model.md §4.6)."""
     text = read_text(tasks_path) if tasks_path else None
     if text is None:
         return {"text": "", "phases": []}
@@ -346,7 +347,10 @@ def project_tasks(tasks_path, blocked_path, config_path):
     for phase in parsed["phases"]:
         tasks = [dict(t, **task_status(t, holds, entries)) for t in phase["tasks"]]
         phases.append(dict(phase, tasks=tasks, status=rollup(t["status"] for t in tasks)))
-    return {"text": text, "phases": phases}
+    max_retries = config.get("run", {}).get("max_retries", 2)
+    if not isinstance(max_retries, int) or isinstance(max_retries, bool):
+        max_retries = 2
+    return {"text": text, "phases": phases, "max_retries": max_retries}
 
 
 def project_blocked(blocked_path):
@@ -729,6 +733,11 @@ def build_html():
   .phase-heading { display: flex; align-items: center; gap: 0.75rem; font-size: 0.8125rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.5rem; }
   .phase-heading .status { text-transform: none; letter-spacing: normal; }
   .phase-tasks { display: grid; gap: 0.5rem; margin-bottom: 1rem; }
+  /* Live output of a running task (data-model.md §4.6) */
+  .live-output { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.5rem; cursor: default; }
+  .live-output-title { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; margin-bottom: 0.25rem; }
+  .live-output-empty { font-size: 0.8125rem; color: var(--text-muted); }
+  .live-output-lines { max-height: 240px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; color: var(--text); }
 
   /* Usage windows */
   .usage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
@@ -1052,17 +1061,91 @@ def build_html():
         '<span class="status-label">' + safe + '</span></span>';
     }
 
-    // A task's status key (data-model.md §2): the API's parked key or "done", else queued.
-    // The transient state from the event feed slots in before queued (T026).
+    // Phase rollup (data-model.md §1, FR-004), most urgent first; same list as ROLLUP_ORDER in Python.
+    var ROLLUP_ORDER = ['blocked', 'retrying', 'running', 'held', 'paused', 'queued',
+                        'moved', 'wontfix', 'superseded', 'done'];
+
+    // Transient states from the selected run's events (data-model.md §4.6): the newest event per
+    // task id decides. Returns {taskId: {key, vars}}; a task whose newest event maps to nothing
+    // (task.blocked, task.failed, anything else) is left out, so its parked state or queued applies.
+    // runState is /api/run/current's state: while `paused`, every transient state shows `paused`.
+    function transientStates(events, maxRetries, runState) {
+      var newest = {}, rejects = {};
+      (events || []).forEach(function(ev) {
+        if (!ev || typeof ev.id !== 'string') return;
+        newest[ev.id] = ev;
+        if (ev.kind === 'task.verified' && ev.verdict === 'reject') rejects[ev.id] = (rejects[ev.id] || 0) + 1;
+      });
+      var max = (typeof maxRetries === 'number' ? maxRetries : 2) + 1;
+      var out = {};
+      Object.keys(newest).forEach(function(id) {
+        var ev = newest[id], st = null;
+        if (ev.kind === 'task.started') st = { key: 'running', vars: { step: 'Implementing' } };
+        else if (ev.kind === 'task.implemented') st = { key: 'running', vars: { step: 'Verifying' } };
+        else if (ev.kind === 'task.verified' && ev.verdict === 'reject') st = { key: 'retrying', vars: { n: rejects[id] + 1, max: max } };
+        else if (ev.kind === 'task.approved') st = { key: 'running', vars: { step: 'Committing' } };
+        if (!st) return;
+        if (runState === 'paused') st = { key: 'paused', vars: {} };
+        out[id] = st;
+      });
+      return out;
+    }
+
+    // Copy of the API's phases with each task's transient state attached (only where the task has no
+    // parked status and is not done) and each phase's rollup recomputed over the merged states; the
+    // backend's phase `status` only knows parked and done states.
+    function mergeTransient(phases, states) {
+      states = states || {};
+      return (phases || []).map(function(p) {
+        var tasks = (p.tasks || []).map(function(t) {
+          var copy = {};
+          Object.keys(t).forEach(function(k) { copy[k] = t[k]; });
+          copy.transient = (!t.status && !t.done && states[t.id]) ? states[t.id] : null;
+          return copy;
+        });
+        var copy = {};
+        Object.keys(p).forEach(function(k) { copy[k] = p[k]; });
+        copy.tasks = tasks;
+        copy.status = phaseRollup(tasks);
+        return copy;
+      });
+    }
+
+    // The first ROLLUP_ORDER key that any task has; null for a phase with no tasks.
+    function phaseRollup(tasks) {
+      var present = {};
+      (tasks || []).forEach(function(t) { present[taskStatusKey(t)] = true; });
+      for (var i = 0; i < ROLLUP_ORDER.length; i++) if (present[ROLLUP_ORDER[i]]) return ROLLUP_ORDER[i];
+      return null;
+    }
+
+    // A task's status key (data-model.md §2): the API's parked key or "done", else the transient
+    // state from the event feed (§4.6), else queued.
     function taskStatusKey(t) {
-      return t.status || (t.done ? 'done' : 'queued');
+      return t.status || (t.done ? 'done' : (t.transient ? t.transient.key : 'queued'));
     }
 
     function taskBadge(t) {
       var key = taskStatusKey(t);
       if (key === 'held') return statusBadge(key, { tag: t.status_tag });
       if (key === 'superseded') return statusBadge(key, { by: t.status_tag });
+      if (!t.status && !t.done && t.transient) return statusBadge(key, t.transient.vars);
       return statusBadge(key);
+    }
+
+    // "Live output" panel on a running task (data-model.md §4.6, FR-021). log is the last
+    // /api/runs/<id>/tasks/<task>/log answer, or undefined before the first one.
+    function liveOutputBodyHtml(log) {
+      if (!log || !log.available) return '<div class="live-output-empty">Not available yet</div>';
+      return '<pre class="live-output-lines">' + escapeHtml((log.lines || []).join('\\n')) + '</pre>';
+    }
+
+    // The newest log answer per running task id, so the 3 s re-render of the task list keeps the panel's text.
+    var liveLogs = {};
+
+    function liveOutputHtml(t, log) {
+      return '<div class="live-output"><div class="live-output-title">Live output</div>' +
+        '<div class="live-output-body" data-live-task="' + escapeHtml(t.id) + '">' + liveOutputBodyHtml(log) + '</div></div>';
     }
 
     // Everything waiting on a person, held and blocked together (FR-005).
@@ -1103,7 +1186,8 @@ def build_html():
       return '<div class="task-card' + (taskStatusKey(t) === 'done' ? ' task-done' : '') + '">' +
         '<div class="task-head"><span class="task-id">' + escapeHtml(t.id) + '</span>' + taskBadge(t) + '</div>' +
         '<div class="task-text">' + escapeHtml(t.text) + '</div>' +
-        '<div class="task-tags">' + tagsHtml(t.tags) + '</div></div>';
+        '<div class="task-tags">' + tagsHtml(t.tags) + '</div>' +
+        (taskStatusKey(t) === 'running' ? liveOutputHtml(t, liveLogs[t.id]) : '') + '</div>';
     }
 
     function phaseHeadingHtml(p) {
@@ -1387,23 +1471,52 @@ def build_html():
       }).catch(function(e) { console.error('loadTasksData error', e); });
     }
 
+    // The run whose events give the transient states: the run picked in the Runs view, else the
+    // run in .sdd/run.json. `paused` (§4.5) applies only when that run is the current one.
     function loadTasks() {
-      fetchJSON('/api/project/tasks', 'GET').then(function(data) {
-        data = data || {};
-        var phases = data.phases || [];
-        var waiting = '', count = 0, list = '';
-        phases.forEach(function(p) {
-          (p.tasks || []).forEach(function(t) {
-            if (isWaiting(t)) { waiting += waitingItemHtml(t, p.title); count++; }
-          });
-          list += phaseHeadingHtml(p) + '<div class="phase-tasks">' + (p.tasks || []).map(taskCardHtml).join('') + '</div>';
+      Promise.all([fetchJSON('/api/project/tasks', 'GET'), fetchJSON('/api/run/current', 'GET')]).then(function(r) {
+        var data = r[0] || {}, run = r[1] || {};
+        var runId = selectedRunId || (run.state && run.state !== 'none' ? run.run_id : null);
+        var feed = runId ? fetchJSON('/api/runs/' + encodeURIComponent(runId) + '/events', 'GET') : Promise.resolve(null);
+        return feed.then(function(f) {
+          var states = transientStates(f && f.events, data.max_retries, runId === run.run_id ? run.state : null);
+          renderTasks(mergeTransient(data.phases, states), runId);
         });
-        document.getElementById('waiting-count').textContent = count;
-        document.getElementById('waiting-list').innerHTML = waiting ||
-          '<div class="empty"><div>Nothing is waiting on you.</div></div>';
-        document.getElementById('tasks-list').innerHTML = list ||
-          '<div class="empty"><div>No tasks.</div></div>';
       }).catch(function(e) { console.error('loadTasks error', e); });
+    }
+
+    function renderTasks(phases, runId) {
+      var waiting = '', count = 0, list = '', running = [];
+      phases.forEach(function(p) {
+        (p.tasks || []).forEach(function(t) {
+          if (isWaiting(t)) { waiting += waitingItemHtml(t, p.title); count++; }
+          if (taskStatusKey(t) === 'running') running.push(t.id);
+        });
+        list += phaseHeadingHtml(p) + '<div class="phase-tasks">' + (p.tasks || []).map(function(t) { return taskCardHtml(t); }).join('') + '</div>';
+      });
+      document.getElementById('waiting-count').textContent = count;
+      document.getElementById('waiting-list').innerHTML = waiting ||
+        '<div class="empty"><div>Nothing is waiting on you.</div></div>';
+      document.getElementById('tasks-list').innerHTML = list ||
+        '<div class="empty"><div>No tasks.</div></div>';
+      pollLiveOutputs(runId, running);
+    }
+
+    // Fetch the live output of each running task; loadTasks runs every 3 s (refreshAll), so this
+    // polls /api/runs/<id>/tasks/<task>/log every 3 s while the Tasks view is open.
+    function pollLiveOutputs(runId, ids) {
+      Object.keys(liveLogs).forEach(function(id) { if (ids.indexOf(id) < 0) delete liveLogs[id]; });
+      if (!runId) return;
+      ids.forEach(function(id) {
+        fetchJSON('/api/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(id) + '/log', 'GET').then(function(log) {
+          liveLogs[id] = log || { available: false, reason: 'request failed' };
+          var el = document.querySelector('.live-output-body[data-live-task="' + id + '"]');
+          if (!el) return;
+          el.innerHTML = liveOutputBodyHtml(liveLogs[id]);
+          var pre = el.querySelector('pre');
+          if (pre) pre.scrollTop = pre.scrollHeight;
+        });
+      });
     }
 
     function loadBlocked() {

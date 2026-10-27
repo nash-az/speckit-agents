@@ -911,6 +911,100 @@ class TasksViewTest(unittest.TestCase):
         self.assertIn("Waiting on you", self.html)
 
 
+class TransientStateTest(unittest.TestCase):
+    """T026 (FR-021, data-model.md §4.6, §1): transient states from the run's events, merged phase
+    rollups in the browser, and the "Live output" panel on a running task."""
+
+    setUpClass = classmethod(StatusSystemTest.setUpClass.__func__)
+    run_js = StatusSystemTest.run_js
+
+    EVENTS = ("[{kind: 'task.started', id: 'T1'},"
+              " {kind: 'task.started', id: 'T2'}, {kind: 'task.implemented', id: 'T2'},"
+              " {kind: 'task.started', id: 'T3'}, {kind: 'task.implemented', id: 'T3'},"
+              " {kind: 'task.verified', id: 'T3', verdict: 'reject'},"
+              " {kind: 'task.started', id: 'T3'}, {kind: 'task.implemented', id: 'T3'},"
+              " {kind: 'task.verified', id: 'T3', verdict: 'reject'},"
+              " {kind: 'task.started', id: 'T4'}, {kind: 'task.implemented', id: 'T4'},"
+              " {kind: 'task.verified', id: 'T4', verdict: 'approve'}, {kind: 'task.approved', id: 'T4'},"
+              " {kind: 'group.finished', ids: ['T4']},"
+              " {kind: 'task.started', id: 'T5'}, {kind: 'task.blocked', id: 'T5'},"
+              " {kind: 'task.started', id: 'T6'}, {kind: 'task.failed', id: 'T6'}]")
+
+    def test_rollup_order_matches_python(self):
+        self.assertEqual(self.run_js("ROLLUP_ORDER"), list(dash.ROLLUP_ORDER))
+
+    def test_event_to_state_table(self):
+        got = self.run_js("transientStates(" + self.EVENTS + ", 2, 'running')")
+        self.assertEqual(got, {
+            "T1": {"key": "running", "vars": {"step": "Implementing"}},
+            "T2": {"key": "running", "vars": {"step": "Verifying"}},
+            "T3": {"key": "retrying", "vars": {"n": 3, "max": 3}},
+            "T4": {"key": "running", "vars": {"step": "Committing"}},
+        })
+
+    def test_retry_uses_max_retries(self):
+        got = self.run_js("transientStates([{kind: 'task.verified', id: 'T1', verdict: 'reject'}], 4, null)")
+        self.assertEqual(got, {"T1": {"key": "retrying", "vars": {"n": 2, "max": 5}}})
+
+    def test_paused_run_shows_paused(self):
+        got = self.run_js("transientStates(" + self.EVENTS + ", 2, 'paused')")
+        self.assertEqual(set(got), {"T1", "T2", "T3", "T4"})
+        self.assertEqual({v["key"] for v in got.values()}, {"paused"})
+
+    def test_badges_and_merge(self):
+        got = self.run_js(
+            "(function() { var states = transientStates(" + self.EVENTS + ", 2, 'running');"
+            " var phases = mergeTransient([{title: 'A', status: 'done', tasks: ["
+            "  {id: 'T1', status: null, done: false}, {id: 'T9', status: 'done', done: true}]},"
+            " {title: 'B', status: 'held', tasks: [{id: 'T3', status: null, done: false},"
+            "  {id: 'T2', status: 'held', status_tag: 'manual', done: false}]},"
+            " {title: 'C', status: 'queued', tasks: [{id: 'T5', status: null, done: false}]},"
+            " {title: 'D', status: null, tasks: []}], states);"
+            " return {status: phases.map(function(p) { return p.status; }),"
+            " t1: taskBadge(phases[0].tasks[0]), t3: taskBadge(phases[1].tasks[0]),"
+            " t2: taskBadge(phases[1].tasks[1]), t5: taskBadge(phases[2].tasks[0]),"
+            " t9: phases[0].tasks[0 + 1].transient}; })()")
+        self.assertEqual(got["status"], ["running", "retrying", "queued", None])
+        self.assertIn('title="Running: Implementing"', got["t1"])
+        self.assertIn('>Retry 3/3<', got["t3"])
+        self.assertIn('title="Held: manual"', got["t2"])  # a parked status wins over the event
+        self.assertIn('title="Queued"', got["t5"])  # task.blocked: no transient state
+        self.assertIsNone(got["t9"])
+
+    def test_live_output_panel(self):
+        got = self.run_js(
+            "(function() { var t = {id: 'T1', text: 'a', tags: [], status: null, done: false,"
+            " transient: {key: 'running', vars: {step: 'Verifying'}}};"
+            " var q = {id: 'T2', text: 'b', tags: [], status: null, done: false};"
+            " var before = taskCardHtml(t); liveLogs.T1 = {available: true, lines: ['<one>', 'two']};"
+            " return [before, taskCardHtml(t), taskCardHtml(q),"
+            " liveOutputBodyHtml({available: false, reason: 'run is not active'})]; })()")
+        before, after, queued, unavailable = got
+        self.assertIn("Live output", before)
+        self.assertIn('data-live-task="T1"', before)
+        self.assertIn("Not available yet", before)
+        self.assertIn("&lt;one&gt;\ntwo", after)
+        self.assertNotIn("Live output", queued)
+        self.assertIn("Not available yet", unavailable)
+
+    def test_polls_log_route(self):
+        self.assertIn("'/tasks/' + encodeURIComponent(id) + '/log'", self.html)
+        self.assertIn("setInterval(refreshAll, 3000)", self.html)
+        refresh = self.html[self.html.index("function refreshAll("):]
+        self.assertIn("if (selectedSection === 'tasks') loadTasks();", refresh)
+        tasks = self.html[self.html.index("function renderTasks("):self.html.index("function pollLiveOutputs(")]
+        self.assertIn("pollLiveOutputs(runId, running)", tasks)
+
+    def test_max_retries_in_tasks_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root, STATUS_TASKS, STATUS_BLOCKED, "[run]\nmax_retries = 4\n")
+            got = dash.project_tasks(root / "tasks.md", root / "BLOCKED.md", root / ".sdd" / "config.toml")
+            self.assertEqual(got["max_retries"], 4)
+            got = dash.project_tasks(root / "tasks.md", None, None)
+            self.assertEqual(got["max_retries"], 2)
+
+
 class DocumentsViewTest(unittest.TestCase):
     """T019 (FR-001, data-model.md §4.3): pinned renderer URLs, sanitized markdown, TOC, offline fallback."""
 
