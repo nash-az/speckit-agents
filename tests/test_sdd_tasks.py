@@ -174,6 +174,77 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(out["runnable"], 1)
 
 
+class SupersededTest(unittest.TestCase):
+    """data-model §3.4: explicit superseded-by, computed after converge, no propagation."""
+
+    def plan(self, text, blocked=None):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        tasks = tmp / "tasks.md"
+        tasks.write_text(text, encoding="utf-8")
+        result = sdd.plan(sdd.parse_tasks(tasks), blocked or {}, sdd.load_config(None), None, None)
+        held = {h["id"]: (h["tag"], h["reason"]) for h in result["held"]}
+        runnable = {tid for p in result["phases"] for g in p["groups"] for tid in g}
+        return held, runnable
+
+    def test_explicit_superseded_by_holds_the_task_itself(self):
+        held, runnable = self.plan(
+            "## Phase 1: Setup\n\n"
+            "- [ ] T001 Old work, superseded-by T003 in `a.py`\n"
+            "- [ ] T002 Other work, replaced-by T003, T004 in `b.py`\n"
+            "- [x] T003 New work in `a.py`\n"
+            "- [ ] T004 More new work in `c.py`\n")
+        self.assertEqual(held["T001"], ("superseded", "T003"))  # successor done: still superseded
+        self.assertEqual(held["T002"][0], "superseded")
+        self.assertIn("T003", held["T002"][1])
+        self.assertNotIn("T003", held)
+        self.assertIn("T004", runnable)
+
+    def test_explicit_overwrites_blocked_hold(self):
+        held, _ = self.plan("## Phase 1: Setup\n\n- [ ] T001 Old, superseded-by T002\n- [ ] T002 New\n",
+                            {"T001": "open"})
+        self.assertEqual(held["T001"], ("superseded", "T002"))
+
+    def test_phases_before_convergence_are_superseded(self):
+        held, runnable = self.plan(
+            "## Phase 1: Setup\n\n- [ ] T001 Old in `a.py`\n- [x] T002 Done in `b.py`\n\n"
+            "## Phase 2: Convergence\n\n- [ ] T010 Carry on in `c.py`\n")
+        self.assertEqual(held["T001"], ("superseded", "Phase 2"))
+        self.assertNotIn("T002", held)
+        self.assertIn("T010", runnable)
+
+    def test_per_dependent_of_superseded_stays_runnable(self):
+        held, runnable = self.plan(
+            "## Phase 1: Setup\n\n- [ ] T020 Old in `a.py`\n\n"
+            "## Phase 2: convergence of the drift\n\n- [ ] T090 Finish per T020 in `a.py`\n")
+        self.assertEqual(held["T020"], ("superseded", "Phase 2"))
+        self.assertNotIn("T090", held)
+        self.assertIn("T090", runnable)
+
+    def test_manual_task_superseded_wins_and_successor_runs(self):
+        held, runnable = self.plan(
+            "## Phase 1: Setup\n\n- [ ] T020 [manual] Record the audio in `a.wav`\n\n"
+            "## Phase 2: Convergence\n\n- [ ] T090 Use the recording per T020 in `a.py`\n")
+        self.assertEqual(held["T020"], ("superseded", "Phase 2"))
+        self.assertIn("T090", runnable)
+
+    def test_phase_after_convergence_is_untouched(self):
+        held, runnable = self.plan(
+            "## Phase 1: Convergence\n\n- [ ] T010 Converge in `a.py`\n\n"
+            "## Phase 2: Polish\n\n- [ ] T020 Polish in `b.py`\n")
+        self.assertEqual(held, {})
+        self.assertEqual(runnable, {"T010", "T020"})
+
+    def test_older_convergence_phase_is_untouched(self):
+        held, runnable = self.plan(
+            "## Phase 1: Setup\n\n- [ ] T001 Old in `a.py`\n\n"
+            "## Phase 2: Convergence one\n\n- [ ] T010 First converge in `b.py`\n\n"
+            "## Phase 3: Feature\n\n- [ ] T020 Feature in `c.py`\n\n"
+            "## Phase 4: CONVERGENCE two\n\n- [ ] T030 Second converge in `d.py`\n")
+        self.assertEqual(held, {"T001": ("superseded", "Phase 4"), "T020": ("superseded", "Phase 4")})
+        self.assertEqual(runnable, {"T010", "T030"})
+
+
 class WriteTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())

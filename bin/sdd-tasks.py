@@ -43,6 +43,8 @@ DEP_WORDS = {
 }
 # Words that mark a task as superseded by a later task (converge carries its remaining work).
 SUPERSEDED_BY_WORDS = {"superseded-by", "superseded_by", "replaced-by", "replaced_by"}
+# A phase whose title starts with "Convergence" carries the open work of the phases before it.
+CONVERGENCE_RE = re.compile(r"^convergence", re.IGNORECASE)
 
 # Agent tags that keep a task away from the run unless the config allows it.
 HOLD_TAGS = {
@@ -240,26 +242,36 @@ def hold_reason(task: dict, blocked: dict[str, str], allow: dict) -> tuple[str, 
 
 
 def direct_holds(parsed: dict, blocked: dict[str, str], allow: dict) -> dict[str, tuple[str, str]]:
-    """{task id: (tag, reason)} for every directly held task (by tag or BLOCKED.md).
+    """{task id: (tag, reason)} for every directly held task (data-model §3.4).
 
-    Also holds tasks marked as superseded by a later task (converge carried their
-    remaining work), so plan() does not list them as runnable again.
+    Tag and BLOCKED.md holds come first. Superseded holds then overwrite them:
+    (1) `superseded-by Tnnn` / `replaced-by Tnnn` on an open task X holds X,
+    whatever the successor's state; (2) every open task in a non-Convergence
+    phase before the newest Convergence phase is held as superseded by that phase.
     """
     holds: dict[str, tuple[str, str]] = {}
-    superseded: dict[str, list[str]] = {}
     for phase in parsed["phases"]:
         for task in phase["tasks"]:
-            if task["done"]:
-                continue
-            if (reason := hold_reason(task, blocked, allow)) is not None:
+            if not task["done"] and (reason := hold_reason(task, blocked, allow)) is not None:
                 holds[task["id"]] = reason
-            for ref in task.get("superseded_by", []):
-                superseded.setdefault(ref, []).append(task["id"])
-    for ref, superseded_by in superseded.items():
-        holds[ref] = (
-            "superseded",
-            f"remaining work carried by {', '.join(superseded_by)}",
-        )
+    # Rule 1: explicit superseded-by / replaced-by on the task itself.
+    for phase in parsed["phases"]:
+        for task in phase["tasks"]:
+            if not task["done"] and task.get("superseded_by"):
+                holds[task["id"]] = ("superseded", ", ".join(task["superseded_by"]))
+    # Rule 2: open work in phases before the newest Convergence phase moved into it.
+    phases = parsed["phases"]
+    newest = max((i for i, p in enumerate(phases) if CONVERGENCE_RE.match(p["title"])), default=None)
+    if newest is not None:
+        by = ("superseded", f"Phase {phases[newest]['id']}")
+        for phase in phases[:newest]:
+            if CONVERGENCE_RE.match(phase["title"]):
+                continue
+            for task in phase["tasks"]:
+                if task["done"]:
+                    continue
+                if holds.get(task["id"], ("",))[0] != "superseded":  # rule 1 names the successor
+                    holds[task["id"]] = by
     return holds
 
 
@@ -276,7 +288,7 @@ def propagate_holds(parsed: dict, holds: dict[str, tuple[str, str]]) -> dict[str
             if task["id"] in holds or task["done"]:
                 continue
             for dep in task.get("deps", []):
-                if dep in holds:
+                if dep in holds and holds[dep][0] != "superseded":
                     holds[task["id"]] = (
                         "held",
                         f"depends on {dep}, which is held ({holds[dep][0]})",
