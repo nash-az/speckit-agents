@@ -55,6 +55,22 @@ test('args passed as a JSON string work like the object', async () => {
   assert.deepEqual(out.approved, ['T1'])
 })
 
+test('a planned task with an answer puts the question and the answer in the implementer prompt', async () => {
+  const withAnswer = a => {
+    Object.assign(a.plan.phases[0].tasks.T1, { question: 'Which port?', answer: 'Use 8123.' })
+    return a
+  }
+  const { calls } = await run(['T1'], {}, undefined, withAnswer)
+  const impl = calls.find(c => c.label === 'impl:T1')
+  assert.match(impl.prompt, /^Earlier question: Which port\?$/m)
+  assert.match(impl.prompt, /^Answer from the person \(follow it\): Use 8123\.$/m)
+})
+
+test('a planned task without an answer has no answer lines in the implementer prompt', async () => {
+  const { calls } = await run(['T1'])
+  assert.doesNotMatch(calls.find(c => c.label === 'impl:T1').prompt, /Earlier question|Answer from the person/)
+})
+
 test('a cut-off implementer stops the run as interrupted, records nothing and commits nothing', async () => {
   const { out, labels } = await run(['T1', 'T2'], { 'impl:T1': null })
   assert.deepEqual(labels, ['impl:T1'])

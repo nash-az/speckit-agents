@@ -83,6 +83,8 @@ function taskBrief(task) {
     `Task ${task.id}${tags.length ? ` [${tags.join('] [')}]` : ''} (tasks.md line ${task.line}):`,
     task.text,
     task.files.length ? `Files named by the task: ${task.files.join(', ')}` : 'The task names no files.',
+    // A person answered this task's earlier question (data-model §5.3, FR-023).
+    ...(task.answer ? [`Earlier question: ${task.question}\nAnswer from the person (follow it): ${task.answer}`] : []),
   ].join('\n')
 }
 
