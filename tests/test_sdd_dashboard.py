@@ -543,6 +543,71 @@ class StatusSystemTest(unittest.TestCase):
         self.assertIn('>Held<', bare)
 
 
+class TasksViewTest(unittest.TestCase):
+    """T018 (FR-004, FR-005): task cards, phase rollup badges, "Waiting on you", BLOCKED.md entry badges."""
+
+    setUpClass = classmethod(StatusSystemTest.setUpClass.__func__)
+    run_js = StatusSystemTest.run_js
+
+    def test_task_status_key(self):
+        got = self.run_js("[taskStatusKey({status: 'held'}), taskStatusKey({status: null, done: true}),"
+                          " taskStatusKey({status: null, done: false})]")
+        self.assertEqual(got, ["held", "done", "queued"])
+
+    def test_task_card_badges(self):
+        got = self.run_js("[taskCardHtml({id: 'T1', text: 'a', tags: ['manual'], status: 'held', status_tag: 'manual'}),"
+                          " taskCardHtml({id: 'T2', text: 'b', tags: [], status: 'superseded', status_tag: 'T9'}),"
+                          " taskCardHtml({id: 'T3', text: 'c', tags: [], status: null, done: true}),"
+                          " taskCardHtml({id: 'T4', text: 'd', tags: [], status: null, done: false}),"
+                          " statusBadge('done'), statusBadge('queued')]")
+        held, sup, done, queued, done_badge, queued_badge = got
+        self.assertIn('title="Held: manual"', held)
+        self.assertIn('>Superseded by T9<', sup)
+        self.assertIn(done_badge, done)
+        self.assertIn("task-done", done)
+        self.assertIn(queued_badge, queued)
+
+    def test_phase_heading_rollup(self):
+        got = self.run_js("[phaseHeadingHtml({title: 'Setup', status: 'blocked'}), phaseHeadingHtml({title: 'Empty', status: null}),"
+                          " statusBadge('blocked')]")
+        self.assertIn(got[2], got[0])
+        self.assertNotIn('class="status ', got[1])
+
+    def test_waiting_on_you(self):
+        tasks = ("[{id: 'T1', text: 'a', tags: ['manual'], status: 'held', status_tag: 'manual',"
+                 " status_reason: 'needs a person'},"
+                 " {id: 'T2', text: 'b', tags: [], status: 'blocked', status_tag: 'open',"
+                 " status_reason: 'stuck', question: 'Which port?'},"
+                 " {id: 'T3', text: 'c', tags: [], status: 'wontfix'},"
+                 " {id: 'T4', text: 'd', tags: [], status: null, done: false},"
+                 " {id: 'T5', text: 'e', tags: [], status: 'done', done: true}]")
+        got = self.run_js("(function(ts) { return {waiting: ts.filter(isWaiting).map(function(t) { return t.id; }),"
+                          " held: waitingItemHtml(ts[0], 'Phase 1'), blocked: waitingItemHtml(ts[1], 'Phase 1'),"
+                          " counts: countTasks([{tasks: ts}])}; })(" + tasks + ")")
+        self.assertEqual(got["waiting"], ["T1", "T2"])
+        self.assertIn("needs a person", got["held"])
+        self.assertIn("Which port?", got["blocked"])
+        self.assertIn('title="Blocked"', got["blocked"])
+        self.assertEqual(got["counts"], {"total": 5, "done": 1, "waiting": 2, "blocked": 1})
+
+    def test_entry_badges(self):
+        got = self.run_js("[entryBadge({status: 'open'}), entryBadge({status: 'resolved'}), entryBadge({status: 'wontfix'}),"
+                          " entryBadge({status: 'moved'}), statusBadge('blocked'), statusBadge('wontfix'), statusBadge('moved'),"
+                          " entryItemHtml({id: 'T7', status: 'resolved', reason: 'r', question: 'q?', answer: 'yes', tag: 'decision'})]")
+        open_, resolved, wontfix, moved, b_blocked, b_wontfix, b_moved, item = got
+        self.assertEqual(open_, b_blocked)
+        self.assertIn('class="status status-queued" title="Answered — runs next"', resolved)
+        self.assertEqual(wontfix, b_wontfix)
+        self.assertEqual(moved, b_moved)
+        self.assertIn("Answered — runs next", item)
+        self.assertIn(">yes<", item)
+
+    def test_old_held_logic_gone(self):
+        self.assertNotIn("Held / Waiting", self.html)
+        self.assertNotIn("loadBlockedData", self.html)
+        self.assertIn("Waiting on you", self.html)
+
+
 class ReadOnlyTest(unittest.TestCase):
     """data-model.md §4.8 (FR-020): the dashboard's source has no way to write or run anything."""
 

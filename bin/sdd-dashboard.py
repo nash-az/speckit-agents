@@ -598,10 +598,6 @@ def build_html():
   .markdown th { background: var(--surface); color: var(--text-muted); }
 
   /* Task board */
-  .task-board { display: flex; gap: 1rem; overflow-x: auto; padding-bottom: 1rem; scrollbar-width: none; }
-  .task-board::-webkit-scrollbar { display: none; }
-  .task-column { flex: 0 0 auto; width: 260px; display: flex; flex-direction: column; gap: 0.5rem; }
-  .task-column-title { font-size: 0.8125rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); margin-bottom: 0.5rem; }
   .task-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; cursor: pointer; transition: all 0.15s; }
   .task-card:hover { border-color: var(--accent); background: var(--surface-hover); }
   .task-id { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 700; color: var(--accent); margin-bottom: 0.25rem; display: block; }
@@ -615,7 +611,13 @@ def build_html():
   .tag-download { background: rgba(88,28,135,0.15); color: #e9d5ff; }
   .tag-eval { background: rgba(6,182,212,0.15); color: var(--info); }
   .tag-ui { background: rgba(139,92,246,0.15); color: #c4b5fd; }
-  .task-done { opacity: 0.5; text-decoration: line-through; }
+  .task-done { opacity: 0.6; }
+  .task-done .task-text { text-decoration: line-through; }
+  .task-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
+  .task-head .task-id { margin-bottom: 0; }
+  .phase-heading { display: flex; align-items: center; gap: 0.75rem; font-size: 0.8125rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.5rem; }
+  .phase-heading .status { text-transform: none; letter-spacing: normal; }
+  .phase-tasks { display: grid; gap: 0.5rem; margin-bottom: 1rem; }
 
   /* Usage windows */
   .usage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
@@ -634,10 +636,8 @@ def build_html():
   .blocked-item { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; margin-bottom: 0.5rem; }
   .blocked-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.5rem; }
   .blocked-id { font-family: 'JetBrains Mono', monospace; font-size: 0.875rem; font-weight: 700; color: var(--text); }
-  .blocked-status { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
-  .status-open { color: var(--warning); }
-  .status-resolved { color: var(--success); }
-  .status-wontfix { color: var(--text-muted); }
+  .blocked-phase { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem; }
+  .blocked-answer { font-size: 0.875rem; color: var(--text); padding: 0.5rem; background: var(--bg); border-radius: 4px; border-left: 3px solid var(--success); margin-top: 0.5rem; white-space: pre-wrap; }
   .blocked-reason { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.5rem; }
   .blocked-question { font-size: 0.875rem; color: var(--text); font-style: italic; padding: 0.5rem; background: var(--bg); border-radius: 4px; border-left: 3px solid var(--accent); }
   .blocked-tags { display: flex; gap: 0.25rem; margin-top: 0.5rem; }
@@ -728,7 +728,7 @@ def build_html():
           <div class="card">
             <div class="stat">
               <div class="stat-value" id="stat-held">-</div>
-              <div class="stat-label">Held / Waiting</div>
+              <div class="stat-label">Waiting on you</div>
             </div>
           </div>
           <div class="card">
@@ -779,17 +779,19 @@ def build_html():
 
       <!-- Tasks -->
       <section id="section-tasks" class="section" style="display:none;">
-        <div class="card-title">Tasks by Phase</div>
-        <div id="tasks-board" class="task-board"></div>
-        <div class="card" style="margin-top:1rem;">
-          <div class="card-title">All Tasks</div>
+        <div class="card">
+          <div class="card-title">Waiting on you <span class="badge" id="waiting-count">0</span></div>
+          <div id="waiting-list"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Tasks by Phase</div>
           <div id="tasks-list"></div>
         </div>
       </section>
 
       <!-- Blocked -->
       <section id="section-blocked" class="section" style="display:none;">
-        <div class="card-title">Blocked Tasks &amp; Waiting on You</div>
+        <div class="card-title">BLOCKED.md entries</div>
         <div id="blocked-list"></div>
       </section>
 
@@ -899,6 +901,85 @@ def build_html():
         '<span class="status-label">' + safe + '</span></span>';
     }
 
+    // A task's status key (data-model.md §2): the API's parked key or "done", else queued.
+    // The transient state from the event feed slots in before queued (T026).
+    function taskStatusKey(t) {
+      return t.status || (t.done ? 'done' : 'queued');
+    }
+
+    function taskBadge(t) {
+      var key = taskStatusKey(t);
+      if (key === 'held') return statusBadge(key, { tag: t.status_tag });
+      if (key === 'superseded') return statusBadge(key, { by: t.status_tag });
+      return statusBadge(key);
+    }
+
+    // Everything waiting on a person, held and blocked together (FR-005).
+    function isWaiting(t) {
+      var key = taskStatusKey(t);
+      return key === 'held' || key === 'blocked';
+    }
+
+    // BLOCKED.md entry badges (data-model.md §1).
+    function entryBadge(e) {
+      if (e.status === 'open') return statusBadge('blocked');
+      if (e.status === 'resolved') return statusBadge('queued', { label: 'Answered — runs next' });
+      return statusBadge(e.status);
+    }
+
+    // Overview counters, from the same statuses as the task cards.
+    function countTasks(phases) {
+      var c = { total: 0, done: 0, waiting: 0, blocked: 0 };
+      (phases || []).forEach(function(p) {
+        (p.tasks || []).forEach(function(t) {
+          var key = taskStatusKey(t);
+          c.total++;
+          if (key === 'done') c.done++;
+          if (isWaiting(t)) c.waiting++;
+          if (key === 'blocked') c.blocked++;
+        });
+      });
+      return c;
+    }
+
+    function tagsHtml(tags) {
+      return (tags || []).map(function(tag) {
+        return '<span class="task-tag tag-' + escapeHtml(String(tag).toLowerCase()) + '">' + escapeHtml(tag) + '</span>';
+      }).join('');
+    }
+
+    function taskCardHtml(t) {
+      return '<div class="task-card' + (taskStatusKey(t) === 'done' ? ' task-done' : '') + '">' +
+        '<div class="task-head"><span class="task-id">' + escapeHtml(t.id) + '</span>' + taskBadge(t) + '</div>' +
+        '<div class="task-text">' + escapeHtml(t.text) + '</div>' +
+        '<div class="task-tags">' + tagsHtml(t.tags) + '</div></div>';
+    }
+
+    function phaseHeadingHtml(p) {
+      return '<div class="phase-heading"><span>' + escapeHtml(p.title) + '</span>' +
+        (p.status ? statusBadge(p.status) : '') + '</div>';
+    }
+
+    function waitingItemHtml(t, phaseTitle) {
+      var ask = taskStatusKey(t) === 'blocked' ? t.question : null;
+      return '<div class="blocked-item">' +
+        '<div class="blocked-header"><div class="blocked-id">' + escapeHtml(t.id) + '</div>' + taskBadge(t) + '</div>' +
+        (phaseTitle ? '<div class="blocked-phase">' + escapeHtml(phaseTitle) + '</div>' : '') +
+        '<div class="task-text">' + escapeHtml(t.text) + '</div>' +
+        (t.status_reason ? '<div class="blocked-reason">' + escapeHtml(t.status_reason) + '</div>' : '') +
+        (ask ? '<div class="blocked-question">' + escapeHtml(ask) + '</div>' : '') +
+        '</div>';
+    }
+
+    function entryItemHtml(e) {
+      return '<div class="blocked-item">' +
+        '<div class="blocked-header"><div class="blocked-id">' + escapeHtml(e.id) + '</div>' + entryBadge(e) + '</div>' +
+        (e.reason ? '<div class="blocked-reason">' + escapeHtml(e.reason) + '</div>' : '') +
+        (e.question ? '<div class="blocked-question">' + escapeHtml(e.question) + '</div>' : '') +
+        (e.answer ? '<div class="blocked-answer">' + escapeHtml(e.answer) + '</div>' : '') +
+        '<div class="blocked-tags">' + tagsHtml(e.tag ? [e.tag] : []) + '</div></div>';
+    }
+
     function loadProjects() {
       fetchJSON('/api/projects', 'GET').then(function(projects) {
         projects = projects || [];
@@ -953,7 +1034,6 @@ def build_html():
 
     function loadOverview() {
       loadTasksData();
-      loadBlockedData();
       fetchJSON('/api/runs', 'GET').then(function(runs) {
         runs = runs || [];
         document.getElementById('stat-runs').textContent = runs.length;
@@ -963,22 +1043,11 @@ def build_html():
     function loadTasksData() {
       fetchJSON('/api/project/tasks', 'GET').then(function(data) {
         data = data || {};
-        var phases = data.phases || [];
-        var total = 0, done = 0, held = 0;
-        phases.forEach(function(p) {
-          (p.tasks || []).forEach(function(t) {
-            total++;
-            if (t.done) done++;
-          });
-        });
-        phases.forEach(function(p) {
-          (p.tasks || []).forEach(function(t) {
-            if (!t.done && (t.tags.indexOf('manual') >= 0 || t.tags.indexOf('decision') >= 0 || t.tags.indexOf('dep') >= 0 || t.tags.indexOf('download') >= 0)) held++;
-          });
-        });
-        document.getElementById('stat-tasks').textContent = total;
-        document.getElementById('stat-done').textContent = done;
-        document.getElementById('stat-held').textContent = held;
+        var c = countTasks(data.phases);
+        document.getElementById('stat-tasks').textContent = c.total;
+        document.getElementById('stat-done').textContent = c.done;
+        document.getElementById('stat-held').textContent = c.waiting;
+        document.getElementById('stat-blocked').textContent = c.blocked;
       }).catch(function(e) { console.error('loadTasksData error', e); });
     }
 
@@ -986,49 +1055,18 @@ def build_html():
       fetchJSON('/api/project/tasks', 'GET').then(function(data) {
         data = data || {};
         var phases = data.phases || [];
-        var board = document.getElementById('tasks-board');
-        board.innerHTML = '';
-        var cols = { todo: [], inProgress: [], done: [], held: [] };
+        var waiting = '', count = 0, list = '';
         phases.forEach(function(p) {
           (p.tasks || []).forEach(function(t) {
-            if (t.done) cols.done.push(t);
-            else if (t.tags.indexOf('manual') >= 0 || t.tags.indexOf('decision') >= 0 || t.tags.indexOf('dep') >= 0 || t.tags.indexOf('download') >= 0) cols.held.push(t);
-            else cols.todo.push(t);
+            if (isWaiting(t)) { waiting += waitingItemHtml(t, p.title); count++; }
           });
+          list += phaseHeadingHtml(p) + '<div class="phase-tasks">' + (p.tasks || []).map(taskCardHtml).join('') + '</div>';
         });
-        function renderCol(title, items, emptyMsg) {
-          var col = document.createElement('div');
-          col.className = 'task-column';
-          col.innerHTML = '<div class="task-column-title">' + escapeHtml(title) + ' <span style="font-weight:400;font-size:0.75rem;margin-left:0.25rem;opacity:0.7">(' + items.length + ')</span></div>';
-          items.forEach(function(t) {
-            var card = document.createElement('div');
-            card.className = 'task-card' + (t.done ? ' task-done' : '');
-            var tagsHtml = t.tags.map(function(tag) { return '<span class="task-tag tag-' + tag.toLowerCase() + '">' + escapeHtml(tag) + '</span>'; }).join('');
-            card.innerHTML = '<span class="task-id">' + escapeHtml(t.id) + '</span><div class="task-text">' + escapeHtml(t.text) + '</div><div class="task-tags">' + tagsHtml + '</div>';
-            col.appendChild(card);
-          });
-          if (items.length === 0) col.innerHTML += '<div style="font-size:0.8125rem;color:var(--text-muted);font-style:italic;padding-top:0.5rem;">' + emptyMsg + '</div>';
-          board.appendChild(col);
-        }
-        renderCol('To Do', cols.todo, 'No open tasks');
-        renderCol('In Progress', cols.inProgress, 'None');
-        renderCol('Done', cols.done, 'None');
-        renderCol('Held / Waiting', cols.held, 'None');
-        var list = document.getElementById('tasks-list');
-        list.innerHTML = '';
-        phases.forEach(function(p) {
-          var ph = document.createElement('div');
-          ph.style.marginBottom = '0.75rem';
-          ph.innerHTML = '<div style="font-size:0.8125rem;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:0.5rem;">' + escapeHtml(p.title) + '</div>';
-          (p.tasks || []).forEach(function(t) {
-            var item = document.createElement('div');
-            item.className = 'task-card' + (t.done ? ' task-done' : '');
-            var tagsHtml = t.tags.map(function(tag) { return '<span class="task-tag tag-' + tag.toLowerCase() + '">' + escapeHtml(tag) + '</span>'; }).join('');
-            item.innerHTML = '<span class="task-id">' + escapeHtml(t.id) + '</span><div class="task-text" style="margin-bottom:0.25rem;">' + escapeHtml(t.text) + '</div><div class="task-tags">' + tagsHtml + '</div>';
-            ph.appendChild(item);
-          });
-          list.appendChild(ph);
-        });
+        document.getElementById('waiting-count').textContent = count;
+        document.getElementById('waiting-list').innerHTML = waiting ||
+          '<div class="empty"><div>Nothing is waiting on you.</div></div>';
+        document.getElementById('tasks-list').innerHTML = list ||
+          '<div class="empty"><div>No tasks.</div></div>';
       }).catch(function(e) { console.error('loadTasks error', e); });
     }
 
@@ -1037,23 +1075,11 @@ def build_html():
         data = data || {};
         var entries = data.entries || [];
         var el = document.getElementById('blocked-list');
-        el.innerHTML = '';
         if (entries.length === 0) {
-          el.innerHTML = '<div class="empty"><div class="empty-icon">✅</div><div>No blocked tasks.</div></div>';
+          el.innerHTML = '<div class="empty"><div class="empty-icon">✅</div><div>No BLOCKED.md entries.</div></div>';
           return;
         }
-        entries.forEach(function(e) {
-          var item = document.createElement('div');
-          item.className = 'blocked-item';
-          var statusCls = e.status === 'open' ? 'status-open' : (e.status === 'resolved' ? 'status-resolved' : 'status-wontfix');
-          var tagsHtml = (e.tag ? [e.tag] : []).map(function(tag) { return '<span class="task-tag tag-' + tag.toLowerCase() + '">' + escapeHtml(tag) + '</span>'; }).join('');
-          item.innerHTML = '<div class="blocked-header"><div class="blocked-id">' + escapeHtml(e.id) + '</div><div class="blocked-status ' + statusCls + '">' + escapeHtml(e.status) + '</div></div>' +
-            (e.reason ? '<div class="blocked-reason">' + escapeHtml(e.reason) + '</div>' : '') +
-            (e.question ? '<div class="blocked-question">❓ ' + escapeHtml(e.question) + '</div>' : '') +
-            '<div class="blocked-tags">' + tagsHtml + '</div>';
-          el.appendChild(item);
-        });
-        document.getElementById('stat-blocked').textContent = entries.length;
+        el.innerHTML = entries.map(entryItemHtml).join('');
       }).catch(function(e) { console.error('loadBlocked error', e); });
     }
 
