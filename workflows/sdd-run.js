@@ -17,7 +17,6 @@ export const meta = {
 //   resume,                                                // optional: `sdd-tasks.py checkpoint` of an interrupted run
 //   eventsDir,                                             // .sdd/runs/<run id> for the event feed
 //   taskAllow,                                             // { "<task id>": { dependencies, downloads } } per-task overrides
-//   isolation,                                             // 'branch' | 'worktree'
 // }
 // An agent that comes back null was cut off (usage limit, crash, stop), so its task is
 // `interrupted`, never `failed`: the run stops without recording anything, and the next run
@@ -31,7 +30,6 @@ const RESERVE = 150_000
 const RESUME = A.resume?.tasks ?? {}
 const EVENTS_DIR = A.eventsDir
 const TASK_ALLOW = A.taskAllow ?? {}
-const ISOLATION = A.isolation ?? 'branch'
 
 const fs = await import('node:fs')
 const path = await import('node:path')
@@ -49,29 +47,6 @@ function event(kind, payload) {
   }
 }
 function closeEvents() {}
-
-// Worktree isolation: when [run] isolation = "worktree", each task of a parallel group runs in
-// its own git worktree so half-written sibling tasks never leak into each other's test runs.
-// The bookkeeper merges each worktree onto the run branch in task order.
-const { execFileSync } = await import('node:child_process')
-function git(args, cwd) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
-}
-function worktreeFor(taskId) {
-  return path.join(A.root, '.sdd', 'worktrees', `${A.run_id}-${taskId}`)
-}
-async function createWorktree(taskId) {
-  const wt = worktreeFor(taskId)
-  fs.mkdirSync(path.dirname(wt), { recursive: true })
-  try { git(['worktree', 'add', '--detach', wt], A.root) } catch { /* already exists */ }
-  return wt
-}
-async function mergeWorktree(taskId) {
-  const wt = worktreeFor(taskId)
-  const files = git(['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD~1', 'HEAD'], wt).trim().split('\n').filter(Boolean)
-  git(['checkout', wt, '--', ...files], A.root)
-  git(['worktree', 'remove', '--force', wt], A.root)
-}
 
 const IMPLEMENT_SCHEMA = {
   type: 'object',
@@ -315,27 +290,9 @@ for (const phaseInfo of A.plan.phases) {
       continue
     }
     // Tasks in a group touch different files, so they build at the same time.
-    // With worktree isolation, each task runs in its own git worktree.
-    const worktrees = ISOLATION === 'worktree'
-      ? await Promise.all(group.map(id => createWorktree(id)))
-      : null
-    const outcomes = (await parallel(group.map((id, i) => async () => {
-      const wt = worktrees?.[i]
-      const result = await runTask(phaseInfo.tasks[id])
-      if (wt && result.outcome === 'approved') {
-        try { git(['add', '--', ...result.files], wt) } catch {}
-        try { git(['commit', '-m', `feat(${id}): wip`], wt) } catch {}
-      }
-      return result
-    })))
+    const outcomes = (await parallel(group.map(id => () => runTask(phaseInfo.tasks[id]))))
       .map((o, i) => o ?? { id: group[i], outcome: 'failed', reason: 'task run crashed', question: 'Re-run the task.' })
-    event('group.finished', { phase: phaseInfo.id, group, outcomes: outcomes.map(o => ({ id: o.id, outcome: o.outcome })), isolation: ISOLATION })
-    // Merge worktrees onto the run branch in task order before the bookkeeper runs checks.
-    if (ISOLATION === 'worktree') {
-      for (const id of group) {
-        try { mergeWorktree(id) } catch { /* worktree may have no changes */ }
-      }
-    }
+    event('group.finished', { phase: phaseInfo.id, group, outcomes: outcomes.map(o => ({ id: o.id, outcome: o.outcome })) })
     // Cut off (usage limit, crash, stop): commit nothing and record nothing. The work stays in the
     // tree and in the journal, and the next run resumes it.
     const cut = outcomes.filter(o => o.outcome === 'interrupted')

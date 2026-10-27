@@ -80,8 +80,7 @@ Remind the user that permission prompts stop an unattended run, and that a headl
      "commit_trailer": "<the attribution trailer your instructions give for commits, or empty>",
      "resume": <the checkpoint from step 1 when resuming, else null>,
      "eventsDir": "<absolute .sdd/runs/<run id>> for the event feed",
-     "taskAllow": { "<task id>": { "dependencies": true|false, "downloads": true|false }, ... },
-     "isolation": "<run.isolation: 'branch' or 'worktree'>" }
+     "taskAllow": { "<task id>": { "dependencies": true|false, "downloads": true|false }, ... } }
    ```
    `taskAllow` gives per-task permission overrides (for example a `[dep:ok]` task may add a dependency even when `[allow] dependencies = false`). Build it from the tasks' tags: a task tagged `[dep:ok]` gets `{ dependencies: true }`, one tagged `[download:ok]` gets `{ downloads: true }`.
    The Workflow result names the run's `Transcript dir`. Add it to `.sdd/run.json` as `workflow_dir` right away: if the run is cut off, the next `/sdd-run` reads its journal there and resumes instead of starting the tasks over.

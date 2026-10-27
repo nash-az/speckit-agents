@@ -158,10 +158,3 @@ test('credit-aware pause allows starting when remaining budget is above RESERVE'
   assert.ok(labels.includes('impl:T1'))
   assert.deepEqual(out.approved, ['T1'])
 })
-
-// Skipped: leaks a `spawnSync git ENOENT` after it ends; 003 T012 deletes this test with the worktree code.
-test('isolation worktree mode runs without crashing in a non-git environment', { skip: 'removed by 003 T012' }, async () => {
-  const tmp = await fsp.mkdtemp(join(tmpdir(), 'speckit-wt-test-'))
-  const { out } = await run(['T1', 'T2'], {}, undefined, a => ({ ...a, isolation: 'worktree', root: tmp }))
-  assert.deepEqual(out.approved, ['T1', 'T2'])
-})

@@ -129,6 +129,6 @@ tests/            python3 -m unittest discover -s tests; node --test tests/workf
 ## Limits
 
 - **The phase order comes from the main session.** It reads the dependencies from `tasks.md` prose. When that prose is vague, a phase depends only on Setup and Foundational.
-- **Parallel tasks share one working tree.** Their files are disjoint by construction, but the verifier's test runs can see a sibling task that is half written. Isolation in separate worktrees is not built yet.
+- **Parallel tasks share one working tree.** Their files are disjoint by construction, but the verifier's test runs can see a sibling task that is half written. Worktree isolation is planned on the Workflow's native per-agent isolation.
 - **The checks have to be fast enough** to run after every group.
 - **`[ui]` work is not checked in a browser** during a run.
