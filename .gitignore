@@ -2,3 +2,6 @@
 __pycache__/
 .claude-plugin/types/
 .claude/worktrees/
+.sdd/scratch/
+.sdd/runs/*/
+.sdd/plugin-feedback.jsonl
