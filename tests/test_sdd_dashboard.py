@@ -365,6 +365,122 @@ class RunsTest(unittest.TestCase):
         self.assertNotIn("notice", data)
 
 
+class CurrentRunTest(unittest.TestCase):
+    """`/api/run/current` (data-model.md §4.5, FR-017): each of the five rules, in order."""
+
+    RUN_ID = "20261025-1200"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.root = base / "project"
+        (self.root / ".sdd" / "runs").mkdir(parents=True)
+        self.wf = write_workflow_dir(base / "transcripts" / "wf_current")
+        (self.wf / "agent-a01.jsonl").write_text("{}\n", encoding="utf-8")
+        self.set_age(self.wf / "journal.jsonl", 0)
+        self.set_age(self.wf / "agent-a01.jsonl", 0)
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature, dash.STATE_BASE)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
+        dash.STATE_BASE = base / "state"
+        self.status_file = dash.STATE_BASE / dash.slug_for(self.root) / "status.json"
+
+    def tearDown(self):
+        (dash.DashboardHandler.project, dash.DashboardHandler.feature, dash.STATE_BASE) = self.saved
+        self.tmp.cleanup()
+
+    @staticmethod
+    def set_age(path, minutes):
+        t = time.time() - minutes * 60
+        os.utime(path, (t, t))
+
+    def write_run_json(self, workflow_dir=None):
+        data = {"run_id": self.RUN_ID, "workflow_dir": str(workflow_dir or self.wf)}
+        (self.root / ".sdd" / "run.json").write_text(json.dumps(data), encoding="utf-8")
+
+    def write_status(self, state):
+        self.status_file.parent.mkdir(parents=True, exist_ok=True)
+        self.status_file.write_text(json.dumps({"state": state}), encoding="utf-8")
+
+    def current(self):
+        return request(self, "GET", "/api/run/current")
+
+    def test_none_without_run_json(self):
+        self.assertEqual(self.current(), {"state": "none", "run_id": None, "workflow_dir": None})
+
+    def test_paused_when_report_exists(self):
+        self.write_run_json()
+        self.set_age(self.wf / "journal.jsonl", 120)
+        self.set_age(self.wf / "agent-a01.jsonl", 120)
+        (self.root / ".sdd" / "runs" / (self.RUN_ID + ".md")).write_text("# Report\n", encoding="utf-8")
+        self.assertEqual(self.current(), {"state": "paused", "run_id": self.RUN_ID,
+                                          "workflow_dir": str(self.wf)})
+
+    def test_report_beats_recent_activity(self):
+        self.write_run_json()
+        (self.root / ".sdd" / "runs" / (self.RUN_ID + ".md")).write_text("# Report\n", encoding="utf-8")
+        self.assertEqual(self.current()["state"], "paused")
+
+    def test_paused_when_supervisor_not_stopped(self):
+        self.write_run_json()
+        self.set_age(self.wf / "journal.jsonl", 120)
+        self.set_age(self.wf / "agent-a01.jsonl", 120)
+        for state in ("waiting", "running", "held"):
+            self.write_status(state)
+            self.assertEqual(self.current()["state"], "paused", state)
+
+    def test_stopped_supervisor_does_not_pause(self):
+        self.write_run_json()
+        self.write_status("stopped")
+        self.assertEqual(self.current()["state"], "running")
+        self.set_age(self.wf / "journal.jsonl", 120)
+        self.set_age(self.wf / "agent-a01.jsonl", 120)
+        self.assertEqual(self.current()["state"], "stale")
+
+    def test_running_when_journal_recent(self):
+        self.write_run_json()
+        self.set_age(self.wf / "journal.jsonl", 29)
+        self.set_age(self.wf / "agent-a01.jsonl", 120)
+        self.assertEqual(self.current(), {"state": "running", "run_id": self.RUN_ID,
+                                          "workflow_dir": str(self.wf)})
+
+    def test_running_when_agent_file_recent(self):
+        self.write_run_json()
+        self.set_age(self.wf / "journal.jsonl", 120)
+        self.set_age(self.wf / "agent-a01.jsonl", 5)
+        self.assertEqual(self.current()["state"], "running")
+
+    def test_stale_when_nothing_changed_for_30_minutes(self):
+        self.write_run_json()
+        self.set_age(self.wf / "journal.jsonl", 31)
+        self.set_age(self.wf / "agent-a01.jsonl", 31)
+        (self.wf / "notes.txt").write_text("not an agent file\n", encoding="utf-8")  # recent, ignored
+        self.assertEqual(self.current(), {"state": "stale", "run_id": self.RUN_ID,
+                                          "workflow_dir": str(self.wf)})
+
+    def test_stale_when_workflow_dir_invalid(self):
+        bad = Path(self.tmp.name).resolve() / "transcripts" / "not-a-wf"
+        bad.mkdir(parents=True)
+        (bad / "journal.jsonl").write_text("{}\n", encoding="utf-8")  # recent, but the name is invalid
+        self.write_run_json(bad)
+        self.assertEqual(self.current()["state"], "stale")
+        self.write_run_json(Path(self.tmp.name).resolve() / "gone" / "wf_gone")
+        self.assertEqual(self.current()["state"], "stale")
+
+    def test_stale_when_run_json_unreadable(self):
+        (self.root / ".sdd" / "run.json").write_text("not json", encoding="utf-8")
+        self.assertEqual(self.current(), {"state": "stale", "run_id": None, "workflow_dir": None})
+
+    def test_banner_text_in_page(self):
+        html = dash.build_html()
+        self.assertIn("/api/run/current", html)
+        self.assertIn('id="stale-banner"', html)
+        self.assertIn("run.state === 'stale'", html)
+        self.assertIn("' left <code>.sdd/run.json</code> behind and is not running. ' +\n"
+                      "        'Start <code>/sdd-run</code> to resume or clean it up.'", html)
+        self.assertIn(".stale-banner { background: rgba(239,68,68,0.15); border: 1px solid var(--danger); "
+                      "color: var(--danger);", html)
+
+
 def request(test, method, path, body=None, status=200, host="127.0.0.1:8765"):
     """Run one request through DashboardHandler without a socket; returns the parsed body
     (JSON when it parses, else text). `host=None` sends no Host header."""

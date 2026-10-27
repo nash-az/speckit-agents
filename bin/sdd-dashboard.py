@@ -23,6 +23,7 @@ Endpoints:
     GET /api/runs/<id>/events     -- event feed for one run
     GET /api/runs/<id>/report     -- run report markdown (id must look like 20261027-1431)
     GET /api/status               -- supervisor status (usage windows)
+    GET /api/run/current          -- run state: none | running | paused | stale (data-model.md §4.5)
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import importlib.util
 import json
 import os
 import re
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -181,6 +183,48 @@ def get_status(project):
     state_dir = STATE_BASE / slug_for(project)
     status_file = state_dir / "status.json"
     return read_json(status_file)
+
+
+# A run whose journal or agent transcripts changed within this many seconds is `running` (§4.5).
+RUNNING_WINDOW_SECONDS = 30 * 60
+
+
+def _recently_modified(workflow_dir: Path, now: float) -> bool:
+    """True when `journal.jsonl` or any `agent-*.jsonl` in the directory changed in the window."""
+    for f in [workflow_dir / "journal.jsonl", *workflow_dir.glob("agent-*.jsonl")]:
+        try:
+            if now - f.stat().st_mtime < RUNNING_WINDOW_SECONDS:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def current_run(project, now=None):
+    """`GET /api/run/current` (data-model.md §4.5, FR-017): the first rule that matches wins.
+    1. no `.sdd/run.json` -> none; 2. `.sdd/runs/<run_id>.md` exists -> paused (interrupted, waiting
+    to resume); 3. supervisor `status.json` with a `state` other than "stopped" -> paused;
+    4. a valid `workflow_dir` whose journal or an agent file changed in the last 30 minutes ->
+    running; 5. otherwise stale."""
+    now = time.time() if now is None else now
+    run_file = project / ".sdd" / "run.json"
+    if not run_file.is_file():
+        return {"state": "none", "run_id": None, "workflow_dir": None}
+    run = read_json(run_file)
+    run = run if isinstance(run, dict) else {}
+    run_id = run.get("run_id") if isinstance(run.get("run_id"), str) else None
+    workflow_dir = run.get("workflow_dir") if isinstance(run.get("workflow_dir"), str) else None
+    result = {"run_id": run_id, "workflow_dir": workflow_dir}
+    # The run id names a file, so it must look like one (this also rules out path traversal).
+    if run_id and RUN_ID_RE.match(run_id) and (project / ".sdd" / "runs" / (run_id + ".md")).is_file():
+        return {"state": "paused", **result}
+    status = get_status(project)
+    if isinstance(status, dict) and status.get("state") != "stopped":
+        return {"state": "paused", **result}
+    if (workflow_dir and sdd_tasks.valid_workflow_dir(workflow_dir)
+            and _recently_modified(Path(workflow_dir), now)):
+        return {"state": "running", **result}
+    return {"state": "stale", **result}
 
 
 # Phase rollup (data-model.md §1, FR-004): most urgent first. A phase's status is the first key
@@ -425,6 +469,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/status":
             self._send_json(get_status(proj))
             return
+        if path == "/api/run/current":
+            self._send_json(current_run(proj))
+            return
         self.send_response(404)
         self.end_headers()
 
@@ -605,6 +652,8 @@ def build_html():
   .doc-toc li { margin: 0.125rem 0; }
   .doc-toc li.toc-h3 { padding-left: 1rem; }
   .doc-notice { font-size: 0.8125rem; color: var(--warning); margin-bottom: 0.5rem; }
+  .stale-banner { background: rgba(239,68,68,0.15); border: 1px solid var(--danger); color: var(--danger); border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.875rem; }
+  .stale-banner code { font-family: 'JetBrains Mono', monospace; }
   .doc-plain { white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; font-size: 0.875rem; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; }
   .raw-doc { margin-top: 0.75rem; }
 
@@ -733,6 +782,9 @@ def build_html():
       </div>
     </div>
     <div class="content">
+      <!-- Stale run (data-model.md §4.5): run.json is left behind and nothing is running -->
+      <div id="stale-banner" class="stale-banner" role="alert" style="display:none;"></div>
+
       <!-- Feature picker: no active feature (409 from a per-feature request) -->
       <div id="feature-picker" class="card feature-picker" style="display:none;">
         <div class="card-title">Choose a feature</div>
@@ -1420,7 +1472,27 @@ def build_html():
       }).catch(function(e) { console.error('loadStatus error', e); });
     }
 
+    // Run state (data-model.md §4.5): `stale` shows the red banner on every page.
+    function staleBannerHtml(runId) {
+      return 'Run ' + escapeHtml(runId || '(unknown)') + ' left <code>.sdd/run.json</code> behind and is not running. ' +
+        'Start <code>/sdd-run</code> to resume or clean it up.';
+    }
+
+    function loadRunState() {
+      fetchJSON('/api/run/current', 'GET').then(function(run) {
+        var el = document.getElementById('stale-banner');
+        if (run && run.state === 'stale') {
+          el.innerHTML = staleBannerHtml(run.run_id);
+          el.style.display = '';
+        } else {
+          el.innerHTML = '';
+          el.style.display = 'none';
+        }
+      }).catch(function(e) { console.error('loadRunState error', e); });
+    }
+
     function refreshAll() {
+      loadRunState();
       loadOverview();
       if (selectedSection === 'tasks') loadTasks();
       if (selectedSection === 'blocked') loadBlocked();
@@ -1461,6 +1533,7 @@ def build_html():
       });
 
       loadProjects();
+      loadRunState();
       setInterval(refreshAll, 3000);
     });
   })();
