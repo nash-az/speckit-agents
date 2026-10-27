@@ -18,13 +18,15 @@ Arguments (`$ARGUMENTS`): `--phases a,b` runs exactly those phase ids and skips 
 
 ## 1. Preflight. Stop and tell the user at the first failure.
 1. `.sdd/config.toml` exists. If it does not, say to run `/sdd-init` first.
+   Load the config: `python3 <helper> config`. If its `errors` list is not empty, stop: print each entry on its own line and say to fix `.sdd/config.toml`, then start `/sdd-run` again (data-model §3.8).
+   The feature folder is `run.feature`. If that is empty, read `feature_directory` from `.specify/feature.json`.
+   The tasks file is `<feature>/tasks.md`. The blocked file is `<feature>/BLOCKED.md`.
    If `.sdd/run.json` exists, an earlier run stopped without closing (a usage limit, the supervisor pausing it, a crash or a kill). Say so, with its `run_id`. Its commits stay on its branch, and its unticked tasks run again.
-   - **Resume.** If it has `workflow_dir` and you are on its branch, read what it finished: `python3 <helper> checkpoint <workflow_dir>/journal.jsonl`. If the result's `tasks` is not empty, this run resumes it: keep the tree exactly as it is (the interrupted work is in it; never stash it), keep the checkpoint for step 6, and use the earlier run's `phases` as `--phases`. Skip step 2 and items 4 and 5 below: the tree is not clean on purpose, and the checks passed when that run started. Say which tasks resume and at which step. Remove the file and go on with item 2.
+   - **Resume.** If it has `workflow_dir` and you are on its branch, first check that its tasks have not changed since it started: `python3 <helper> changed <tasks> --run-json .sdd/run.json`. If `changed` is not empty, stop, keep `.sdd/run.json` and the tree as they are, and say (data-model §11): "These tasks changed since run <its run id> started: <the ids in `changed`>. Their interrupted work is in the tree — review it, then stash it (`git stash push -u -m …`) and start again." Never guess which version of a changed task the interrupted work follows.
+     Otherwise read what it finished: `python3 <helper> checkpoint <workflow_dir>/journal.jsonl`. If the result's `tasks` is not empty, this run resumes it: keep the tree exactly as it is (the interrupted work is in it; never stash it), keep the checkpoint for step 6, and use the earlier run's `phases` as `--phases`. Skip step 2 and items 4 and 5 below: the tree is not clean on purpose, and the checks passed when that run started. Say which tasks resume and at which step. Remove the file and go on with item 2.
    - Otherwise, if the tree is not clean and you are on that run's branch, the changes are its unfinished work: the guard was on, so only the run's agents wrote files. Stash them with `git stash push -u -m "sdd-run <its run id>: unfinished work"`, and say so in the run report. Then remove the file and go on.
    - If you are on another branch, stop and show the files: they may be the user's.
-2. Load the config: `python3 <helper> config`.
-   The feature folder is `run.feature`. If that is empty, read `feature_directory` from `.specify/feature.json`.
-   The tasks file is `<feature>/tasks.md` and must exist. The blocked file is `<feature>/BLOCKED.md`.
+2. The tasks file from item 1 (`<feature>/tasks.md`) must exist.
 3. `.gitignore` lists all four of these lines (data-model §7):
    ```
    .sdd/run.json
@@ -76,7 +78,7 @@ Remind the user that permission prompts stop an unattended run, and that a headl
 ## 6. Start
 1. `git switch -c <branch_prefix><run id>`. If the current branch already starts with `<branch_prefix>`, a run is being continued: stay on it, and use its name as `branch` in `run.json`.
    If step 2 changed `tasks.md`, commit it on the new branch as `chore(sdd): converge and tag tasks`, with the commit trailer.
-2. Write `.sdd/run.json` with the keys `run_id`, `branch`, `protected_branches` and `protected_paths`, all taken from the config, and `phases`: the list of phase ids you planned.
+2. Write `.sdd/run.json` with the keys `run_id`, `branch`, `protected_branches` and `protected_paths`, all taken from the config, `phases`: the list of phase ids you planned, and `task_snapshot`: the JSON output of `python3 <helper> snapshot <tasks>`, taken after any converge-and-tag commit (data-model §3.6, §11). A later resume compares the tasks against it.
    From here on, the plugin's guard refuses pushes, branch switches, history rewrites, commits on protected branches and edits to protected paths, for every subagent.
 3. Call **Workflow** with `name: "speckit-agents:sdd-run"` and these `args`. Pass them as a JSON object, never as a string, and never pass this skill's own arguments (`--yes`, …) as `args`:
    ```json
