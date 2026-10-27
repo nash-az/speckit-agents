@@ -481,6 +481,93 @@ class CurrentRunTest(unittest.TestCase):
                       "color: var(--danger);", html)
 
 
+class TaskLogTest(unittest.TestCase):
+    """`/api/runs/<id>/tasks/<task>/log` (data-model.md §4.6, FR-021) over a fixture transcript
+    directory: the task's newest event in the last workflow directory names `agent-<id>.jsonl`."""
+
+    RUN_ID = "20261025-1200"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.root = base / "project"
+        (self.root / ".sdd" / "runs").mkdir(parents=True)
+        # An older workflow directory where T1 ran as agent a99, then the current one (a01, a02).
+        old_journal = [{"type": "started", "key": "v2:99", "agentId": "a99", "label": "impl:T1"}]
+        self.old = write_workflow_dir(base / "transcripts" / "wf_old", old_journal)
+        (self.old / "agent-a99.jsonl").write_text('{"old": true}\n', encoding="utf-8")
+        self.wf = write_workflow_dir(base / "transcripts" / "wf_log")
+        (self.wf / "agent-a01.jsonl").write_text('{"n": "impl"}\n', encoding="utf-8")
+        (self.wf / "agent-a02.jsonl").write_text(
+            "".join(json.dumps({"n": i}) + "\n" for i in range(250)), encoding="utf-8")
+        write_run(self.root, self.RUN_ID, [self.old, self.wf])
+        self.write_run_json(self.RUN_ID, self.wf)
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
+
+    def tearDown(self):
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.saved
+        self.tmp.cleanup()
+
+    def write_run_json(self, run_id, workflow_dir):
+        data = {"run_id": run_id, "workflow_dir": str(workflow_dir)}
+        (self.root / ".sdd" / "run.json").write_text(json.dumps(data), encoding="utf-8")
+
+    def log(self, run_id=RUN_ID, task="T1"):
+        return request(self, "GET", f"/api/runs/{run_id}/tasks/{task}/log")
+
+    def test_newest_event_names_the_transcript(self):
+        data = self.log()  # T1's newest event is verify:T1 (agent a02), the last 200 of 250 lines
+        self.assertEqual(set(data), {"available", "label", "lines"})
+        self.assertTrue(data["available"])
+        self.assertEqual(data["label"], "verify:T1")
+        self.assertEqual(len(data["lines"]), 200)
+        self.assertEqual(data["lines"][0], json.dumps({"n": 50}))
+        self.assertEqual(data["lines"][-1], json.dumps({"n": 249}))
+
+    def test_task_with_only_an_implementer(self):
+        (self.wf / "agent-a03.jsonl").write_text('{"n": "t2"}\n', encoding="utf-8")
+        data = self.log(task="T2")
+        self.assertEqual((data["available"], data["label"], data["lines"]),
+                         (True, "impl:T2", ['{"n": "t2"}']))
+
+    def test_long_lines_truncated(self):
+        (self.wf / "agent-a02.jsonl").write_text("x" * 5000 + "\n", encoding="utf-8")
+        self.assertEqual(self.log()["lines"], ["x" * 2000])
+
+    def test_older_workflow_directory_is_ignored(self):
+        write_run(self.root, self.RUN_ID, [self.wf, self.old])  # the last directory is now wf_old
+        self.write_run_json(self.RUN_ID, self.wf)
+        data = self.log(task="T2")  # T2 ran only in wf_log
+        self.assertFalse(data["available"])
+
+    def test_run_not_active(self):
+        self.assertEqual(self.log(run_id="20261026-0900"),
+                         {"available": False, "reason": "run is not active"})
+        (self.root / ".sdd" / "run.json").unlink()
+        self.assertEqual(self.log(), {"available": False, "reason": "run is not active"})
+
+    def test_not_found_cases_are_200(self):
+        missing = [
+            self.log(task="T9"),  # no event for the task
+            self.log(task="T3"),  # well-formed id, no event
+        ]
+        (self.wf / "agent-a02.jsonl").unlink()
+        missing.append(self.log())  # transcript file gone
+        self.write_run_json(self.RUN_ID, Path(self.tmp.name).resolve() / "gone" / "wf_gone")
+        missing.append(self.log())  # workflow directory gone
+        for data in missing:
+            self.assertFalse(data["available"])
+            self.assertIsInstance(data["reason"], str)
+            self.assertEqual(set(data), {"available", "reason"})
+
+    def test_ids_validated(self):
+        for run_id, task in (("run-001", "T1"), ("..", "T1"), (self.RUN_ID, "X1"),
+                             (self.RUN_ID, "T1x2"), (self.RUN_ID, "..")):
+            data = self.log(run_id=run_id, task=task)
+            self.assertFalse(data["available"], (run_id, task))
+
+
 def request(test, method, path, body=None, status=200, host="127.0.0.1:8765"):
     """Run one request through DashboardHandler without a socket; returns the parsed body
     (JSON when it parses, else text). `host=None` sends no Host header."""

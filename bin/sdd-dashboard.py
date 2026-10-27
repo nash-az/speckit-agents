@@ -21,6 +21,7 @@ Endpoints:
     GET /api/project/config       -- alias of /api/doc?name=config
     GET /api/runs                 -- list runs with status and counts
     GET /api/runs/<id>/events     -- event feed for one run
+    GET /api/runs/<id>/tasks/<task>/log -- live transcript of the task's agent (data-model.md §4.6)
     GET /api/runs/<id>/report     -- run report markdown (id must look like 20261027-1431)
     GET /api/status               -- supervisor status (usage windows)
     GET /api/run/current          -- run state: none | running | paused | stale (data-model.md §4.5)
@@ -225,6 +226,52 @@ def current_run(project, now=None):
             and _recently_modified(Path(workflow_dir), now)):
         return {"state": "running", **result}
     return {"state": "stale", **result}
+
+
+# Live output (data-model.md §4.6, FR-021).
+TASK_ID_RE = re.compile(r"^T\d+[a-z]?$")
+LOG_MAX_LINES = 200
+LOG_MAX_LINE_CHARS = 2000
+
+
+def _unavailable(reason):
+    return {"available": False, "reason": reason}
+
+
+def task_log(project, run_id, task_id):
+    """`GET /api/runs/<id>/tasks/<task_id>/log` (data-model.md §4.6, FR-021).
+
+    The task's newest event in the run's last workflow directory names its agent; the transcript
+    is `<workflow_dir>/agent-<agent_id>.jsonl` (research.md D7). Anything not found gives
+    `{"available": false, "reason"}`; the route always answers 200.
+    """
+    if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id):
+        return _unavailable("invalid run id")
+    if not isinstance(task_id, str) or not TASK_ID_RE.match(task_id):
+        return _unavailable("invalid task id")
+    run = read_json(project / ".sdd" / "run.json")
+    if not isinstance(run, dict) or run.get("run_id") != run_id:
+        return _unavailable("run is not active")
+    workflow_dir = run.get("workflow_dir")
+    if not isinstance(workflow_dir, str) or not sdd_tasks.valid_workflow_dir(workflow_dir):
+        return _unavailable("run has no workflow directory")
+    feed = sdd_tasks.run_events(project, run_id)
+    last = len(feed["workflow_dirs"]) - 1
+    event = next((e for e in reversed(feed["events"])
+                  if e.get("workflow") == last and e.get("id") == task_id and e.get("agent_id")), None)
+    if event is None:
+        return _unavailable("no agent for this task in the current workflow")
+    agent_id = str(event["agent_id"])
+    if not re.match(r"^[A-Za-z0-9_-]+$", agent_id):  # it names a file
+        return _unavailable("invalid agent id")
+    transcript = Path(workflow_dir) / f"agent-{agent_id}.jsonl"
+    try:
+        with transcript.open(encoding="utf-8", errors="replace") as f:
+            lines = [line.rstrip("\n") for line in f]
+    except OSError:
+        return _unavailable("transcript not found")
+    return {"available": True, "label": event.get("label"),
+            "lines": [line[:LOG_MAX_LINE_CHARS] for line in lines[-LOG_MAX_LINES:]]}
 
 
 # Phase rollup (data-model.md §1, FR-004): most urgent first. A phase's status is the first key
@@ -454,6 +501,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json({"error": "not found"}, 404)
                 return
             self._send_json(events)
+            return
+        m = re.match(r"^/api/runs/([^/]+)/tasks/([^/]+)/log$", path)
+        if m:
+            self._send_json(task_log(proj, m.group(1), m.group(2)))
             return
         m = re.match(r"^/api/runs/([^/]+)/report$", path)
         if m:
