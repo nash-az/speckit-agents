@@ -56,3 +56,21 @@ plugin to test on a user project.
   or reading `skills/sdd-run/SKILL.md` shows as a refusal (4 times this run), and one line was reported twice.
   → Match refusal markers only (`Permission`, `<tool_use_error>`, the guard's own message prefix), not the word.
 - **zsh gotcha:** `echo ======` fails (`=` expansion), which hid a `cat` result in the operator's first command.
+
+## Follow-up runs the same day
+- **Run `20261027-1423` (T043–T044, the event-feed fix), from the frozen copy:** 2 of 2 approved on the first attempt.
+  The repo's workflow has no `import()` / `Date.now()` left. `sdd-tasks.py events` on run 1352's real journal gave
+  50 events, all timestamped. Then the install was pointed back at this repo (cache `2f4f544`).
+- **Run `20261027-1431` (Phase 3, T013–T020, dashboard MVP), from the repo's own plugin:** 8 of 8 approved on the first
+  attempt, 24 agents, ~846k tokens, 26 min, $7.86. First real launch of the fixed workflow; the skill wrote
+  `.sdd/runs/<id>/workflows.json` as T044 specifies, and `events` read 40 events from it. Operator smoke test of the
+  dashboard: documents served, `{"missing": true}` for an absent BLOCKED.md, 421 for a foreign Host, 404 for
+  traversal and bad run ids; `/api/project/select` is memory only.
+- **Refusals in run 1431, both recovered:**
+  - `dontAsk` refused a compound command (`cd …; grep … | head; sed …`), as before.
+  - **The guard refused a write to `.sdd/scratch/dash-T017.js`.** The implementer prompt says scratch under
+    `.sdd/scratch/<run id>/<task id>/` "is allowed by the guard", but the carve-out is data-model §6, T036 (Phase 7),
+    not built yet. The prompt promises something the guard doesn't do until then; the agent also skipped the
+    `<run id>/<task id>` subfolder.
+- **Phase 1 (T001, T002) was never run:** the pilots used `--phases 2`. T001's "baseline on the unchanged tree" can
+  no longer be done as written.
