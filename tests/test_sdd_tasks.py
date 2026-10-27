@@ -277,6 +277,28 @@ class SupersededTest(unittest.TestCase):
         self.assertEqual(runnable, {"T010", "T030"})
 
 
+class HeldDependencyTest(unittest.TestCase):
+    """FR-009, research.md "Dependency of a held task": a dependent of a held task is held, to a fixpoint."""
+
+    def test_after_manual_task_is_held_to_fixpoint(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        tasks = tmp / "tasks.md"
+        # T003 is listed before T002, so one pass is not enough: only a fixpoint holds it.
+        tasks.write_text(
+            "## Phase 1: Setup\n\n"
+            "- [ ] T001 [manual] Record the audio in `a.wav`\n"
+            "- [ ] T003 Tune the model after T002 in `c.py`\n"
+            "- [ ] T002 Use the recording after T001 in `b.py`\n"
+            "- [ ] T004 Unrelated work in `d.py`\n",
+            encoding="utf-8")
+        result = sdd.plan(sdd.parse_tasks(tasks), {}, sdd.load_config(None), None, None)
+        held = {h["id"]: h["tag"] for h in result["held"]}
+        self.assertEqual(held, {"T001": "manual", "T002": "held", "T003": "held"})
+        runnable = {tid for p in result["phases"] for g in p["groups"] for tid in g}
+        self.assertEqual(runnable, {"T004"})
+
+
 class WriteTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
