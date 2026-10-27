@@ -43,18 +43,41 @@ reliable tool calling. Documented as best-effort.
 ### D5. Icons
 Inline SVG glyphs in one JS object, no icon library. Extends the dashboard's existing pill pattern.
 
-### D6. Event feed path
-The workflow writes `.sdd/runs/<run id>/events.jsonl` (`workflows/sdd-run.js` `event()`, with
-`eventsDir` from `skills/sdd-run/SKILL.md` step 6.4). The dashboard reads flat
-`.sdd/runs/<id>.jsonl` (`list_runs()`, `get_events()`), and `tests/test_sdd_dashboard.py` writes
-its fixture at the same wrong path. Fix the reader and the fixture. Keep the existing 3-second
-polling instead of adding server-sent events.
+### D6. Events come from the workflow journal (revised 2026-10-27)
+First decision: the workflow writes `.sdd/runs/<run id>/events.jsonl` with `event()`. The Phase 2
+pilot (`logs/2026-10-27-phase2-pilot.md`) found that impossible. The Workflow tool refuses a script
+that uses `import()` (`SyntaxError: import() is not available in workflow scripts`, Claude Code
+2.1.311), and the workflow-authoring reference says scripts have no file system or Node.js API and
+that `Date.now()` throws. The workflow can neither write a file nor stamp a time.
+
+Options:
+- (a) The bookkeeper appends events after each group. Rejected: tokens for every event, nothing
+  between group ends (no "implementing" / "verifying"), and the guard keeps subagents out of `.sdd/**`.
+- (b) The main loop writes the events after the Workflow returns. Rejected: nothing live during a run.
+- (c) **Chosen:** derive the events from the transcript directory the engine already writes live for
+  every workflow: `journal.jsonl` (a `started` and a `result` or `failed` line per agent, with the label
+  the workflow gave it) and `agent-<agentId>.jsonl` (every line has an ISO `timestamp`). Stdlib only
+  (Principle VII), no tokens, live, and the event kinds the dashboard uses stay the same.
+  `bin/sdd-tasks.py` already reads this journal to resume (`checkpoint()`, `LABEL_RE`).
+
+Costs of (c):
+- The transcript lives under `~/.claude/projects/…`, and Claude Code deletes it after `cleanupPeriodDays`
+  (default 30). Older runs lose their timeline; the committed report stays.
+- Run and phase events (`phase.started`, `phase.skipped`, `run.finished`, `task.resumed`,
+  `task.interrupted`) are not in the journal. The report and `.sdd/run.json` carry those facts
+  (data-model.md §3.9, §4.5).
+
+The main loop records each workflow's transcript directory in `.sdd/runs/<run id>/workflows.json`
+(a resumed run adds one). Keep the existing 3-second polling.
 
 ### D7. Live output
 Per-agent transcripts are `agent-<id>.jsonl` in the workflow's transcript directory (confirmed in the
 workflow-authoring reference). `workflow_dir` is in `.sdd/run.json` while a run is active. The
-label → file mapping is not confirmed; the implementing task inspects a real journal first and
-falls back to a content search (`data-model.md` §4.6).
+label → file mapping is **confirmed** (Phase 2 pilot, 2026-10-27): every journal `started` line
+carries `agentId` and `label`, e.g.
+`{"type":"started","key":"v2:6817…","agentId":"a4160c52caf1c510e","label":"impl:T003","phase":"Build"}`,
+and that agent's transcript is `agent-a4160c52caf1c510e.jsonl` (its `.meta.json` repeats the label as
+`description`). Use the mapping; no content search (`data-model.md` §4.6).
 
 ### D8. Localhost only
 `main()` already binds `127.0.0.1` with no `--host` option. Added: a Host-header check against DNS
@@ -104,7 +127,7 @@ cannot write to the plugin directory (sandbox), which is why harvesting is a sep
 - **Scratch dir (FR-013) (corrected)**: the guard carve-out is not enough. Nothing git-ignores
   `.sdd/scratch/`, though the agent prompts say it is; scratch files would show up as "unclaimed
   changes" and make the next preflight refuse a dirty tree.
-- **Event directories (FR-026, new)**: `.sdd/runs/<id>/events.jsonl` is neither committed nor
+- **Event directories (FR-026, new)**: `.sdd/runs/<id>/events.jsonl` (now `workflows.json`, D6) is neither committed nor
   ignored, so after any run the tree has an untracked file and the next `/sdd-run` preflight stops.
 - **Dashboard picks an arbitrary feature (FR-027, new)**: `find_file()` returns the first match in
   `specs/*/` directory order; with several features (this repo has three) it can show the wrong

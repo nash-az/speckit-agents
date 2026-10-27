@@ -73,7 +73,7 @@ next run to start cleanly after this one.
    writes, and lists every event for that run.
 2. Given a finished or abandoned run with no matching run report (an orphaned `run.json`), the
    dashboard and `/sdd-status` both flag it as stale rather than treating it as resumable.
-3. Given a run has finished and written its event feed and scratch files, when the next `/sdd-run`
+3. Given a run has finished and left its run files and scratch files, when the next `/sdd-run`
    starts, its clean-tree preflight passes (runtime files never show up as uncommitted changes).
 
 ### User Story 3 - One true model for "needs a person" or "done with" (P1)
@@ -165,8 +165,9 @@ about the plugin landing in the app repo's history.
 - **FR-004**: A phase or run status MUST roll up to the most urgent status among its children.
 - **FR-005**: Held tasks and blocked tasks MUST appear together in one view of everything waiting on
   a person, each with its question.
-- **FR-006**: The dashboard MUST read the run event feed from the exact path the workflow writes it
-  to, and MUST show new events without a manual page reload.
+- **FR-006**: The dashboard MUST read a run's events from the run's own record of what its agents
+  did, not from a separate copy that can drift from it, and MUST show new events without a manual
+  page reload.
 - **FR-007**: A task's parked state (held, blocked, wontfix, moved, superseded) MUST be represented
   in one schema with one source of truth, read the same way by the CLI, the dashboard and run
   reports. The user-facing text written into BLOCKED.md MUST describe the same behavior the code
@@ -235,7 +236,8 @@ about the plugin landing in the app repo's history.
   retrying+count, paused, done) derived live from the event feed and never persisted.
 - **BLOCKED.md entry**: task id, status (open, resolved, wontfix, moved), tag, reason, question,
   answer. Several entries for one task id are allowed; the last one wins.
-- **Run event**: one line in `.sdd/runs/<run id>/events.jsonl`.
+- **Run event**: one step an agent of the run took (started, implemented, verified, committed, blocked),
+  derived from the engine's journal of the run.
 - **Run profile**: name, model, optional non-secret environment settings.
 - **Role model setting**: role (implementer, verifier, evaluator, bookkeeper) → model.
 - **Learning entry**: date, run id, kind (project or plugin), text.

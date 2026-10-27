@@ -190,6 +190,48 @@ Remove `"isolation"` from `DEFAULT_CONFIG`.
 
 ---
 
+### 3.9 Run events from the workflow journal (FR-006, FR-021, FR-024)
+Workflow scripts have no file system and no clock (research.md D6), so no event file is written.
+`bin/sdd-tasks.py` derives the events from the engine's transcript directories instead.
+
+**Where the directories are.** `.sdd/runs/<run id>/workflows.json` is `{"workflow_dirs": ["<abs>", …]}`,
+oldest first. The main loop writes it (`skills/sdd-run/SKILL.md` step 6.4, at the moment it adds
+`workflow_dir` to `.sdd/run.json`); a resumed run appends its new directory. Git-ignored by
+`.sdd/runs/*/` (§7).
+
+**`valid_workflow_dir(path) -> bool`**: true only when the path is absolute, its name matches
+`^wf_[A-Za-z0-9_-]+$`, it is a directory, and it contains `journal.jsonl`. Every reader skips
+directories that fail this (a project file must not make the dashboard read arbitrary paths).
+
+**`journal_events(workflow_dirs: list[Path]) -> list[dict]`**. For each valid directory in order,
+read `journal.jsonl` line by line, skipping lines that don't parse (same as `checkpoint()`).
+Remember `agentId → label` from `started` lines. Match labels with the existing `LABEL_RE`
+(`kind` impl / eval / verify / commit / repair, `ids`, attempt `n`); ignore other labels.
+- `ts`: for a `started` line, the `timestamp` of the first line of `<dir>/agent-<agentId>.jsonl`; for
+  `result` / `failed`, the `timestamp` of its last line (read only the last 64 KB). Missing → `null`.
+- Every event: `{"ts", "kind", "id", "label", "agent_id", "workflow": <index into workflow_dirs>}`
+  plus the fields below. `id` is the task id; commit and repair events use `"ids": [...]` instead.
+
+| journal line | event(s) |
+|---|---|
+| `started` impl / eval | `task.started` with `attempt` (n, default 1) |
+| `result` impl / eval, `status: done` | `task.implemented` with `attempt` |
+| `result` impl / eval, `status: blocked` | `task.blocked` with `reason`, `tag` |
+| `result` verify | `task.verified` with `verdict`, `problems`; then `task.approved` if `verdict == "approve"` |
+| `started` repair | `group.repair` with `ids` |
+| `result` commit | `group.finished` with `ids`, `checks_passed`, `commits`; then `task.blocked` for each id in `blocked_recorded` |
+| `failed` (any task label) | `task.failed` with `error` (the line's `error` field, or `""`) |
+
+`verify:` labels carry no attempt suffix; journal order keeps the attempts apart.
+Kinds no longer produced: `task.resumed`, `task.interrupted`, `phase.started`, `phase.skipped`,
+`run.finished`. Consumers use the run state (§4.5) and the report instead.
+
+**`run_events(project: Path, run_id: str) -> dict`**: reads `workflows.json` and returns
+`{"run_id", "workflow_dirs", "missing": [dirs that failed valid_workflow_dir], "events": journal_events(valid)}`.
+No `workflows.json` → `workflow_dirs: []`, `events: []`.
+
+**CLI:** `sdd-tasks.py events <project dir> <run id>` prints `run_events()` as JSON.
+
 ## 4. `bin/sdd-dashboard.py`
 
 ### 4.1 Use `sdd-tasks.py` for all task state (FR-002, FR-007)
@@ -245,9 +287,11 @@ under a "Raw document" toggle.
 
 ### 4.4 Events (FR-006)
 `list_runs()`: iterate `.sdd/runs/` **directories** (`entry.is_dir()`); a run is a directory
-containing `events.jsonl`; `run_id = entry.name`. `get_events()` reads
-`project/.sdd/runs/<run_id>/events.jsonl` (validate `run_id` as in §4.3). Sort runs by the directory
-name descending (run ids are timestamps), not by mtime. The UI already polls every 3 s
+containing `workflows.json`; `run_id = entry.name`. `get_events()` returns `run_events(project, run_id)`
+from `sdd-tasks.py` (§3.9, loaded as in §4.1; validate `run_id` as in §4.3). Sort runs by the directory
+name descending (run ids are timestamps), not by mtime. A run whose `missing` is non-empty and whose
+`events` is empty shows "This run's transcript is gone (Claude Code keeps transcripts for
+`cleanupPeriodDays`, default 30); its report is `.sdd/runs/<id>.md`." The UI already polls every 3 s
 (`setInterval(refreshAll, 3000)`); keep polling — no server-sent events.
 
 ### 4.5 Stale run (FR-017)
@@ -256,7 +300,8 @@ name descending (run ids are timestamps), not by mtime. The UI already polls eve
 - `.sdd/runs/<id>.md` exists for its `run_id` → `paused` (an interrupted run waiting to resume — its
   report is written and committed, the skill keeps `run.json`);
 - supervisor `status.json` exists and its `state` is not `"stopped"` → `paused`;
-- the run's `events.jsonl` has an event newer than 30 minutes and no `run.finished` → `running`;
+- `run.json`'s `workflow_dir` passes `valid_workflow_dir()` (§3.9) and its `journal.jsonl` or any
+  `agent-*.jsonl` in it was modified less than 30 minutes ago → `running`;
 - otherwise → `stale`.
 The UI shows `stale` as a red banner: "Run <id> left `.sdd/run.json` behind and is not running.
 Start `/sdd-run` to resume or clean it up." `/sdd-status` applies the same rules (document them in
@@ -266,19 +311,17 @@ Start `/sdd-run` to resume or clean it up." `/sdd-status` applies the same rules
 `GET /api/runs/<id>/tasks/<task_id>/log` (validate both ids; task id `^T\d+[a-z]?$`):
 1. `workflow_dir` from `.sdd/run.json` when its `run_id` equals `<id>`; otherwise →
    `{"available": false, "reason": "run is not active"}`.
-2. The task's current label: the newest event for the task in `events.jsonl` decides —
-   `task.started`/`task.verified` with reject → `impl:<task>` (or `eval:<task>` if the task has the
-   `eval` tag), `task.implemented` → `verify:<task>`. Attempt suffixes (`#2`) are ignored when matching.
-3. Among `<workflow_dir>/agent-*.jsonl`, take the newest-modified file whose first 64 KB contain
-   that label string. The implementing task MUST first open one real `journal.jsonl` and one
-   `agent-*.jsonl` from a finished run to confirm whether the journal maps labels to agent ids; if
-   it does, use that mapping instead of the content search.
+2. The task's agent: the newest event for the task in `run_events()` (§3.9) whose `workflow` is the
+   last directory. Its `agent_id` names the transcript (the journal maps labels to agent ids,
+   research.md D7). No such event → not available.
+3. The file is `<workflow_dir>/agent-<agent_id>.jsonl`.
 4. Return `{"available": true, "label": ..., "lines": [last 200 lines, each truncated to 2000 chars]}`;
    anything not found → `{"available": false, "reason": "..."}` with status 200, never 404/500.
 Transient status for the Tasks view comes from the same event feed: newest event per task id —
-`task.started|task.resumed → running(Implementing)`, `task.implemented → running(Verifying)`,
+`task.started → running(Implementing)`, `task.implemented → running(Verifying)`,
 `task.verified` with `verdict: reject` → `retrying` (n = number of rejects so far + 1,
-max = `max_retries` + 1), `task.approved → running(Committing)`, `task.interrupted → paused`.
+max = `max_retries` + 1), `task.approved → running(Committing)`. When the run state (§4.5) is
+`paused`, a task whose newest event is one of these shows `paused` instead.
 `task.blocked|task.failed` → no transient state (the parked state from §2 applies after the
 bookkeeper records it).
 
@@ -337,6 +380,17 @@ Spread into each `agent()` call: `implement()` → `modelOpt(evalTask ? 'evaluat
 
 ---
 
+### 5.5 No event feed in the workflow (FR-006)
+Workflow scripts can't `import()`, have no file system, and `Date.now()` / `Math.random()` /
+argless `new Date()` throw (research.md D6). In `workflows/sdd-run.js` delete the `fs` and `path`
+imports, `EVENTS_DIR`, `event()`, `closeEvents()`, every `event(…)` and `closeEvents()` call, and
+`eventsDir` from the args comment. In `skills/sdd-run/SKILL.md` step 6.4 remove `"eventsDir"` from the
+args JSON, and where the main loop adds `workflow_dir` to `.sdd/run.json`, also create or extend
+`.sdd/runs/<run id>/workflows.json` (§3.9). In step 7 replace the report line about
+`.sdd/runs/<run id>/events.jsonl` with "the run's events: `python3 <helper> events . <run id>`".
+Tests: delete `event feed writes …` in `tests/workflow.test.mjs` and add a test that the workflow
+source contains none of `import(`, `require(`, `Date.now(`, `Math.random(`, `new Date()`.
+
 ## 6. Guard (`hooks/rules.ts`) — scratch carve-out (FR-013)
 
 In `protectedPath()`, before matching globs:
@@ -361,7 +415,7 @@ Required `.gitignore` lines in a project:
 .sdd/runs/*/
 .sdd/plugin-feedback.jsonl
 ```
-(`.sdd/runs/*/` ignores the per-run event directories; `.sdd/runs/<id>.md` reports stay tracked.)
+(`.sdd/runs/*/` ignores the per-run directories with `workflows.json`; `.sdd/runs/<id>.md` reports stay tracked.)
 - `skills/sdd-init/SKILL.md`: add all four lines (today it adds only `.sdd/run.json`) and tell the
   person to commit `.gitignore`.
 - `skills/sdd-run/SKILL.md` preflight, new first check before the clean-tree check: if `.gitignore`
@@ -376,7 +430,7 @@ Required `.gitignore` lines in a project:
 
 **At the end of every run** (`skills/sdd-run/SKILL.md` step 7, both the interrupted and the normal
 branch), the main loop, after writing the run report:
-1. Reads `.sdd/runs/<id>/events.jsonl` and the run outcome, and writes **project lessons** — facts
+1. Reads the run's events (`python3 <helper> events . <run id>`, §3.9) and the run outcome, and writes **project lessons** — facts
    true of this codebase that would change how the next run goes (a check command that needs a
    flag, a path the sandbox refuses, a test that is slow or flaky, a recurring verifier complaint) —
    appended to `.sdd/learnings.md` under `## <run id> (<YYYY-MM-DD>)` as bullets. No lessons → no

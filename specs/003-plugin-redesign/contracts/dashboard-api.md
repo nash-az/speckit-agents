@@ -14,8 +14,8 @@ Implementation details: `data-model.md` §4.
 | `GET /api/project/tasks` | changed (FR-002, FR-007) | `{"text", "phases": [{"id", "title", "status", "tasks": [Task]}]}` — Task per `data-model.md` §2; phase `status` is the §1 rollup of its tasks' parked/done states only; the page recomputes it with live transient states |
 | `GET /api/project/blocked` | changed | `{"text", "entries": [{"id", "status", "tag", "reason", "question", "answer"}]}`, last entry per id |
 | `GET /api/run/current` | new (FR-017) | `{"state": "none"\|"running"\|"paused"\|"stale", "run_id", "workflow_dir"}` |
-| `GET /api/runs` | changed (FR-006) | runs from `.sdd/runs/<id>/` directories, newest id first; item shape unchanged (`id`, `events_count`, `approved`, `blocked`, `interrupted`, `finished`, `stopped`) |
-| `GET /api/runs/<id>/events` | changed (FR-006) | events from `.sdd/runs/<id>/events.jsonl` |
+| `GET /api/runs` | changed (FR-006) | runs from `.sdd/runs/<id>/` directories holding `workflows.json`, newest id first; item shape unchanged (`id`, `events_count`, `approved`, `blocked`, `interrupted`, `finished`, `stopped`) |
+| `GET /api/runs/<id>/events` | changed (FR-006) | `run_events()` (data-model.md §3.9): events derived from the workflow journals named in `.sdd/runs/<id>/workflows.json` |
 | `GET /api/runs/<id>/report` | unchanged path, id validated | run report markdown |
 | `GET /api/runs/<id>/tasks/<task>/log` | new (FR-021) | `{"available": true, "label", "lines": [...]}` or `{"available": false, "reason"}` — always 200 |
 | `GET /api/status` | unchanged | supervisor `status.json` |
