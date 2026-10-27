@@ -140,6 +140,27 @@ class PlanTest(unittest.TestCase):
         held = {h["id"] for h in self.plan(dependencies=True)["held"]}
         self.assertNotIn("T010", held)
 
+    def test_dep_ok_approves_one_task(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        tasks = tmp / "tasks.md"
+        tasks.write_text(
+            "## Phase 1: Setup\n\n"
+            "- [ ] T001 [dep] [dep:ok] Add `numpy` in `pyproject.toml`\n"
+            "- [ ] T002 [dep] Add `scipy` in `setup.cfg`\n"
+            "- [ ] T003 [download] [DOWNLOAD:OK] Fetch the model into `models/a.bin`\n",
+            encoding="utf-8")
+        parsed = sdd.parse_tasks(tasks)
+        config = sdd.load_config(None)
+        self.assertFalse(config["allow"]["dependencies"])
+        held = {h["id"]: h["tag"] for h in sdd.plan(parsed, {}, config, None, None)["held"]}
+        self.assertEqual(held, {"T002": "dep"})
+        self.assertEqual(tasks_by_id(parsed)["T003"]["tags"], ["download", "download:ok"])
+
+    def test_upper_case_dep_ok_is_lowercased(self):
+        self.assertEqual(sdd.parse_task(sdd.TASK_RE.match("- [ ] T001 [dep] [DEP:OK] Add x"), 1)["tags"],
+                         ["dep", "dep:ok"])
+
     def test_groups_split_on_shared_files_and_non_parallel(self):
         phases = {p["id"]: p["groups"] for p in self.plan()["phases"]}
         self.assertEqual(phases["1"], [["T002", "T003"]])  # T003 is resolved in BLOCKED.md: runnable

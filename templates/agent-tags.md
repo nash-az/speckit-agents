@@ -7,6 +7,7 @@ Unattended runs (`/sdd-run` from speckit-agents) read extra tags written after `
 - `[decision]` — the task must settle a question the spec, plan and research leave open; name the question in the task. Held until answered.
 - `[dep]` — adds a package not yet in the project's manifests. Held unless the run allows dependencies.
 - `[download]` — needs a large model or dataset not yet on disk. Held unless the run allows downloads.
+- `[dep:ok]` / `[download:ok]` — added next to `[dep]` / `[download]` by a person to approve that one task even when the run does not allow dependencies / downloads.
 - `[eval]` — a measurement (accuracy check, benchmark, calibration): done only when it has been run on the real data and the numbers are recorded.
 - `[ui]` — changes what the user sees; verified by build and tests during the run and listed for a person to look at.
 

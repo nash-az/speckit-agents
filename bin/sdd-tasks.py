@@ -52,7 +52,8 @@ HOLD_TAGS = {
     "download": "downloads a large model or dataset",
 }
 ALLOW_KEYS = {"dep": "dependencies", "download": "downloads"}
-KNOWN_TAGS = set(HOLD_TAGS) | {"eval", "ui"}
+# `[dep:ok]` / `[download:ok]`: a person approved that one task's dependency / download.
+KNOWN_TAGS = set(HOLD_TAGS) | {"eval", "ui", "dep:ok", "download:ok"}
 
 DEFAULT_CONFIG = {
     "run": {
@@ -215,7 +216,8 @@ def hold_reason(task: dict, blocked: dict[str, str], allow: dict) -> tuple[str, 
     """Why a task is held, or None if runnable.
 
     A task is held when it is tagged for a person (manual, decision, dep unless
-    allowed, download unless allowed), or when its BLOCKED.md entry has a
+    allowed by the run or by `[dep:ok]` on the task, download unless allowed by
+    the run or by `[download:ok]`), or when its BLOCKED.md entry has a
     holding status (open, wontfix, moved). A resolved entry does not hold: the
     task is runnable again. A task whose dependency is open and held is held
     too (propagated in plan()).
@@ -224,7 +226,7 @@ def hold_reason(task: dict, blocked: dict[str, str], allow: dict) -> tuple[str, 
         if tag not in HOLD_TAGS:
             continue
         allow_key = ALLOW_KEYS.get(tag)
-        if allow_key and allow.get(allow_key):
+        if allow_key and (allow.get(allow_key) or f"{tag}:ok" in task["tags"]):
             continue
         return tag, HOLD_TAGS[tag]
     status = blocked.get(task["id"])
