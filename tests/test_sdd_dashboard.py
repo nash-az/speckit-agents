@@ -356,6 +356,90 @@ class ActiveFeatureTest(unittest.TestCase):
         self.assertFalse(hasattr(dash, "find_file"))
 
 
+class DocEndpointTest(unittest.TestCase):
+    """data-model.md §4.3 (FR-001): `/api/doc?name=` serves a fixed name set, nothing else."""
+
+    FEATURE_FILES = {"spec": "spec.md", "plan": "plan.md", "research": "research.md",
+                     "data-model": "data-model.md", "quickstart": "quickstart.md", "tasks": "tasks.md",
+                     "blocked": "BLOCKED.md", "decisions": "decisions.md"}
+    PROJECT_FILES = {"constitution": ".specify/memory/constitution.md",
+                     "learnings": ".sdd/learnings.md", "config": ".sdd/config.toml"}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.feature = self.root / "specs" / "001-only"
+        self.feature.mkdir(parents=True)
+        (self.root / ".specify" / "memory").mkdir(parents=True)
+        (self.root / ".sdd" / "runs").mkdir(parents=True)
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
+
+    def tearDown(self):
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.saved
+        self.tmp.cleanup()
+
+    def write_all(self):
+        for name, rel in self.FEATURE_FILES.items():
+            (self.feature / rel).write_text(f"# {name}\n", encoding="utf-8")
+        for name, rel in self.PROJECT_FILES.items():
+            (self.root / rel).write_text(f"# {name}\n", encoding="utf-8")
+
+    def test_name_set_is_exact(self):
+        self.assertEqual(set(dash.DOC_NAMES), set(self.FEATURE_FILES) | set(self.PROJECT_FILES))
+
+    def test_each_name(self):
+        self.write_all()
+        for name in list(self.FEATURE_FILES) + list(self.PROJECT_FILES):
+            self.assertEqual(request(self, "GET", f"/api/doc?name={name}"), f"# {name}\n", name)
+
+    def test_content_types(self):
+        self.write_all()
+        self.assertEqual(content_type(self, "/api/doc?name=config"), "text/plain")
+        self.assertEqual(content_type(self, "/api/doc?name=spec"), "text/markdown")
+
+    def test_each_name_missing(self):
+        for name in list(self.FEATURE_FILES) + list(self.PROJECT_FILES):
+            self.assertEqual(request(self, "GET", f"/api/doc?name={name}"), {"missing": True}, name)
+
+    def test_unknown_names_are_404(self):
+        for query in ("name=readme", "name=../../etc/passwd", "name=..%2F..%2Fetc%2Fpasswd",
+                      "name=spec.md", "name=", "", "name=spec&name=plan"):
+            request(self, "GET", f"/api/doc?{query}", status=404)
+
+    def test_feature_doc_needs_a_feature(self):
+        (self.root / "specs" / "002-other").mkdir()
+        (self.root / ".sdd" / "config.toml").write_text("# cfg\n", encoding="utf-8")
+        result = request(self, "GET", "/api/doc?name=research", status=409)
+        self.assertEqual(result, {"error": "choose a feature", "features": ["001-only", "002-other"]})
+        self.assertEqual(request(self, "GET", "/api/doc?name=config"), "# cfg\n")  # project-wide
+
+    def test_aliases(self):
+        self.write_all()
+        for alias in ("spec", "plan", "decisions", "config"):
+            self.assertEqual(request(self, "GET", f"/api/project/{alias}"), f"# {alias}\n", alias)
+        (self.feature / "plan.md").unlink()
+        self.assertEqual(request(self, "GET", "/api/project/plan"), {"missing": True})
+
+    def test_report_run_id_validated(self):
+        (self.root / ".sdd" / "runs" / "20261027-1431.md").write_text("# Report\n", encoding="utf-8")
+        (self.root / ".sdd" / "secret.md").write_text("# Secret\n", encoding="utf-8")
+        self.assertEqual(request(self, "GET", "/api/runs/20261027-1431/report"), "# Report\n")
+        for bad in ("run-001", "..%2Fsecret", "..", "2026102-1431", "20261027-1431X", "20261027-1431.md"):
+            request(self, "GET", f"/api/runs/{bad}/report", status=404)
+        request(self, "GET", "/api/runs/20261027-0000/report", status=404)  # valid id, no report
+
+
+def content_type(test, path):
+    handler = dash.DashboardHandler.__new__(dash.DashboardHandler)
+    handler.path, handler.command = path, "GET"
+    handler.request_version, handler.requestline = "HTTP/1.1", f"GET {path} HTTP/1.1"
+    handler.wfile, handler.rfile, handler.headers = io.BytesIO(), io.BytesIO(), {}
+    handler.do_GET()
+    head = handler.wfile.getvalue().partition(b"\r\n\r\n")[0].decode()
+    return re.search(r"Content-Type: ([^\r\n]+)", head).group(1)
+
+
 def wait_for(url, timeout=10):
     deadline = time.time() + timeout
     last = None
@@ -406,7 +490,7 @@ def main():
         {"ts": 1007, "kind": "run.finished", "run_id": "run-001", "stopped": None, "approved": 1, "blocked": 1, "skipped": 0},
     ]
     (PROJECT / ".sdd" / "runs" / "run-001.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n")
-    (PROJECT / ".sdd" / "runs" / "run-001.md").write_text("# Run Report\n\n- approved: T1\n- blocked: T2\n")
+    (PROJECT / ".sdd" / "runs" / "20261027-1431.md").write_text("# Run Report\n\n- approved: T1\n- blocked: T2\n")
 
     # Sample status.json (same slug computation as the server)
     resolved = str(PROJECT.resolve())
@@ -446,12 +530,12 @@ def main():
         print("PASS: /api/runs/run-001/events")
 
         # /api/runs/<id>/report
-        req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/runs/run-001/report")
+        req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/runs/20261027-1431/report")
         with urllib.request.urlopen(req, timeout=5) as resp:
             report = resp.read().decode()
         assert "# Run Report" in report
         assert "approved: T1" in report
-        print("PASS: /api/runs/run-001/report")
+        print("PASS: /api/runs/20261027-1431/report")
 
         # /api/status
         st = api("/api/status")
@@ -504,7 +588,7 @@ def main():
 
         # /api/runs/<id>/report not found
         try:
-            urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/runs/nonexistent/report", timeout=5)
+            urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/runs/20261027-0000/report", timeout=5)
             assert False, "expected 404"
         except urllib.error.HTTPError as e:
             assert e.code == 404

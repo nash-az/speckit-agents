@@ -12,15 +12,16 @@ Endpoints:
     GET /                         -- single-page HTML dashboard
     GET /api/projects             -- discover Speckit projects
     POST /api/project/select      -- { "path"?, "feature"? } select a project and/or feature (memory only)
-    GET /api/project/spec         -- read spec.md
-    GET /api/project/plan         -- read plan.md
+    GET /api/doc?name=<name>      -- one document from a fixed name set (missing -> {"missing": true})
+    GET /api/project/spec         -- alias of /api/doc?name=spec
+    GET /api/project/plan         -- alias of /api/doc?name=plan
     GET /api/project/tasks        -- read tasks.md (parsed)
     GET /api/project/blocked      -- read BLOCKED.md
-    GET /api/project/decisions    -- read decisions.md
-    GET /api/project/config       -- read .sdd/config.toml
+    GET /api/project/decisions    -- alias of /api/doc?name=decisions
+    GET /api/project/config       -- alias of /api/doc?name=config
     GET /api/runs                 -- list runs with status and counts
     GET /api/runs/<id>/events     -- event feed for one run
-    GET /api/runs/<id>/report     -- run report markdown
+    GET /api/runs/<id>/report     -- run report markdown (id must look like 20261027-1431)
     GET /api/status               -- supervisor status (usage windows)
 """
 
@@ -33,6 +34,7 @@ import json
 import os
 import re
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 # All task state comes from bin/sdd-tasks.py, so the CLI and the dashboard cannot disagree
@@ -273,14 +275,41 @@ def project_blocked(blocked_path):
     return {"text": text, "entries": [{"id": i, **e} for i, e in entries.items()]}
 
 
-# Routes that read a file from the active feature folder (data-model.md §4.2), with that file's name.
+# Structured routes that read a file from the active feature folder (data-model.md §4.2), with that
+# file's name. The plain document routes are DOC_ALIASES below.
 PER_FEATURE_ROUTES = {
-    "/api/project/spec": "spec.md",
-    "/api/project/plan": "plan.md",
     "/api/project/tasks": "tasks.md",
     "/api/project/blocked": "BLOCKED.md",
-    "/api/project/decisions": "decisions.md",
 }
+
+# `GET /api/doc?name=<name>` (data-model.md §4.3, FR-001): the only documents served. A name maps to
+# ("feature", file in the active feature folder) or ("project", path under the project root).
+# Any other name is a 404, so a request can never choose its own path.
+DOC_NAMES = {
+    "spec": ("feature", "spec.md"),
+    "plan": ("feature", "plan.md"),
+    "research": ("feature", "research.md"),
+    "data-model": ("feature", "data-model.md"),
+    "quickstart": ("feature", "quickstart.md"),
+    "tasks": ("feature", "tasks.md"),
+    "blocked": ("feature", "BLOCKED.md"),
+    "decisions": ("feature", "decisions.md"),
+    "constitution": ("project", ".specify/memory/constitution.md"),
+    "learnings": ("project", ".sdd/learnings.md"),
+    "config": ("project", ".sdd/config.toml"),
+}
+
+# The old document routes, kept as aliases of `/api/doc` with that name.
+DOC_ALIASES = {
+    "/api/project/spec": "spec",
+    "/api/project/plan": "plan",
+    "/api/project/decisions": "decisions",
+    "/api/project/config": "config",
+}
+
+# Run ids are timestamps (`20261027-1431`, optionally suffixed); anything else is a 404, which
+# also rules out path traversal through `/api/runs/<id>/…`.
+RUN_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{4}[a-z0-9-]*$")
 
 
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
@@ -322,13 +351,42 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_doc(self, name):
+        """`GET /api/doc?name=<name>` (data-model.md §4.3): raw text, `200 {"missing": true}` for a
+        missing file, 404 for a name outside DOC_NAMES, 409 for a feature document without a feature."""
+        if name not in DOC_NAMES:
+            self._send_json({"error": "not found"}, 404)
+            return
+        scope, rel = DOC_NAMES[name]
+        proj = DashboardHandler.project
+        if scope == "feature":
+            feature = self._feature_dir()
+            if feature is None:
+                self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409)
+                return
+            path = feature / rel
+        else:
+            path = proj / rel
+        text = read_text(path)
+        if text is None:
+            self._send_json({"missing": True})
+            return
+        self._send_text(text, content_type="text/plain" if name == "config" else "text/markdown")
+
     def do_GET(self):  # noqa: N802
-        path = self.path.split("?")[0]
+        path, _, query = self.path.partition("?")
         if path == "/":
             self._send_html()
             return
         if path == "/api/projects":
             self._send_json(discover_projects())
+            return
+        if path == "/api/doc":
+            names = urllib.parse.parse_qs(query).get("name", [])
+            self._send_doc(names[0] if len(names) == 1 else None)
+            return
+        if path in DOC_ALIASES:
+            self._send_doc(DOC_ALIASES[path])
             return
         proj = DashboardHandler.project
         if path in PER_FEATURE_ROUTES:
@@ -339,14 +397,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if path == "/api/project/tasks":
                 self._send_json(project_tasks(feature / "tasks.md", feature / "BLOCKED.md",
                                               proj / ".sdd" / "config.toml"))
-            elif path == "/api/project/blocked":
-                self._send_json(project_blocked(feature / "BLOCKED.md"))
             else:
-                self._send_text(read_text(feature / PER_FEATURE_ROUTES[path]) or "",
-                                content_type="text/markdown")
-            return
-        if path == "/api/project/config":
-            self._send_text(read_text(proj / ".sdd" / "config.toml") or "", content_type="text/plain")
+                self._send_json(project_blocked(feature / "BLOCKED.md"))
             return
         if path == "/api/runs":
             self._send_json(list_runs(proj))
@@ -357,6 +409,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         m = re.match(r"^/api/runs/([^/]+)/report$", path)
         if m:
+            if not RUN_ID_RE.match(m.group(1)):
+                self._send_json({"error": "not found"}, 404)
+                return
             report = get_report(proj, m.group(1))
             if report is None:
                 self._send_json({"error": "not found"}, 404)
