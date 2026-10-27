@@ -63,7 +63,6 @@ DEFAULT_CONFIG = {
     "run": {
         "feature": "",
         "max_retries": 2,
-        "isolation": "branch",
         "branch_prefix": "auto/",
         "protected_branches": ["main", "master"],
         "protected_paths": [
@@ -214,6 +213,49 @@ def load_config(path: Path | None) -> dict:
             else:
                 config[section] = values
     return config
+
+
+AGENT_ROLES = {"implementer", "verifier", "evaluator", "bookkeeper"}
+SECRET_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def config_errors(config: dict) -> list[str]:
+    """Problems in a loaded config, one string each naming the entry (data-model §3.8).
+
+    Model strings are not checked beyond being non-empty: aliases, Claude ids,
+    Bedrock ARNs and Vertex names all pass.
+    """
+    errors = []
+    agents = config.get("agents")
+    if isinstance(agents, dict):
+        for key, value in agents.items():
+            if key not in AGENT_ROLES:
+                errors.append(f"agents.{key}: unknown role")
+            elif not isinstance(value, str) or not value.strip():
+                errors.append(f"agents.{key}: model must be a non-empty string")
+    profiles = config.get("profiles")
+    if isinstance(profiles, dict):
+        for name, profile in profiles.items():
+            if not isinstance(profile, dict):
+                profile = {}
+            model = profile.get("model")
+            if not isinstance(model, str) or not model.strip():
+                errors.append(f"profiles.{name}.model: missing")
+            if "env" not in profile:
+                continue
+            env = profile["env"]
+            if not isinstance(env, dict) or not all(
+                    isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
+                errors.append(f"profiles.{name}.env: must map names to strings")
+                continue
+            for var in env:
+                if any(word in var.upper() for word in SECRET_WORDS):
+                    errors.append(f"profiles.{name}.env.{var}: "
+                                  "secrets must come from your environment, not the config")
+    run = config.get("run")
+    if isinstance(run, dict) and run.get("isolation") == "worktree":
+        errors.append("run.isolation: worktree isolation was removed; delete this line")
+    return errors
 
 
 def hold_reason(task: dict, blocked: dict[str, str], allow: dict) -> tuple[str, str] | None:
@@ -542,6 +584,7 @@ def main(argv: list[str]) -> int:
         result = {"changed": changed(parse_tasks(args.tasks), run.get("task_snapshot") or {})}
     else:
         result = load_config(args.config)
+        result["errors"] = config_errors(result)
     json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
     return 0

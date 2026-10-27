@@ -316,6 +316,57 @@ class WriteTest(unittest.TestCase):
         self.assertIn("phases", json.loads(out.stdout))
 
 
+class ConfigErrorsTest(unittest.TestCase):
+    """data-model §3.8: one error string per bad entry."""
+
+    def errors(self, **sections):
+        config = sdd.load_config(None)
+        for section, values in sections.items():
+            config.setdefault(section, {}).update(values)
+        return sdd.config_errors(config)
+
+    def test_default_config_has_no_errors_and_no_isolation(self):
+        self.assertEqual(sdd.config_errors(sdd.load_config(None)), [])
+        self.assertNotIn("isolation", sdd.DEFAULT_CONFIG["run"])
+
+    def test_unknown_role(self):
+        self.assertEqual(self.errors(agents={"reviewer": "sonnet"}), ["agents.reviewer: unknown role"])
+
+    def test_empty_model(self):
+        self.assertEqual(self.errors(agents={"verifier": ""}),
+                         ["agents.verifier: model must be a non-empty string"])
+
+    def test_profile_without_model(self):
+        self.assertEqual(self.errors(profiles={"local": {"env": {"OLLAMA_HOST": "x"}}}),
+                         ["profiles.local.model: missing"])
+
+    def test_non_string_env(self):
+        self.assertEqual(self.errors(profiles={"local": {"model": "qwen", "env": {"PORT": 11434}}}),
+                         ["profiles.local.env: must map names to strings"])
+
+    def test_secret_like_env_name(self):
+        self.assertEqual(self.errors(profiles={"local": {"model": "qwen", "env": {"Api_Key": "x"}}}),
+                         ["profiles.local.env.Api_Key: secrets must come from your environment, not the config"])
+
+    def test_worktree_isolation(self):
+        self.assertEqual(self.errors(run={"isolation": "worktree"}),
+                         ["run.isolation: worktree isolation was removed; delete this line"])
+
+    def test_bedrock_arn_model_passes(self):
+        arn = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-v1:0"
+        self.assertEqual(self.errors(agents={"implementer": arn},
+                                     profiles={"bedrock": {"model": arn, "env": {"AWS_REGION": "us-east-1"}}}), [])
+
+    def test_cli_config_prints_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text('[run]\nisolation = "worktree"\n', encoding="utf-8")
+            out = subprocess.run([sys.executable, str(SCRIPT), "config", "--config", str(path)],
+                                 capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(out.stdout)["errors"],
+                         ["run.isolation: worktree isolation was removed; delete this line"])
+
+
 class SnapshotTest(unittest.TestCase):
     """data-model §3.6: only edits to text, tags, files, deps or story count as changes."""
 
