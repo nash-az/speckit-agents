@@ -20,6 +20,9 @@ Reading: tasks written to the data-model's exact sections (functions, message st
 first-pass approvals. This says nothing yet about a cheaper or local implementer; that's a feature of the finished
 plugin to test on a user project.
 
+**Baseline before the pilot** (main at `128e209`, the preflight of launches 5–6): 36 Python tests and 15 node tests
+pass, 1 node test skipped (the worktree test). Stands in for 003 T001, which is wontfix.
+
 ## Launches before it ran (all stopped before any task)
 1. **Launches 1–2: nested `claude -p` EPERM on the sandbox socket.** The repo's own `.claude/settings.json` (sandbox on,
    `failIfUnavailable`) also locks an operator session running *in* the repo. → Start the operator outside the repo.
