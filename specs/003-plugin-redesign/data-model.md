@@ -333,12 +333,28 @@ option." `/api/projects` returns only `[{"path": <started project>, "name": <dir
 `discover_projects()`'s directory scan.
 
 ### 4.8 Read-only (FR-020)
-No route writes to disk. Add a unit test that reads `bin/sdd-dashboard.py`'s source and fails if it
-contains `write_text`, `open(` with a write mode, `.unlink(`, `subprocess`, `os.remove`,
-`shutil.` or `git ` — the dashboard needs none of them. (The `subprocess` import exists today and is
-unused; delete it.)
+No route writes to the project. The single permitted write is `write_control()` (§12.3), which writes
+`control.json` in the supervisor's state directory. Add a unit test that reads `bin/sdd-dashboard.py`'s
+source and fails if it contains `.unlink(`, `subprocess`, `os.remove`, `shutil.`, `os.kill`, `git ` or
+`open(` with a write mode, or if `write_text`/`os.replace` appear anywhere except inside the body of
+`write_control`. A second test calls `write_control()` against a temporary project and asserts the
+file lands under the state directory and that the project tree is byte-for-byte unchanged. (The
+`subprocess` import exists today and is unused; delete it.)
 
 ---
+
+### 4.9 State-changing routes (FR-030)
+Applies to every `POST` route (`/api/project/select`, `/api/run/stop`, `/api/run/resume`), after the
+Host check of §4.7 and before any work:
+- `Origin` header missing, or not in the allowed set → `403 {"error": "origin not allowed"}`. The
+  allowed set is `http://127.0.0.1:<port>`, `http://localhost:<port>` and `http://[::1]:<port>` for
+  the dashboard's own port, plus those three for each `--allow-port N` (repeatable option; the UI
+  server's port, once the UI is split from the API).
+- `Content-Type` not `application/json` (ignoring parameters) → `415`.
+- `OPTIONS` on the control routes answers the preflight for an allowed origin only
+  (`Access-Control-Allow-Origin: <that origin>`, `-Methods: POST`, `-Headers: Content-Type`); no
+  other route sends CORS headers.
+Tests: each of missing origin, foreign origin, wrong content type, and an allowed origin.
 
 ## 5. `workflows/sdd-run.js`
 
@@ -471,6 +487,85 @@ is best-effort and unsupported by Anthropic; such models often lack the tool cal
 `--hard-stop` default becomes `None`. Compute:
 `args.hard_stops = {name: min(1.0, args.hard_stop if args.hard_stop is not None else round(t + 0.01, 2)) for name, t in args.threshold.items()}`.
 Help text: "stop at once at this utilization (default: each window's threshold + 0.01)".
+
+## 12. Run control: stop and resume (FR-029, FR-030)
+
+### 12.1 Files (all in `state_dir(project)`, outside the project)
+- `status.json` (existing; `write_status()` adds `pid`: the supervisor's `os.getpid()`, in every call).
+  New `state` values: `stopping` (an operator stop is waiting for a safe point; also carries `mode`)
+  and `held` (stopped by the operator, waiting for Resume; carries `reason: "stopped by operator"`).
+  `waiting` (usage-window sleep) gains `keep_paused: bool` (false unless the operator set it).
+  Existing values `running`, `done`, `stopped` keep their meaning.
+- `control.json`, written only by the dashboard (§12.3), consumed and deleted only by the supervisor:
+  `{"id": "<uuid4 hex>", "command": "stop" | "resume" | "hold" | "release", "mode": "after-task" | "now", "requested_at": <epoch int>}`
+  (`mode` only for `stop`; default `after-task`). `hold` and `release` are only meaningful while the
+  supervisor is in the `waiting` state.
+
+### 12.2 Supervisor (`bin/sdd-supervise.py`)
+- At startup, delete a leftover `control.json`.
+- `read_control(logs)` returns the parsed dict or `None` (missing, unreadable or malformed → `None`),
+  and deletes the file whenever it returns a dict. The supervisor owns deletion.
+- In `Cycle.run()`'s poll loop, after the usage checks: a `stop` command means
+  `mode == "now"` → `self.stop_reason = "operator"`, `stop(proc)`, break; otherwise
+  (`after-task`) `self.operator = True`, and `pause_at = finished` if `pause_at is None`, and
+  `write_status(state="stopping", mode="after-task", …)`. The existing safe-point block then runs
+  unchanged, except that it sets `self.stop_reason = "operator"` when `self.operator` is true
+  (and `"paused"` otherwise). A `resume` command received while a run is going is ignored (and was
+  deleted by `read_control`).
+- In `main()`: when `cycle.run()` returns `"operator"`, `write_status(state="held", reason="stopped by operator", cycle=…)`,
+  say so, then poll `read_control` every `args.poll` seconds, for at most `args.max_wait_hours`:
+  `resume` → continue to the next cycle (it counts toward `--max-cycles`); a `stop` while held is
+  discarded; timeout → `write_status(state="stopped", reason="held too long")` and return 3. The
+  existing SIGTERM/SIGINT handler still ends the supervisor while held. `--no-sleep` (tests) does not
+  shorten this wait; tests drive it with `control.json` and a small `--max-wait-hours`.
+- Usage-window wait (`main()`'s `waiting` branch): replace `sleep_until(time.time() + wait)` by a loop
+  that sleeps in steps of at most `args.poll` seconds until the target time and calls `read_control`
+  each step. `hold` sets `keep_paused = True` and `release` clears it; each change rewrites
+  `status.json` with `state="waiting"`, the same fields as before and `keep_paused`. `stop` and
+  `resume` are discarded. When the target time is reached: `keep_paused` false → next cycle as today;
+  `keep_paused` true → `write_status(state="held", reason="kept paused; the usage window has reset", cycle=…)`
+  and the same held wait as after an operator stop (`resume` continues, timeout ends `stopped`, return 3).
+  `--no-sleep` (tests) skips the wait as today and ignores `hold`; hold tests use a fake whose reset
+  is a few seconds ahead and do not pass `--no-sleep`. `keep_paused` is in memory only: a restarted
+  supervisor starts with it false.
+
+### 12.3 Dashboard (`bin/sdd-dashboard.py`)
+- Import `state_dir` from `sdd-supervise.py` with the importlib pattern of §4.1, so both use the same
+  directory.
+- `supervisor_alive(status)`: `status["pid"]` is an int and `os.kill(pid, 0)` does not raise
+  `ProcessLookupError` (`PermissionError` counts as alive). No other signal is ever sent.
+- `GET /api/run/current` (§4.5) gains `"by": "operator"` when `status.state` is `held`, `"stopping": true`
+  when it is `stopping`, and `"controls": {"stop": bool, "resume": bool, "hold": bool, "release": bool, "reason": str | null}`:
+
+  | supervisor alive and `state` | stop | resume | hold | release | reason when stop/resume are disabled |
+  |---|---|---|---|---|---|
+  | `running` | true | false | false | false | — |
+  | `stopping` | true (only `mode: now`) | false | false | false | "stopping after the current task" |
+  | `held` | false | true | false | false | — |
+  | `waiting`, `keep_paused` false | false | false | true | false | "waiting for the usage window to reset at HH:MM" |
+  | `waiting`, `keep_paused` true | false | false | false | true | "will stay paused after the reset at HH:MM" |
+  | not alive, or no `status.json` | false | false | false | false | "no supervisor is running; start one with `python3 bin/sdd-supervise.py`" |
+
+- `POST /api/run/stop` body `{"mode"?: "after-task" | "now"}`, and `POST /api/run/resume`,
+  `POST /api/run/hold` and `POST /api/run/release` (no body fields; the command is the route's name):
+  apply §4.9, then compute `controls`; if the command's flag is false → `409 {"error": <reason or "not available now">}`
+  and nothing is written; otherwise `write_control()` and answer `202 {"ok": true, "id"}`. An unknown `mode`
+  → `400`.
+- `write_control(logs, command, mode)`: the only writer in the file. Writes
+  `control.json.tmp` then `os.replace()` onto `control.json` (atomic, so the supervisor never reads a
+  half-written file). Refuses (returns `False`) if `control.json` already exists, so a request is
+  never overwritten before the supervisor consumes it; the route then answers `409 "a request is already pending"`.
+
+### 12.4 UI (`build_html()`, moved into the UI files when the UI is split)
+- A run banner next to the stale banner (§4.5) polls `/api/run/current` every 3 s and renders by state:
+  `running` → "Stop after current task" and "Stop now" (confirm dialog); `stopping` → "Stopping after
+  T0xx…" with "Stop now" still enabled; `held` → "Stopped by you" and "Resume"; `waiting` with
+  `keep_paused` false → "Waiting for credits until HH:MM" and "Keep paused", with `keep_paused` true →
+  "Will stay paused after the reset at HH:MM" and "Let it resume"; disabled buttons
+  carry `controls.reason` as their title and as visible text.
+- Buttons call the routes with `fetch(..., {method: "POST", headers: {"Content-Type": "application/json"}, body})`;
+  a `409` shows its `error` text; after a `202` the banner refreshes at once.
+- Task badges while `held`: a task whose newest event is a transient state shows `paused` (§4.6).
 
 ## 11. Run report additions (FR-012, FR-024)
 `skills/sdd-run/SKILL.md` step 7's report gains: the profile name (or "none"), the configured model

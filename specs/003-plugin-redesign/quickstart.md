@@ -57,3 +57,22 @@ Interrupt again, only tick an unrelated box: it resumes.
 ## 7. Supervisor hard stop (FR-028)
 `python3 bin/sdd-supervise.py --threshold five_hour=0.95,seven_day=0.99 …` (dry run or unit test):
 hard stops are 0.96 and 1.0; with `--hard-stop 0.97` both are 0.97 (capped at 1.0).
+
+## 8. Stop and resume from the dashboard (FR-029, FR-030)
+Toy project, run through `python3 bin/sdd-supervise.py --project <toy> --poll 1 --max-wait-hours 1`
+(fake `claude` from `tests/fake/`, or a real two-task toy), dashboard started on the same project:
+- `GET /api/run/current` shows `controls.stop: true`; `POST /api/run/stop` (`Origin` = the dashboard's
+  own, JSON body) → `202`; state goes `stopping`, then `held` after the running agent finishes, with
+  no task lost; `controls.resume: true`.
+- `POST /api/run/resume` → `202`; the supervisor starts a new cycle and the run completes.
+- `{"mode": "now"}` stops at once; the next resume continues from the journal.
+- No supervisor running (kill it, leave `status.json`): `controls` both false with "no supervisor is
+  running…"; both POSTs → `409`, no `control.json` appears.
+- During the usage-window wait (`state: "waiting"`, fake `claude` reporting a reset a few seconds
+  ahead, no `--no-sleep`): stop and resume → `409`, `controls.hold: true`. `POST /api/run/hold` → `202`,
+  `keep_paused: true`; at the reset the state goes `held` ("kept paused…") and no new cycle starts;
+  `POST /api/run/resume` → the run continues. Repeat with `POST /api/run/release` before the reset:
+  the cycle starts at the reset by itself.
+- A POST with `Origin: http://evil.example`, with no `Origin`, or with `Content-Type: text/plain` →
+  `403`/`403`/`415`; the run is unaffected.
+- `git status` in the toy is clean throughout (the dashboard wrote nothing in the project).

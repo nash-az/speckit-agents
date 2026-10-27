@@ -21,7 +21,7 @@ fails, stop and report `blocked` with the failing output rather than rewriting t
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: can run in parallel (different files, no dependency on an unfinished task)
-- **[Story]**: the user story from spec.md (US1–US6)
+- **[Story]**: the user story from spec.md (US1–US7)
 
 ---
 
@@ -153,7 +153,23 @@ All tasks edit `bin/sdd-dashboard.py` (and `tests/test_sdd_dashboard.py`), so th
 
 - [ ] T040 [P] In `bin/sdd-supervise.py` make the hard stop per window (FR-028, data-model.md §10): `--hard-stop` default `None`, `args.hard_stops = {name: min(1.0, args.hard_stop if args.hard_stop is not None else round(t + 0.01, 2)) for name, t in args.threshold.items()}`, help text as in §10. Tests in `tests/test_supervise.py`: defaults give five_hour 0.96 and seven_day 1.0; `--hard-stop 0.97` gives 0.97 for both.
 - [ ] T041 Update `README.md`: run profiles and role models (with the local-model caveat), what `resolved`/`wontfix`/`moved` mean, the four `.gitignore` lines, learnings and `bin/sdd-harvest.py`, the dashboard's documents and localhost-only rule. Keep the existing structure and style; remove any statement the tasks above made false.
-- [ ] T042 Run the full validation in `specs/003-plugin-redesign/quickstart.md` (§1–§7) and record each section's result (pass/fail and one line of evidence) at the end of `quickstart.md` under `## Validation run`. Any failure is reported, not patched in this task.
+- [ ] T042 Run the full validation in `specs/003-plugin-redesign/quickstart.md` (§1–§8) and record each section's result (pass/fail and one line of evidence) at the end of `quickstart.md` under `## Validation run`. Any failure is reported, not patched in this task.
+
+---
+
+## Phase 10: User Story 7 — Stop and resume a run from the dashboard (P2)
+
+**Goal**: Stop (after the current task, or now) and Resume buttons for a supervised run, without the
+dashboard starting or killing anything (FR-029, FR-030).
+
+**Independent test**: quickstart.md §8. Runs before T042, which validates §1–§8.
+
+- [ ] T045 [US7] In `bin/sdd-supervise.py` implement the supervisor side of data-model.md §12.1–§12.2: `write_status()` adds `pid`; delete a leftover `control.json` at startup; add `read_control(logs)` (returns the dict and deletes the file, or `None`); in `Cycle.run()` handle `stop` (`now` → `stop_reason = "operator"` and `stop(proc)`; `after-task` → `self.operator = True`, reuse the existing safe-point path, write `state="stopping"`) and make the safe-point block set `stop_reason = "operator"` when `self.operator`; in `main()` hold after an `"operator"` outcome (`state="held"`), poll for `resume` for at most `--max-wait-hours`, then run the next cycle; and replace the usage-window `sleep_until` in `main()` by the polling loop of §12.2 (`hold` sets `keep_paused`, `release` clears it, at the reset a kept pause goes to `held` instead of the next cycle). Tests in `tests/test_supervise.py` with the fake `claude` in `tests/fake/`: hold during the wait ends `held` at the reset and starts no cycle; release before the reset lets the cycle start; `stop`/`resume` during the wait are discarded; after-task stop waits for the running agent and ends `held`; `now` stops at once; resume starts a second cycle; a `stop` while held is discarded; a stale `control.json` at startup is deleted; hold timeout ends `stopped` and returns 3.
+- [ ] T046 [US7] In `bin/sdd-dashboard.py` implement data-model.md §4.9 and §12.3: the Origin and Content-Type checks on every `POST` (add `--allow-port`), `OPTIONS` preflight for the two control routes, `supervisor_alive()`, the `controls` table in `GET /api/run/current` (plus `by` and `stopping`), `POST /api/run/stop`, `/api/run/resume`, `/api/run/hold` and `/api/run/release`, and `write_control()` (atomic, refuses when a request is already pending). Replace the source-scan test of §4.8 with the amended one and add the project-unchanged test. Tests for every row of the `controls` table, `202`/`409`/`400`/`403`/`415`, and that a `409` writes nothing. Do after T022 (same file and route).
+- [ ] T047 [US7] In `build_html()` of `bin/sdd-dashboard.py`, add the run banner of data-model.md §12.4 (Stop after current task, Stop now with a confirm dialog, Resume, Keep paused and Let it resume in the `waiting` state, disabled buttons showing `controls.reason`, 3 s polling, `409` text shown). If the UI split has already moved the page into static files by then, edit that file instead; the behavior is the same. Tests: the existing page tests assert the banner's strings and routes are present. Do after T026 and T046.
+- [ ] T048 [P] [US7] Add the stop/resume paragraph to `README.md` (supervised runs only, what the three states mean, how to start a supervised run, that the dashboard writes only the control file), and add a "Stop and resume" note to `skills/sdd-status/SKILL.md` where it describes the supervisor's `state`: `stopping` and `held` with the `reason`. Do after T046.
+
+**Checkpoint**: quickstart.md §8 passes.
 
 ---
 
@@ -166,7 +182,8 @@ All tasks edit `bin/sdd-dashboard.py` (and `tests/test_sdd_dashboard.py`), so th
 - **US4 (Phase 6)**: T032 after T028; T033 after T030; T034 after T009; T035 any time after Phase 2.
 - **US5 (Phase 7)**: T036 any time after Phase 1; T037 after T032.
 - **US6 (Phase 8)**: T038 after T033; T039 any time after Phase 1.
-- **Polish**: T040 any time after Phase 1 but not at the same time as T034 (same file); T041 after all story phases; T042 last.
+- **US7 (Phase 10)**: T045 after T040 (same file `bin/sdd-supervise.py`; T034 too); T046 after T022; T047 after T026 and T046; T048 after T046. Needs the supervisor, so it cannot be validated on an interactive run.
+- **Polish**: T040 any time after Phase 1 but not at the same time as T034 (same file); T041 after all story phases; T042 last (after Phase 10).
 
 Files touched by more than one task (never run those tasks in parallel): `bin/sdd-tasks.py`,
 `bin/sdd-dashboard.py`, `workflows/sdd-run.js`, `skills/sdd-run/SKILL.md`, `bin/sdd-supervise.py`,
@@ -184,7 +201,7 @@ During US2:     T023 (sdd-status skill)  ∥  T025 (sdd-init skill)  ∥  T021 (
 1. Phases 1–2: the task-state engine and the workflow cleanup. Everything else depends on them.
 2. MVP = US1 + US2: a dashboard you can trust and runs that leave the tree clean. Validate with
    quickstart §2–§3, then use it to watch the remaining work.
-3. US3 → US4 → US5 → US6, each validated by its quickstart section.
+3. US3 → US4 → US5 → US6 → US7, each validated by its quickstart section.
 4. Polish, then the full quickstart run (T042).
 
 The language app resumes on the redesigned plugin after T042 passes. Its first `/sdd-run` will

@@ -32,6 +32,17 @@ see `research.md`).
   amendments from the UI. → A: The dashboard never writes project files or git itself. Actions are
   **delegated** to a Claude Code session, which writes under the normal run guard. This feature
   defines the shape of that action channel but ships only read routes.
+- Q: Should the dashboard be able to stop and resume a run (Stop/Resume buttons), given FR-020? → A: Yes
+  (2026-10-27, user). Process control is not a project write, so it needs no Claude session: the
+  dashboard hands a request to the supervisor through one small control file in the supervisor's
+  state directory (outside the project), and the supervisor acts on it. The dashboard itself starts
+  and kills nothing. Without a supervisor (a plain `/sdd-run` in a session) the buttons are
+  disabled and show the command to run instead. `run.pause` in the action channel contract is this
+  feature's `POST /api/run/stop`; the rest of the action channel stays with the chat feature.
+- Q: While the supervisor waits for usage credits, can the person stop it from restarting the run when
+  they come back? → A: Yes (2026-10-27, user): a "Keep paused" button. The supervisor still waits for
+  the window, but at the reset it goes to `held` instead of starting `/sdd-run`, and waits for
+  Resume. "Let it resume" cancels it before the reset.
 - Q: Worktree isolation is broken today (agents never work inside the worktree). → A: Remove it in
   this feature; parallel groups keep running in one tree, as in v0.1. Rebuild later on the
   Workflow's native per-agent worktree isolation.
@@ -137,7 +148,31 @@ about the plugin landing in the app repo's history.
 3. Given the person runs the harvest command from the plugin repo against a project, new plugin
    feedback entries are appended to the plugin's own `logs/` and are not harvested twice.
 
+### User Story 7 - Stop and resume a run from the dashboard (P2)
+The person watching a supervised run wants to stop it, and later continue it, without a terminal.
+
+**Acceptance**:
+1. Given a supervised run is in progress, when the person clicks "Stop after current task", the page
+   shows "Stopping after T0xx", the run stops at the next safe point (the running agent finishes
+   first, so nothing is lost), and the page then shows "Stopped by you" with a Resume button.
+2. Given a supervised run is in progress, when the person clicks "Stop now" and confirms, the run
+   stops at once; at most the step in flight is redone on resume.
+3. Given the run is stopped by the person, when they click Resume, the supervisor starts `/sdd-run`
+   again, which reads the journal and continues.
+4. Given the run is not supervised (started by `/sdd-run` in a session), the buttons are disabled
+   and say why, and show the command that starts a supervised one.
+5a. Given the supervisor is waiting for a usage window to reset, Stop and Resume are disabled and
+   "Keep paused" is offered. After the person clicks it the page shows "Will stay paused after the
+   reset"; when the window resets the supervisor does not start `/sdd-run` but goes to "Stopped by
+   you", and Resume continues. Clicking "Let it resume" before the reset cancels the hold.
+5. Given a request to a control route from another website (a browser tab on a different origin) or
+   without a JSON body, it is rejected and the run is unaffected.
+
 ### Edge Cases
+- A Stop is requested while the supervisor is in the usage-limit wait, or a Resume while a run is
+  going: the route answers `409` with the reason and writes nothing.
+- The supervisor died with `status.json` left behind: its recorded process id no longer exists, so
+  both buttons are disabled with "no supervisor is running".
 - A markdown file with malformed syntax (unclosed code fence, broken table) still renders the rest
   of the document.
 - A role's model is blocked by the account's model allowlist: the platform may substitute a fallback
@@ -205,7 +240,8 @@ about the plugin landing in the app repo's history.
 - **FR-020**: The dashboard server MUST NOT write, delete or modify project files or git history
   itself. Any future action (creating a spec, amending a task) MUST be delegated to a Claude Code
   session that performs it under the run guard. This feature documents that action channel's shape
-  and ships no action routes.
+  and ships no action routes. The only exception is FR-029: one control request file in the
+  supervisor's state directory, which is outside the project.
 - **FR-021**: A running task's dashboard view MUST show its live agent output (a tail of its
   transcript), or a clear "not available yet" state — never an error.
 - **FR-022**: The dashboard server MUST bind only to localhost, and MUST reject requests whose Host
@@ -229,8 +265,22 @@ about the plugin landing in the app repo's history.
   MUST ask the person to choose rather than pick one.
 - **FR-028**: The supervisor's hard stop MUST be per usage window: each window stops at its own
   threshold plus one point unless the person sets a hard stop explicitly (backlog item 35).
+- **FR-029**: The dashboard MUST offer Stop (after the current task, or now) and Resume for a
+  supervised run. It MUST do so only by writing a control request (`control.json`) into the
+  supervisor's state directory; it MUST NOT start, signal or kill any process itself. The supervisor
+  MUST act on the request: stop at the next safe point (or at once), then hold until Resume or
+  `--max-wait-hours`. Controls MUST be disabled, with the reason shown, when no live supervisor
+  exists. While the supervisor waits for a usage window to reset, Stop and Resume MUST be disabled
+  and the dashboard MUST offer "Keep paused": the supervisor then ends that wait in the held state
+  instead of restarting the run. Once set, "Let it resume" MUST cancel it.
+- **FR-030**: Every state-changing dashboard route (the control routes, and `/api/project/select`)
+  MUST reject a request whose `Origin` header is missing or not an allowed origin (`403`), and one
+  whose `Content-Type` is not `application/json` (`415`), so a web page on another origin cannot
+  drive them (FR-022 covers DNS rebinding; this covers cross-site requests).
 
 ### Key Entities
+- **Run control request**: one command (`stop` with a mode, `resume`, `hold` or `release`), an id and a time, written by
+  the dashboard and consumed and deleted by the supervisor.
 - **Task status**: a **parked state** (held+tag, blocked, wontfix, moved, superseded+by) persisted
   and read the same way everywhere (FR-007), and a **transient run state** (queued, running+step,
   retrying+count, paused, done) derived live from the event feed and never persisted.
@@ -263,6 +313,8 @@ about the plugin landing in the app repo's history.
 - Chat window for free-form questions, spec authoring and amendments (backlog item 40): the next
   feature, built on the action channel this feature documents (FR-020).
 - In-run feedback/redirect of a running agent (item 36): part of the chat feature.
+- Starting a run from the dashboard (the dashboard only stops and resumes a run a supervisor already
+  owns; launching stays with `/sdd-run` and `bin/sdd-supervise.py`).
 - Cross-project registry and "all running agents" view (items 37a/37b).
 - Worktree isolation (rebuilt later on the Workflow's native per-agent isolation; items 1, 6).
 - Official support for non-Claude backends: run profiles make a gateway possible, but Anthropic

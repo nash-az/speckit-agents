@@ -56,6 +56,9 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
     `logs/2026-10-27-dashboard-design.html` (also https://claude.ai/artifact/26f22opZPWvBp1wP7gJmiJ). Proposal: Home
     (waiting on you / last run / features), Features (docs + traceability), Runs (task → attempts → log), chat drawer;
     UI as plain static files on its own port, no build step. Open decisions are listed at the end of that page.
+  - **Stop/resume added to 003 (2026-10-27, user asked):** US7, FR-029/FR-030, data-model §4.9 and §12, tasks T045–T048 (Phase 10),
+    quickstart §8. The dashboard writes only a `control.json` in the supervisor's state dir; the supervisor stops at a safe point
+    and holds until Resume; during the usage-credit wait a "Keep paused" button (hold/release) makes it go to held at the reset instead of restarting. Spec edits only; nothing implemented, no run started.
   - **Next:** the user reviews the design; then fold it into 003 (rewrite T026's UI part, add tasks for the UI split,
     `/speckit-agents:ui`, removing the project picker, inbox, traceability, doc links), then run Phase 4.
   - Known gap: the implementer prompt says `.sdd/scratch/<run>/<task>/` is allowed by the guard, but that carve-out is
