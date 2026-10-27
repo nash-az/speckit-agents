@@ -19,16 +19,24 @@ Arguments (`$ARGUMENTS`): `--phases a,b` runs exactly those phase ids and skips 
 ## 1. Preflight. Stop and tell the user at the first failure.
 1. `.sdd/config.toml` exists. If it does not, say to run `/sdd-init` first.
    If `.sdd/run.json` exists, an earlier run stopped without closing (a usage limit, the supervisor pausing it, a crash or a kill). Say so, with its `run_id`. Its commits stay on its branch, and its unticked tasks run again.
-   - **Resume.** If it has `workflow_dir` and you are on its branch, read what it finished: `python3 <helper> checkpoint <workflow_dir>/journal.jsonl`. If the result's `tasks` is not empty, this run resumes it: keep the tree exactly as it is (the interrupted work is in it; never stash it), keep the checkpoint for step 6, and use the earlier run's `phases` as `--phases`. Skip step 2 and items 3 and 4 below: the tree is not clean on purpose, and the checks passed when that run started. Say which tasks resume and at which step. Remove the file and go on with item 2.
+   - **Resume.** If it has `workflow_dir` and you are on its branch, read what it finished: `python3 <helper> checkpoint <workflow_dir>/journal.jsonl`. If the result's `tasks` is not empty, this run resumes it: keep the tree exactly as it is (the interrupted work is in it; never stash it), keep the checkpoint for step 6, and use the earlier run's `phases` as `--phases`. Skip step 2 and items 4 and 5 below: the tree is not clean on purpose, and the checks passed when that run started. Say which tasks resume and at which step. Remove the file and go on with item 2.
    - Otherwise, if the tree is not clean and you are on that run's branch, the changes are its unfinished work: the guard was on, so only the run's agents wrote files. Stash them with `git stash push -u -m "sdd-run <its run id>: unfinished work"`, and say so in the run report. Then remove the file and go on.
    - If you are on another branch, stop and show the files: they may be the user's.
 2. Load the config: `python3 <helper> config`.
    The feature folder is `run.feature`. If that is empty, read `feature_directory` from `.specify/feature.json`.
    The tasks file is `<feature>/tasks.md` and must exist. The blocked file is `<feature>/BLOCKED.md`.
-3. `git status --porcelain` is empty: no uncommitted or untracked files that are not ignored.
+3. `.gitignore` lists all four of these lines (data-model §7):
+   ```
+   .sdd/run.json
+   .sdd/scratch/
+   .sdd/runs/*/
+   .sdd/plugin-feedback.jsonl
+   ```
+   If it lacks any of them, or does not exist, stop and say: "Run `/sdd-init` to update `.gitignore`, commit it, then start `/sdd-run` again." Never edit `.gitignore` yourself.
+4. `git status --porcelain` is empty: no uncommitted or untracked files that are not ignored.
    A run needs a clean starting point, so that each commit holds one task's work and nothing else.
    If the tree is not clean, list the files and stop. Never stash or commit the user's work yourself.
-4. Run every `checks.commands` entry. Run each command as its own Bash call, exactly as written: no pipes, `;`, `&&`, `cd`, loops, `$?` or redirects. The tool result shows the exit status and the output. Unattended permission modes refuse compound commands. If any fails, stop and show the failing output. If it fails with "Operation not permitted" on a path outside the project, such as a tool cache, the sandbox is the cause: name the `sandbox.filesystem.allowWrite` entry the user should add to `.claude/settings.json`.
+5. Run every `checks.commands` entry. Run each command as its own Bash call, exactly as written: no pipes, `;`, `&&`, `cd`, loops, `$?` or redirects. The tool result shows the exit status and the output. Unattended permission modes refuse compound commands. If any fails, stop and show the failing output. If it fails with "Operation not permitted" on a path outside the project, such as a tool cache, the sandbox is the cause: name the `sandbox.filesystem.allowWrite` entry the user should add to `.claude/settings.json`.
    The run cannot tell a regression from a failure that was already there.
 
 ## 2. Bring tasks.md up to date with the code
@@ -68,11 +76,9 @@ Remind the user that permission prompts stop an unattended run, and that a headl
 ## 6. Start
 1. `git switch -c <branch_prefix><run id>`. If the current branch already starts with `<branch_prefix>`, a run is being continued: stay on it, and use its name as `branch` in `run.json`.
    If step 2 changed `tasks.md`, commit it on the new branch as `chore(sdd): converge and tag tasks`, with the commit trailer.
-2. Make sure `.gitignore` lists `.sdd/run.json`.
-   If you added that line, commit the change on the new branch as `chore(sdd): ignore run marker`, with the commit trailer.
-3. Write `.sdd/run.json` with the keys `run_id`, `branch`, `protected_branches` and `protected_paths`, all taken from the config, and `phases`: the list of phase ids you planned.
+2. Write `.sdd/run.json` with the keys `run_id`, `branch`, `protected_branches` and `protected_paths`, all taken from the config, and `phases`: the list of phase ids you planned.
    From here on, the plugin's guard refuses pushes, branch switches, history rewrites, commits on protected branches and edits to protected paths, for every subagent.
-4. Call **Workflow** with `name: "speckit-agents:sdd-run"` and these `args`. Pass them as a JSON object, never as a string, and never pass this skill's own arguments (`--yes`, …) as `args`:
+3. Call **Workflow** with `name: "speckit-agents:sdd-run"` and these `args`. Pass them as a JSON object, never as a string, and never pass this skill's own arguments (`--yes`, …) as `args`:
    ```json
    { "run_id": "...", "root": "<absolute project root>", "tasks_file": "<absolute>", "blocked_file": "<absolute>",
      "helper": "<absolute path of sdd-tasks.py>", "plan": <plan output>, "phase_deps": { ... },
@@ -84,7 +90,7 @@ Remind the user that permission prompts stop an unattended run, and that a headl
    `taskAllow` gives per-task permission overrides (for example a `[dep:ok]` task may add a dependency even when `[allow] dependencies = false`). Build it from the tasks' tags: a task tagged `[dep:ok]` gets `{ dependencies: true }`, one tagged `[download:ok]` gets `{ downloads: true }`.
    The Workflow result names the run's `Transcript dir`. Add it to `.sdd/run.json` as `workflow_dir` right away: if the run is cut off, the next `/sdd-run` reads its journal there and resumes instead of starting the tasks over.
    At the same moment, record the directory in `.sdd/runs/<run id>/workflows.json`, `{"workflow_dirs": ["<absolute transcript dir>", …]}`, oldest first: create the file (and its directory) if it is missing, and when resuming, append the new directory to its list. `python3 <helper> events . <run id>` reads the run's events from these directories.
-5. Tell the user in one line that the run started, on which branch, and that `/workflows` shows progress. Then end your turn. The workflow notifies you when it finishes.
+4. Tell the user in one line that the run started, on which branch, and that `/workflows` shows progress. Then end your turn. The workflow notifies you when it finishes.
 
 ## 7. When the workflow finishes
 If `stopped` starts with `interrupted`, the run was cut off (usage limit or stop) and is meant to be resumed:
