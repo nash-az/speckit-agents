@@ -10,7 +10,7 @@ Usage:
 
 Endpoints:
     GET /                         -- single-page HTML dashboard
-    GET /api/projects             -- discover Speckit projects
+    GET /api/projects             -- the started project only (no directory scan)
     POST /api/project/select      -- { "path"?, "feature"? } select a project and/or feature (memory only)
     GET /api/doc?name=<name>      -- one document from a fixed name set (missing -> {"missing": true})
     GET /api/project/spec         -- alias of /api/doc?name=spec
@@ -33,7 +33,6 @@ import importlib.util
 import json
 import os
 import re
-import subprocess
 import urllib.parse
 from pathlib import Path
 
@@ -79,30 +78,26 @@ def is_speckit_project(project):
         return False
 
 
-def discover_projects():
-    """Find Speckit projects in common locations."""
-    projects = []
-    roots = [Path.home() / "private", Path.home() / "projects", Path.home()]
-    seen = set()
-    for root in roots:
-        if not root.is_dir():
-            continue
-        try:
-            for entry in root.iterdir():
-                if not entry.is_dir():
-                    continue
-                rp = str(entry.resolve())
-                if rp in seen:
-                    continue
-                if is_speckit_project(entry):
-                    seen.add(rp)
-                    projects.append({
-                        "path": str(entry),
-                        "name": entry.name,
-                    })
-        except OSError:
-            continue
-    return projects
+def discover_projects(project: Path):
+    """`GET /api/projects`: only the project the dashboard was started for (data-model.md §4.7).
+
+    No directory scan: the dashboard never lists other folders on the machine.
+    """
+    return [{"path": str(project), "name": project.name}]
+
+
+# Hosts a request may name (data-model.md §4.7, FR-022). Any other Host header, e.g. one a
+# DNS-rebinding page sends, gets 421.
+ALLOWED_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+
+def host_without_port(host):
+    """The Host header without its port: `[::1]:8765` → `[::1]`, `localhost:8765` → `localhost`."""
+    host = (host or "").strip().lower()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[:end + 1] if end != -1 else host
+    return host.split(":", 1)[0]
 
 
 def feature_names(project: Path) -> list[str]:
@@ -314,11 +309,19 @@ RUN_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{4}[a-z0-9-]*$")
 
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
     project = None
+    started_project = None  # the --project the server was started with; /api/projects lists only it
     feature = None  # a `specs/` folder name chosen in the page; memory only, never written to disk
     html = ""
 
     def log_message(self, format, *args):  # noqa: ANN001, ARG002
         pass
+
+    def _host_allowed(self):
+        """False (after sending 421) when the Host header is not a localhost name (§4.7)."""
+        if host_without_port(self.headers.get("Host")) in ALLOWED_HOSTS:
+            return True
+        self._send_json({"error": "misdirected request"}, 421)
+        return False
 
     def _feature_dir(self):
         """The person's in-memory choice if one was made, else active_feature()."""
@@ -374,12 +377,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self._send_text(text, content_type="text/plain" if name == "config" else "text/markdown")
 
     def do_GET(self):  # noqa: N802
+        if not self._host_allowed():
+            return
         path, _, query = self.path.partition("?")
         if path == "/":
             self._send_html()
             return
         if path == "/api/projects":
-            self._send_json(discover_projects())
+            self._send_json(discover_projects(DashboardHandler.started_project or DashboardHandler.project))
             return
         if path == "/api/doc":
             names = urllib.parse.parse_qs(query).get("name", [])
@@ -425,6 +430,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):  # noqa: N802
+        if not self._host_allowed():
+            return
         path = self.path.split("?")[0]
         if path == "/api/project/select":
             length = int(self.headers.get("Content-Length", 0))
@@ -1144,9 +1151,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     args.project = args.project.resolve()
 
-    DashboardHandler.project = args.project
+    DashboardHandler.project = DashboardHandler.started_project = args.project
     DashboardHandler.html = build_html()
 
+    # Security boundary: localhost only, no auth (FR-022). Do not add a --host option.
     server = http.server.ThreadingHTTPServer(('127.0.0.1', args.port), DashboardHandler)
     print('speckit-agents dashboard on http://127.0.0.1:%s (project: %s)' % (args.port, args.project), flush=True)
     try:

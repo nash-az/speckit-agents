@@ -265,9 +265,9 @@ class HandlerTest(unittest.TestCase):
         self.assertEqual({e["id"] for e in data["entries"]}, {"T007", "T008", "T009", "T010"})
 
 
-def request(test, method, path, body=None, status=200):
+def request(test, method, path, body=None, status=200, host="127.0.0.1:8765"):
     """Run one request through DashboardHandler without a socket; returns the parsed body
-    (JSON when it parses, else text)."""
+    (JSON when it parses, else text). `host=None` sends no Host header."""
     handler = dash.DashboardHandler.__new__(dash.DashboardHandler)
     handler.path, handler.command = path, method
     handler.request_version, handler.requestline = "HTTP/1.1", f"{method} {path} HTTP/1.1"
@@ -275,6 +275,8 @@ def request(test, method, path, body=None, status=200):
     raw = json.dumps(body).encode() if body is not None else b""
     handler.rfile = io.BytesIO(raw)
     handler.headers = {"Content-Length": str(len(raw))}
+    if host is not None:
+        handler.headers["Host"] = host
     handler.do_GET() if method == "GET" else handler.do_POST()
     head, _, out = handler.wfile.getvalue().partition(b"\r\n\r\n")
     test.assertEqual(head.split(b"\r\n")[0].split()[1], str(status).encode(), head)
@@ -434,10 +436,58 @@ def content_type(test, path):
     handler = dash.DashboardHandler.__new__(dash.DashboardHandler)
     handler.path, handler.command = path, "GET"
     handler.request_version, handler.requestline = "HTTP/1.1", f"GET {path} HTTP/1.1"
-    handler.wfile, handler.rfile, handler.headers = io.BytesIO(), io.BytesIO(), {}
+    handler.wfile, handler.rfile, handler.headers = io.BytesIO(), io.BytesIO(), {"Host": "localhost:8765"}
     handler.do_GET()
     head = handler.wfile.getvalue().partition(b"\r\n\r\n")[0].decode()
     return re.search(r"Content-Type: ([^\r\n]+)", head).group(1)
+
+
+class HostAndDiscoveryTest(unittest.TestCase):
+    """data-model.md §4.7 (FR-015, FR-022): localhost Host names only; one project."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "started"
+        (self.root / ".sdd").mkdir(parents=True)
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.started_project,
+                      dash.DashboardHandler.feature)
+        dash.DashboardHandler.project, dash.DashboardHandler.started_project = self.root, self.root
+        dash.DashboardHandler.feature = None
+
+    def tearDown(self):
+        (dash.DashboardHandler.project, dash.DashboardHandler.started_project,
+         dash.DashboardHandler.feature) = self.saved
+        self.tmp.cleanup()
+
+    def test_foreign_host_is_421(self):
+        for host in ("evil.example", "evil.example:8765", "127.0.0.1.evil.example", None):
+            request(self, "GET", "/api/projects", host=host, status=421)
+            request(self, "POST", "/api/project/select", {"feature": "x"}, host=host, status=421)
+
+    def test_localhost_names_are_allowed(self):
+        for host in ("127.0.0.1", "127.0.0.1:8765", "localhost", "LOCALHOST:1", "[::1]", "[::1]:8765"):
+            request(self, "GET", "/api/projects", host=host)
+
+    def test_projects_has_only_the_started_project(self):
+        other = Path(self.tmp.name) / "other"
+        (other / ".specify").mkdir(parents=True)
+        self.assertEqual(request(self, "GET", "/api/projects"),
+                         [{"path": str(self.root), "name": "started"}])
+        dash.DashboardHandler.project = other  # selecting another project does not add it
+        self.assertEqual(len(request(self, "GET", "/api/projects")), 1)
+
+
+class ReadOnlyTest(unittest.TestCase):
+    """data-model.md §4.8 (FR-020): the dashboard's source has no way to write or run anything."""
+
+    FORBIDDEN = (r"write_text", r"\.unlink\(", r"subprocess", r"os\.remove", r"shutil\.", r"git ",
+                 r"""open\([^)]*,\s*(mode\s*=\s*)?['"][rbt]*[wax+]""",  # a write-mode open(
+                 r"""\.open\(\s*(mode\s*=\s*)?['"][rbt]*[wax+]""")  # a write-mode Path.open(
+
+    def test_source_has_no_writes(self):
+        source = (HERE.parent / "bin" / "sdd-dashboard.py").read_text(encoding="utf-8")
+        for pattern in self.FORBIDDEN:
+            self.assertIsNone(re.search(pattern, source), pattern)
 
 
 def wait_for(url, timeout=10):
