@@ -512,5 +512,140 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(sdd.checkpoint(Path("/nonexistent/journal.jsonl"))["found"], False)
 
 
+WF_TEST = (HERE / "fixtures" / "wf_test").resolve()
+
+
+class RunEventsTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp()).resolve()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def workflow(self, name, lines, transcripts=None):
+        wf = self.dir / name
+        wf.mkdir()
+        (wf / "journal.jsonl").write_text("\n".join(json.dumps(e) for e in lines) + "\n", encoding="utf-8")
+        for agent_id, body in (transcripts or {}).items():
+            (wf / f"agent-{agent_id}.jsonl").write_text(body, encoding="utf-8")
+        return wf
+
+    def test_retry_sequence(self):
+        events = sdd.journal_events([WF_TEST])
+        self.assertEqual([e["kind"] for e in events],
+                         ["task.started", "task.implemented", "task.verified", "task.started",
+                          "task.implemented", "task.verified", "task.approved", "group.finished"])
+        self.assertEqual([e.get("attempt") for e in events if e["kind"] in ("task.started", "task.implemented")],
+                         [1, 1, 2, 2])
+        self.assertEqual(events[2]["verdict"], "reject")
+        self.assertEqual(events[2]["problems"], ["missing test"])
+        self.assertEqual(events[5]["verdict"], "approve")
+        self.assertTrue(all(e["id"] == "T001" for e in events[:7]))
+        self.assertEqual(events[7]["ids"], ["T001"])
+        self.assertNotIn("id", events[7])
+        self.assertEqual(events[7]["commits"], ["abc1234"])
+        self.assertIs(events[7]["checks_passed"], True)
+        self.assertEqual(events[0]["agent_id"], "a1000000000000001")
+        self.assertEqual(events[0]["label"], "impl:T001")
+        self.assertTrue(all(e["workflow"] == 0 for e in events))
+        # started -> first transcript line, result -> last transcript line
+        self.assertEqual(events[0]["ts"], "2026-10-27T13:52:01.000Z")
+        self.assertEqual(events[1]["ts"], "2026-10-27T13:55:42.000Z")
+        self.assertEqual(events[7]["ts"], "2026-10-27T14:11:30.000Z")
+        # agents without a transcript file
+        self.assertIsNone(events[2]["ts"])
+        self.assertTrue(all("ts" in e for e in events))
+
+    def test_blocked_result(self):
+        wf = self.workflow("wf_blocked", [
+            {"type": "started", "key": "1", "agentId": "b1", "label": "impl:T002"},
+            {"type": "result", "key": "1", "agentId": "b1",
+             "result": {"status": "blocked", "reason": "needs a mic", "tag": "manual", "question": "record it"}}])
+        events = sdd.journal_events([wf])
+        self.assertEqual([e["kind"] for e in events], ["task.started", "task.blocked"])
+        self.assertEqual((events[1]["id"], events[1]["reason"], events[1]["tag"]), ("T002", "needs a mic", "manual"))
+
+    def test_failed_line(self):
+        wf = self.workflow("wf_failed", [
+            {"type": "started", "key": "1", "agentId": "c1", "label": "eval:T003"},
+            {"type": "failed", "key": "1", "agentId": "c1", "error": "boom"},
+            {"type": "started", "key": "2", "agentId": "c2", "label": "impl:T004"},
+            {"type": "failed", "key": "2", "agentId": "c2"}])
+        events = sdd.journal_events([wf])
+        self.assertEqual([(e["kind"], e["id"]) for e in events],
+                         [("task.started", "T003"), ("task.failed", "T003"), ("task.started", "T004"), ("task.failed", "T004")])
+        self.assertEqual(events[1]["error"], "boom")
+        self.assertEqual(events[3]["error"], "")
+
+    def test_unparseable_and_unknown_lines_are_skipped(self):
+        wf = self.dir / "wf_bad"
+        wf.mkdir()
+        (wf / "journal.jsonl").write_text(
+            'not json\n{"type":"started","key":"1","agentId":"d1","label":"other:T1"}\n'
+            '{"type":"started","key":"2","agentId":"d2","label":"impl:T005"}\n{"type":"res\n', encoding="utf-8")
+        self.assertEqual([e["kind"] for e in sdd.journal_events([wf])], ["task.started"])
+
+    def test_repair_and_blocked_recorded(self):
+        wf = self.workflow("wf_repair", [
+            {"type": "started", "key": "1", "agentId": "e1", "label": "repair:T1,T2"},
+            {"type": "started", "key": "2", "agentId": "e2", "label": "commit:T1,T2"},
+            {"type": "result", "key": "2", "agentId": "e2",
+             "result": {"checks_ran": True, "checks_passed": False, "failing_output": "x", "commits": [],
+                        "blocked_recorded": ["T1", "T2"]}}])
+        events = sdd.journal_events([wf])
+        self.assertEqual([e["kind"] for e in events], ["group.repair", "group.finished", "task.blocked", "task.blocked"])
+        self.assertEqual(events[0]["ids"], ["T1", "T2"])
+        self.assertEqual([e["id"] for e in events[2:]], ["T1", "T2"])
+
+    def test_last_line_reads_only_the_tail(self):
+        big = json.dumps({"timestamp": "first", "pad": "x" * 100_000}) + "\n" + json.dumps({"timestamp": "last"}) + "\n"
+        wf = self.workflow("wf_big", [
+            {"type": "started", "key": "1", "agentId": "f1", "label": "impl:T6"},
+            {"type": "result", "key": "1", "agentId": "f1", "result": {"status": "done"}}], {"f1": big})
+        self.assertEqual([e["ts"] for e in sdd.journal_events([wf])], ["first", "last"])
+
+    def test_valid_workflow_dir(self):
+        self.assertTrue(sdd.valid_workflow_dir(WF_TEST))
+        self.assertFalse(sdd.valid_workflow_dir(Path("tests/fixtures/wf_test")))  # relative
+        (self.dir / "wf_empty").mkdir()
+        self.assertFalse(sdd.valid_workflow_dir(self.dir / "wf_empty"))  # no journal.jsonl
+        other = self.dir / "notwf"
+        other.mkdir()
+        (other / "journal.jsonl").write_text("", encoding="utf-8")
+        self.assertFalse(sdd.valid_workflow_dir(other))
+        self.assertFalse(sdd.valid_workflow_dir(self.dir / "wf_absent"))
+
+    def write_listing(self, run_id, dirs):
+        runs = self.dir / "project" / ".sdd" / "runs" / run_id
+        runs.mkdir(parents=True)
+        (runs / "workflows.json").write_text(json.dumps({"workflow_dirs": [str(d) for d in dirs]}), encoding="utf-8")
+        return self.dir / "project"
+
+    def test_run_events_missing_dirs(self):
+        other = self.dir / "notwf"
+        other.mkdir()
+        (other / "journal.jsonl").write_text("", encoding="utf-8")
+        (self.dir / "wf_nojournal").mkdir()
+        dirs = [other, self.dir / "wf_nojournal", WF_TEST]
+        project = self.write_listing("20261027-1400", dirs)
+        result = sdd.run_events(project, "20261027-1400")
+        self.assertEqual(result["run_id"], "20261027-1400")
+        self.assertEqual(result["workflow_dirs"], [str(d) for d in dirs])
+        self.assertEqual(result["missing"], [str(other), str(self.dir / "wf_nojournal")])
+        self.assertEqual(len(result["events"]), 8)
+        self.assertTrue(all(e["workflow"] == 2 for e in result["events"]))
+
+    def test_run_events_without_listing(self):
+        (self.dir / "project").mkdir()
+        self.assertEqual(sdd.run_events(self.dir / "project", "20261027-1400"),
+                         {"run_id": "20261027-1400", "workflow_dirs": [], "missing": [], "events": []})
+
+    def test_cli(self):
+        project = self.write_listing("20261027-1401", [WF_TEST])
+        out = subprocess.run([sys.executable, str(SCRIPT), "events", str(project), "20261027-1401"],
+                             capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(out.stdout), sdd.run_events(project, "20261027-1401"))
+
+
 if __name__ == "__main__":
     unittest.main()

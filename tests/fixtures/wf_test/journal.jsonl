@@ -1,0 +1,12 @@
+{"type":"launched"}
+{"type":"started","key":"v2:01","agentId":"a1000000000000001","label":"impl:T001","phase":"Build"}
+{"type":"result","key":"v2:01","agentId":"a1000000000000001","result":{"status":"done","summary":"first try","files_changed":["a.py"]}}
+{"type":"started","key":"v2:02","agentId":"a1000000000000002","label":"verify:T001","phase":"Build"}
+{"type":"result","key":"v2:02","agentId":"a1000000000000002","result":{"verdict":"reject","problems":["missing test"],"checks_run":[]}}
+{"type":"started","key":"v2:03","agentId":"a1000000000000003","label":"impl:T001#2","phase":"Build"}
+{"type":"result","key":"v2:03","agentId":"a1000000000000003","result":{"status":"done","summary":"second try","files_changed":["a.py","tests/test_a.py"]}}
+{"type":"started","key":"v2:04","agentId":"a1000000000000004","label":"verify:T001","phase":"Build"}
+{"type":"result","key":"v2:04","agentId":"a1000000000000004","result":{"verdict":"approve","problems":[],"checks_run":["pytest"]}}
+{"type":"started","key":"v2:05","agentId":"a1000000000000005","label":"commit:T001","phase":"Build"}
+{"type":"result","key":"v2:05","agentId":"a1000000000000005","res
+{"type":"result","key":"v2:05","agentId":"a1000000000000005","result":{"checks_ran":true,"checks_passed":true,"failing_output":"","commits":["abc1234"],"blocked_recorded":[]}}

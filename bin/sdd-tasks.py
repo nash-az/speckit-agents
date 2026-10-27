@@ -10,6 +10,7 @@
   sdd-tasks.py checkpoint <journal.jsonl>
   sdd-tasks.py snapshot <tasks.md>
   sdd-tasks.py changed  <tasks.md> --run-json .sdd/run.json
+  sdd-tasks.py events   <project dir> <run id>
 
 Every command prints JSON on stdout. Only the standard library is used.
 """
@@ -524,6 +525,142 @@ def checkpoint(journal: Path) -> dict:
     return {"journal": str(journal), "found": True, "tasks": tasks, "interrupted_agents": interrupted}
 
 
+WORKFLOW_DIR_RE = re.compile(r"^wf_[A-Za-z0-9_-]+$")
+TAIL_BYTES = 64 * 1024
+
+
+def valid_workflow_dir(path) -> bool:
+    """An absolute `wf_…` directory holding `journal.jsonl`. Readers skip anything else, so a
+    project file cannot make them read arbitrary paths."""
+    p = Path(path)
+    return (p.is_absolute() and bool(WORKFLOW_DIR_RE.match(p.name)) and p.is_dir()
+            and (p / "journal.jsonl").is_file())
+
+
+def _line_ts(line: bytes | str):
+    try:
+        value = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return value.get("timestamp") if isinstance(value, dict) else None
+
+
+def _first_ts(transcript: Path):
+    try:
+        with transcript.open("rb") as f:
+            return _line_ts(f.readline())
+    except OSError:
+        return None
+
+
+def _last_ts(transcript: Path):
+    """The `timestamp` of the last complete line, reading only the file's last 64 KB."""
+    try:
+        with transcript.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - TAIL_BYTES))
+            tail = f.read()
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        if line.strip():
+            return _line_ts(line)
+    return None
+
+
+def journal_events(workflow_dirs: list[Path]) -> list[dict]:
+    """Run events derived from the engine's workflow journals (data-model.md §3.9).
+
+    Invalid directories are skipped; `workflow` is the index into `workflow_dirs` as given.
+    """
+    events: list[dict] = []
+    for index, raw in enumerate(workflow_dirs):
+        wf = Path(raw)
+        if not valid_workflow_dir(wf):
+            continue
+        started: dict[str, tuple[str, str]] = {}  # key (or agentId) -> (label, agentId)
+        for line in (wf / "journal.jsonl").read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # a line cut off when the process was killed
+            if not isinstance(entry, dict):
+                continue
+            kind, key, agent_id = entry.get("type"), entry.get("key"), entry.get("agentId")
+            if kind == "started":
+                label = entry.get("label", "")
+                for k in (key, agent_id):
+                    if k:
+                        started[k] = (label, agent_id or "")
+            elif kind in ("result", "failed"):
+                label, known_agent = started.get(key) or started.get(agent_id) or ("", "")
+                agent_id = agent_id or known_agent
+            else:
+                continue
+            match = LABEL_RE.match(label or "")
+            if not match:
+                continue
+            label_kind, ids = match["kind"], match["ids"].split(",")
+            attempt = int(match["n"] or 1)
+            transcript = wf / f"agent-{agent_id}.jsonl" if agent_id else None
+            ts = None
+            if transcript is not None:
+                ts = _first_ts(transcript) if kind == "started" else _last_ts(transcript)
+            group = label_kind in ("commit", "repair")
+
+            def ev(name: str, **fields) -> None:
+                base = {"ts": ts, "kind": name}
+                base.update({"ids": ids} if group else {"id": ids[0]})
+                base.update({"label": label, "agent_id": agent_id, "workflow": index})
+                base.update(fields)
+                events.append(base)
+
+            if kind == "failed":
+                ev("task.failed", error=entry.get("error") or "")
+                continue
+            if kind == "started":
+                if label_kind in ("impl", "eval"):
+                    ev("task.started", attempt=attempt)
+                elif label_kind == "repair":
+                    ev("group.repair")
+                continue
+            result = entry.get("result")
+            if not isinstance(result, dict):
+                continue
+            if label_kind in ("impl", "eval"):
+                if result.get("status") == "done":
+                    ev("task.implemented", attempt=attempt)
+                elif result.get("status") == "blocked":
+                    ev("task.blocked", reason=result.get("reason", ""), tag=result.get("tag", ""))
+            elif label_kind == "verify":
+                ev("task.verified", verdict=result.get("verdict"), problems=result.get("problems", []))
+                if result.get("verdict") == "approve":
+                    ev("task.approved")
+            elif label_kind == "commit":
+                ev("group.finished", checks_passed=result.get("checks_passed"),
+                   commits=result.get("commits", []))
+                for task_id in result.get("blocked_recorded") or []:
+                    events.append({"ts": ts, "kind": "task.blocked", "id": task_id, "label": label,
+                                   "agent_id": agent_id, "workflow": index})
+    return events
+
+
+def run_events(project: Path, run_id: str) -> dict:
+    """The events of run `run_id`, from the directories listed in `.sdd/runs/<id>/workflows.json`."""
+    dirs: list[str] = []
+    listing = Path(project) / ".sdd" / "runs" / run_id / "workflows.json"
+    try:
+        data = json.loads(listing.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("workflow_dirs"), list):
+            dirs = [str(d) for d in data["workflow_dirs"]]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"run_id": run_id, "workflow_dirs": dirs,
+            "missing": [d for d in dirs if not valid_workflow_dir(d)],
+            "events": journal_events([Path(d) for d in dirs])}
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -563,6 +700,10 @@ def main(argv: list[str]) -> int:
     p_changed.add_argument("tasks", type=Path)
     p_changed.add_argument("--run-json", type=Path, required=True)
 
+    p_events = sub.add_parser("events")
+    p_events.add_argument("project", type=Path)
+    p_events.add_argument("run_id")
+
     args = parser.parse_args(argv)
     if args.cmd == "parse":
         result = parse_tasks(args.tasks)
@@ -582,6 +723,8 @@ def main(argv: list[str]) -> int:
     elif args.cmd == "changed":
         run = json.loads(args.run_json.read_text(encoding="utf-8"))
         result = {"changed": changed(parse_tasks(args.tasks), run.get("task_snapshot") or {})}
+    elif args.cmd == "events":
+        result = run_events(args.project, args.run_id)
     else:
         result = load_config(args.config)
         result["errors"] = config_errors(result)
