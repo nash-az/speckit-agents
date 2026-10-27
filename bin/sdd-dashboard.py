@@ -28,11 +28,17 @@ from __future__ import annotations
 
 import argparse
 import http.server
+import importlib.util
 import json
 import os
 import re
 import subprocess
 from pathlib import Path
+
+# All task state comes from bin/sdd-tasks.py, so the CLI and the dashboard cannot disagree
+# (data-model.md §4.1). The hyphen in the file name prevents a plain import.
+_spec = importlib.util.spec_from_file_location("sdd_tasks", Path(__file__).with_name("sdd-tasks.py"))
+sdd_tasks = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_tasks)
 
 DEFAULT_PORT = 8765
 STATE_BASE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "speckit-agents"
@@ -177,47 +183,86 @@ def get_status(project):
     return read_json(status_file)
 
 
-def parse_tasks(text):
-    """Parse tasks.md into phases with tasks, tags, and held status."""
-    if not text:
-        return None
+# Phase rollup (data-model.md §1, FR-004): most urgent first. A phase's status is the first key
+# that any of its tasks has.
+ROLLUP_ORDER = ("blocked", "retrying", "running", "held", "paused", "queued",
+                "moved", "wontfix", "superseded", "done")
+
+# sdd-tasks.py hold tags that become the parked status `held` (data-model.md §2).
+PERSON_HOLD_TAGS = ("manual", "decision", "dep", "download")
+
+
+def task_status(task, holds, entries):
+    """The §2 status fields for one parsed task.
+
+    `holds` is propagate_holds() output ({id: (tag, reason)}), `entries` is
+    parse_blocked_entries() output. An open task without a hold gets `status: None`;
+    the page fills in the transient state or `queued`.
+    """
+    entry = entries.get(task["id"])
+    out = {"status": None, "status_tag": None, "status_reason": None, "question": None, "answer": None}
+    if task["done"]:
+        out["status"] = "done"
+        return out
+    hold = holds.get(task["id"])
+    if hold is not None:
+        tag, reason = hold
+        out["status_reason"] = reason
+        if tag in PERSON_HOLD_TAGS:
+            out["status"], out["status_tag"] = "held", tag
+        elif tag == "held":  # propagated from a held dependency
+            out["status"], out["status_tag"] = "held", "dependency"
+        elif tag == "blocked":
+            out["status"] = "blocked"
+            out["status_tag"] = entry["status"] if entry else "open"
+            out["question"] = entry["question"] if entry else None
+        elif tag in ("wontfix", "moved"):
+            out["status"] = tag
+            out["status_tag"] = entry["status"] if entry else tag
+        elif tag == "superseded":
+            out["status"], out["status_tag"] = "superseded", reason  # successor id(s) or "Phase N"
+        else:  # an unknown hold kind still parks the task
+            out["status"], out["status_tag"] = "held", tag
+    if entry and entry.get("status") == "resolved":
+        out["answer"] = entry.get("answer") or None
+    return out
+
+
+def rollup(statuses):
+    """The first key of ROLLUP_ORDER present in `statuses`; None for a phase with no tasks.
+
+    A task with no parked status (None) counts as `queued`.
+    """
+    present = {s or "queued" for s in statuses}
+    return next((key for key in ROLLUP_ORDER if key in present), None)
+
+
+def project_tasks(tasks_path, blocked_path, config_path):
+    """`GET /api/project/tasks`: {"text", "phases"} with §2 tasks and §1 phase rollups."""
+    text = read_text(tasks_path) if tasks_path else None
+    if text is None:
+        return {"text": "", "phases": []}
+    parsed = sdd_tasks.parse_tasks(tasks_path)
+    entries = sdd_tasks.parse_blocked_entries(blocked_path)
+    try:
+        config = sdd_tasks.load_config(config_path)
+    except (OSError, ValueError):  # unreadable or invalid TOML: fall back to the defaults
+        config = sdd_tasks.load_config(None)
+    statuses = {i: e["status"] for i, e in entries.items()}
+    holds = sdd_tasks.propagate_holds(
+        parsed, sdd_tasks.direct_holds(parsed, statuses, config.get("allow", {})))
     phases = []
-    current = None
-    for line in text.splitlines():
-        if line.startswith("## "):
-            current = {"title": line[2:].strip(), "tasks": []}
-            phases.append(current)
-        elif line.startswith("- [") and current is not None:
-            tags = re.findall(r"\[([^\]]+)\]", line)
-            m = re.match(r"- \[(.)\] (T\d+[a-z]?)", line)
-            task = {
-                "id": m.group(2) if m else "?",
-                "done": m.group(1) == "x" if m else False,
-                "text": line,
-                "tags": tags,
-                "parallel": "P" in tags,
-            }
-            current["tasks"].append(task)
-    return phases
+    for phase in parsed["phases"]:
+        tasks = [dict(t, **task_status(t, holds, entries)) for t in phase["tasks"]]
+        phases.append(dict(phase, tasks=tasks, status=rollup(t["status"] for t in tasks)))
+    return {"text": text, "phases": phases}
 
 
-def parse_blocked(text):
-    """Parse BLOCKED.md into entries."""
-    if not text:
-        return []
-    entries = []
-    current = None
-    for line in text.splitlines():
-        if line.startswith("## "):
-            current = {"id": line[2:].strip(), "reason": "", "question": "", "status": "open", "answer": "", "tags": []}
-            entries.append(current)
-        elif current and line.startswith("- status:"):
-            current["status"] = line.split(":", 1)[1].strip()
-        elif current and line.startswith("- answer:"):
-            current["answer"] = line.split(":", 1)[1].strip()
-        elif current and line.startswith("- tag:"):
-            current["tags"].append(line.split(":", 1)[1].strip())
-    return entries
+def project_blocked(blocked_path):
+    """`GET /api/project/blocked`: {"text", "entries": [{"id", **entry}]}, last entry per id."""
+    text = (read_text(blocked_path) if blocked_path else None) or ""
+    entries = sdd_tasks.parse_blocked_entries(blocked_path)
+    return {"text": text, "entries": [{"id": i, **e} for i, e in entries.items()]}
 
 
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
@@ -269,14 +314,11 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_text(read_text(f) if f else "", content_type="text/markdown")
             return
         if path == "/api/project/tasks":
-            f = find_file(proj, ["tasks.md"])
-            text = read_text(f) if f else ""
-            self._send_json({"text": text, "phases": parse_tasks(text)})
+            self._send_json(project_tasks(find_file(proj, ["tasks.md"]), find_file(proj, ["BLOCKED.md"]),
+                                          proj / ".sdd" / "config.toml"))
             return
         if path == "/api/project/blocked":
-            f = find_file(proj, ["BLOCKED.md"])
-            text = read_text(f) if f else ""
-            self._send_json({"text": text, "entries": parse_blocked(text)})
+            self._send_json(project_blocked(find_file(proj, ["BLOCKED.md"])))
             return
         if path == "/api/project/decisions":
             f = find_file(proj, ["decisions.md"])
@@ -840,7 +882,7 @@ def build_html():
           var item = document.createElement('div');
           item.className = 'blocked-item';
           var statusCls = e.status === 'open' ? 'status-open' : (e.status === 'resolved' ? 'status-resolved' : 'status-wontfix');
-          var tagsHtml = (e.tags||[]).map(function(tag) { return '<span class="task-tag tag-' + tag.toLowerCase() + '">' + escapeHtml(tag) + '</span>'; }).join('');
+          var tagsHtml = (e.tag ? [e.tag] : []).map(function(tag) { return '<span class="task-tag tag-' + tag.toLowerCase() + '">' + escapeHtml(tag) + '</span>'; }).join('');
           item.innerHTML = '<div class="blocked-header"><div class="blocked-id">' + escapeHtml(e.id) + '</div><div class="blocked-status ' + statusCls + '">' + escapeHtml(e.status) + '</div></div>' +
             (e.reason ? '<div class="blocked-reason">' + escapeHtml(e.reason) + '</div>' : '') +
             (e.question ? '<div class="blocked-question">❓ ' + escapeHtml(e.question) + '</div>' : '') +

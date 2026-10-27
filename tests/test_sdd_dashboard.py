@@ -1,23 +1,273 @@
 #!/usr/bin/env python3
 """Tests for bin/sdd-dashboard.py (D301).
 
-Starts the dashboard server on a test port, creates sample .sdd/runs/ data
+The unittest classes cover task status mapping and phase rollup (data-model.md §1, §2) and the
+tasks/blocked endpoints; `unittest discover` runs them. The `main()` script below
+starts the dashboard server on a test port, creates sample .sdd/runs/ data
 and status.json, then asserts the API endpoints return correct data.
 """
 
+import importlib.util
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import unittest
 import urllib.request
 import urllib.error
 from pathlib import Path
 
 PORT = 19765
 PROJECT = Path("/tmp/speckit-dashboard-test")
+
+HERE = Path(__file__).parent
+_spec = importlib.util.spec_from_file_location("sdd_dashboard", HERE.parent / "bin" / "sdd-dashboard.py")
+dash = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dash)
+
+STATUS_TASKS = """# Tasks
+
+## Phase 1: Setup
+
+- [x] T001 Done already in `a.py`
+- [ ] T002 [manual] Record audio
+- [ ] T003 [decision] Pick a database
+- [ ] T004 [dep] Add a package
+- [ ] T005 [download] Fetch the model
+- [ ] T006 Needs work after T002
+- [ ] T007 Ran and blocked in `b.py`
+- [ ] T008 Dropped in `c.py`
+- [ ] T009 Moved elsewhere in `d.py`
+- [ ] T010 Answered and runnable in `e.py`
+- [ ] T011 Old approach, superseded-by T012
+- [ ] T012 New approach in `f.py`
+- [ ] T013 [dep] [dep:ok] Approved package
+"""
+
+STATUS_BLOCKED = """# Blocked tasks
+
+## T007
+- status: open
+- tag: failed
+- reason: checks failed twice
+- question: Which API should it call?
+- answer:
+
+## T008
+- status: wontfix
+- reason: not needed
+
+## T009
+- status: moved
+- reason: product work
+
+## T010
+- status: open
+- question: Old question?
+
+## T010
+- status: resolved
+- question: Which port?
+- answer: Use 8080.
+  Not 80.
+"""
+
+
+def write_project(root, tasks, blocked=None, config=None):
+    (root / ".sdd").mkdir(parents=True, exist_ok=True)
+    (root / "tasks.md").write_text(tasks, encoding="utf-8")
+    if blocked is not None:
+        (root / "BLOCKED.md").write_text(blocked, encoding="utf-8")
+    if config is not None:
+        (root / ".sdd" / "config.toml").write_text(config, encoding="utf-8")
+
+
+class TaskStatusTest(unittest.TestCase):
+    """data-model.md §2: each sdd-tasks.py hold maps to one status."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        write_project(self.root, STATUS_TASKS, STATUS_BLOCKED)
+        self.result = dash.project_tasks(self.root / "tasks.md", self.root / "BLOCKED.md",
+                                         self.root / ".sdd" / "config.toml")
+        self.tasks = {t["id"]: t for p in self.result["phases"] for t in p["tasks"]}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def assertStatus(self, task_id, status, tag, question=None, answer=None):
+        task = self.tasks[task_id]
+        self.assertEqual((task["status"], task["status_tag"]), (status, tag), task_id)
+        self.assertEqual(task["question"], question, task_id)
+        self.assertEqual(task["answer"], answer, task_id)
+
+    def test_shape(self):
+        task = self.tasks["T002"]
+        for key in ("id", "text", "tags", "parallel", "story", "files", "deps", "superseded_by",
+                    "done", "line", "status", "status_tag", "status_reason", "question", "answer"):
+            self.assertIn(key, task)
+        self.assertEqual(self.result["text"], STATUS_TASKS)
+        phase = self.result["phases"][0]
+        self.assertEqual((phase["id"], phase["title"]), ("1", "Setup"))
+        self.assertIn("status", phase)
+
+    def test_done(self):
+        self.assertStatus("T001", "done", None)
+        self.assertIsNone(self.tasks["T001"]["status_reason"])
+
+    def test_person_tags_are_held(self):
+        for task_id, tag in (("T002", "manual"), ("T003", "decision"), ("T004", "dep"), ("T005", "download")):
+            self.assertStatus(task_id, "held", tag)
+            self.assertEqual(self.tasks[task_id]["status_reason"], dash.sdd_tasks.HOLD_TAGS[tag])
+
+    def test_propagated_hold_is_held_by_dependency(self):
+        self.assertStatus("T006", "held", "dependency")
+        self.assertIn("T002", self.tasks["T006"]["status_reason"])
+
+    def test_open_entry_is_blocked_with_question(self):
+        self.assertStatus("T007", "blocked", "open", question="Which API should it call?")
+        self.assertEqual(self.tasks["T007"]["status_reason"], "open entry in BLOCKED.md")
+
+    def test_wontfix_and_moved(self):
+        self.assertStatus("T008", "wontfix", "wontfix")
+        self.assertStatus("T009", "moved", "moved")
+
+    def test_resolved_entry_is_runnable_with_answer(self):
+        self.assertStatus("T010", None, None, answer="Use 8080.\n  Not 80.")
+        self.assertIsNone(self.tasks["T010"]["status_reason"])
+
+    def test_explicit_superseded_names_successor(self):
+        self.assertStatus("T011", "superseded", "T012")
+        self.assertStatus("T012", None, None)
+
+    def test_dep_ok_tag_is_runnable(self):
+        self.assertStatus("T013", None, None)
+
+    def test_allowed_dependencies_are_runnable(self):
+        write_project(self.root, STATUS_TASKS, STATUS_BLOCKED, "[allow]\ndependencies = true\n")
+        result = dash.project_tasks(self.root / "tasks.md", self.root / "BLOCKED.md",
+                                    self.root / ".sdd" / "config.toml")
+        tasks = {t["id"]: t for p in result["phases"] for t in p["tasks"]}
+        self.assertIsNone(tasks["T004"]["status"])
+        self.assertEqual(tasks["T005"]["status"], "held")
+
+    def test_convergence_supersedes_older_phases(self):
+        write_project(self.root, "# Tasks\n\n## Phase 1: Old\n\n- [ ] T020 [manual] Old work\n"
+                                 "- [x] T021 Finished\n\n## Phase 2: Convergence\n\n- [ ] T090 Redo per T020\n")
+        result = dash.project_tasks(self.root / "tasks.md", None, None)
+        tasks = {t["id"]: t for p in result["phases"] for t in p["tasks"]}
+        self.assertEqual((tasks["T020"]["status"], tasks["T020"]["status_tag"]), ("superseded", "Phase 2"))
+        self.assertEqual(tasks["T021"]["status"], "done")
+        self.assertIsNone(tasks["T090"]["status"])
+        self.assertEqual([p["status"] for p in result["phases"]], ["superseded", "queued"])
+
+    def test_missing_tasks_file(self):
+        self.assertEqual(dash.project_tasks(self.root / "nope.md", None, None), {"text": "", "phases": []})
+        self.assertEqual(dash.project_tasks(None, None, None), {"text": "", "phases": []})
+
+    def test_phase_rollup_over_tasks(self):
+        self.assertEqual(self.result["phases"][0]["status"], "blocked")
+
+
+class RollupTest(unittest.TestCase):
+    """data-model.md §1: the first key of the priority list that any task has."""
+
+    ORDER = ["blocked", "retrying", "running", "held", "paused", "queued",
+             "moved", "wontfix", "superseded", "done"]
+
+    def test_order_is_exact(self):
+        self.assertEqual(list(dash.ROLLUP_ORDER), self.ORDER)
+
+    def test_each_key_beats_every_later_key(self):
+        for i, key in enumerate(self.ORDER):
+            for later in self.ORDER[i + 1:]:
+                self.assertEqual(dash.rollup([later, key, later]), key, (key, later))
+
+    def test_single_status(self):
+        for key in self.ORDER:
+            self.assertEqual(dash.rollup([key]), key)
+
+    def test_open_runnable_task_counts_as_queued(self):
+        self.assertEqual(dash.rollup(["done", None]), "queued")
+        self.assertEqual(dash.rollup([None, "held"]), "held")
+
+    def test_no_tasks_has_no_status(self):
+        self.assertIsNone(dash.rollup([]))
+
+    def test_all_done(self):
+        self.assertEqual(dash.rollup(["done", "done"]), "done")
+
+
+class BlockedEndpointTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        write_project(self.root, STATUS_TASKS, STATUS_BLOCKED)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_entries_from_parse_blocked_entries(self):
+        result = dash.project_blocked(self.root / "BLOCKED.md")
+        self.assertEqual(result["text"], STATUS_BLOCKED)
+        by_id = {e["id"]: e for e in result["entries"]}
+        self.assertEqual([e["id"] for e in result["entries"]], ["T007", "T008", "T009", "T010"])
+        self.assertEqual(by_id["T007"], {"id": "T007", "status": "open", "tag": "failed",
+                                         "reason": "checks failed twice",
+                                         "question": "Which API should it call?", "answer": ""})
+        self.assertEqual(by_id["T010"]["status"], "resolved")  # the last entry per id wins
+        self.assertEqual(by_id["T010"]["question"], "Which port?")
+
+    def test_missing_file(self):
+        self.assertEqual(dash.project_blocked(self.root / "missing.md"), {"text": "", "entries": []})
+        self.assertEqual(dash.project_blocked(None), {"text": "", "entries": []})
+
+    def test_parsers_removed_from_dashboard(self):
+        self.assertFalse(hasattr(dash, "parse_tasks"))
+        self.assertFalse(hasattr(dash, "parse_blocked"))
+
+
+class HandlerTest(unittest.TestCase):
+    """The two endpoints through the request handler, without a socket (the sandbox may forbid
+    binding a port)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        write_project(self.root, STATUS_TASKS, STATUS_BLOCKED, "[run]\nmax_retries = 2\n")
+        self.saved_project = dash.DashboardHandler.project
+        dash.DashboardHandler.project = self.root
+
+    def tearDown(self):
+        dash.DashboardHandler.project = self.saved_project
+        self.tmp.cleanup()
+
+    def get(self, path):
+        handler = dash.DashboardHandler.__new__(dash.DashboardHandler)
+        handler.path, handler.command = path, "GET"
+        handler.request_version, handler.requestline = "HTTP/1.1", f"GET {path} HTTP/1.1"
+        handler.wfile = io.BytesIO()
+        handler.do_GET()
+        head, _, body = handler.wfile.getvalue().partition(b"\r\n\r\n")
+        self.assertEqual(head.split(b"\r\n")[0].split()[1], b"200", head)
+        return json.loads(body)
+
+    def test_tasks_endpoint(self):
+        data = self.get("/api/project/tasks")
+        tasks = {t["id"]: t for p in data["phases"] for t in p["tasks"]}
+        self.assertEqual(tasks["T002"]["status"], "held")
+        self.assertEqual(tasks["T007"]["question"], "Which API should it call?")
+        self.assertEqual(data["phases"][0]["status"], "blocked")
+
+    def test_blocked_endpoint(self):
+        data = self.get("/api/project/blocked")
+        self.assertEqual({e["id"] for e in data["entries"]}, {"T007", "T008", "T009", "T010"})
 
 
 def wait_for(url, timeout=10):
@@ -51,7 +301,7 @@ def main():
     # Sample project files
     (PROJECT / "spec.md").write_text("# Feature Spec\n\n## User Story 1\n\nDo something.\n")
     (PROJECT / "plan.md").write_text("# Plan\n\n- [ ] T101 Design\n- [ ] T102 Implement\n")
-    (PROJECT / "tasks.md").write_text("# Tasks\n\n## Phase 1\n\n- [x] T001 [P] First task in `a.py`\n- [ ] T002 [manual] Needs a person in `b.py`\n")
+    (PROJECT / "tasks.md").write_text("# Tasks\n\n## Phase 1: Setup\n\n- [x] T001 [P] First task in `a.py`\n- [ ] T002 [manual] Needs a person in `b.py`\n")
     (PROJECT / "BLOCKED.md").write_text("## T002\n- status: open\n- reason: needs recording\n- question: Who will record?\n")
     (PROJECT / "decisions.md").write_text("# Decisions\n\n- T011: Use Playwright (2026-10-24)\n")
     (PROJECT / ".sdd" / "config.toml").write_text("[run]\nfeature = \"specs/001\"\n")
@@ -138,7 +388,7 @@ def main():
         assert tasks is not None
         assert "phases" in tasks
         assert len(tasks["phases"]) == 1
-        assert tasks["phases"][0]["title"] == "Phase 1"
+        assert tasks["phases"][0]["title"] == "Setup"
         assert len(tasks["phases"][0]["tasks"]) == 2
         assert tasks["phases"][0]["tasks"][0]["id"] == "T001"
         assert tasks["phases"][0]["tasks"][0]["done"] is True
