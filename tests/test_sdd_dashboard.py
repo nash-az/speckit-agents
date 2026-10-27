@@ -240,23 +240,18 @@ class HandlerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        write_project(self.root, STATUS_TASKS, STATUS_BLOCKED, "[run]\nmax_retries = 2\n")
-        self.saved_project = dash.DashboardHandler.project
-        dash.DashboardHandler.project = self.root
+        write_project(self.root / "specs" / "001-only", STATUS_TASKS, STATUS_BLOCKED)
+        (self.root / ".sdd").mkdir()
+        (self.root / ".sdd" / "config.toml").write_text("[run]\nmax_retries = 2\n", encoding="utf-8")
+        self.saved =(dash.DashboardHandler.project, dash.DashboardHandler.feature)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
 
     def tearDown(self):
-        dash.DashboardHandler.project = self.saved_project
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.saved
         self.tmp.cleanup()
 
     def get(self, path):
-        handler = dash.DashboardHandler.__new__(dash.DashboardHandler)
-        handler.path, handler.command = path, "GET"
-        handler.request_version, handler.requestline = "HTTP/1.1", f"GET {path} HTTP/1.1"
-        handler.wfile = io.BytesIO()
-        handler.do_GET()
-        head, _, body = handler.wfile.getvalue().partition(b"\r\n\r\n")
-        self.assertEqual(head.split(b"\r\n")[0].split()[1], b"200", head)
-        return json.loads(body)
+        return request(self, "GET", path)
 
     def test_tasks_endpoint(self):
         data = self.get("/api/project/tasks")
@@ -268,6 +263,97 @@ class HandlerTest(unittest.TestCase):
     def test_blocked_endpoint(self):
         data = self.get("/api/project/blocked")
         self.assertEqual({e["id"] for e in data["entries"]}, {"T007", "T008", "T009", "T010"})
+
+
+def request(test, method, path, body=None, status=200):
+    """Run one request through DashboardHandler without a socket; returns the parsed body
+    (JSON when it parses, else text)."""
+    handler = dash.DashboardHandler.__new__(dash.DashboardHandler)
+    handler.path, handler.command = path, method
+    handler.request_version, handler.requestline = "HTTP/1.1", f"{method} {path} HTTP/1.1"
+    handler.wfile = io.BytesIO()
+    raw = json.dumps(body).encode() if body is not None else b""
+    handler.rfile = io.BytesIO(raw)
+    handler.headers = {"Content-Length": str(len(raw))}
+    handler.do_GET() if method == "GET" else handler.do_POST()
+    head, _, out = handler.wfile.getvalue().partition(b"\r\n\r\n")
+    test.assertEqual(head.split(b"\r\n")[0].split()[1], str(status).encode(), head)
+    try:
+        return json.loads(out)
+    except ValueError:
+        return out.decode()
+
+
+class ActiveFeatureTest(unittest.TestCase):
+    """data-model.md §4.2 (FR-027): config `run.feature`, then `.specify/feature.json`, then the
+    only `specs/` folder, else 409 and the person chooses."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / ".sdd").mkdir()
+        (self.root / ".specify").mkdir()
+        for name in ("001-a", "002-b", "003-c"):
+            (self.root / "specs" / name).mkdir(parents=True)
+            (self.root / "specs" / name / "spec.md").write_text(f"# Spec {name}\n", encoding="utf-8")
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
+
+    def tearDown(self):
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.saved
+        self.tmp.cleanup()
+
+    def config(self, feature):
+        (self.root / ".sdd" / "config.toml").write_text(f'[run]\nfeature = "{feature}"\n', encoding="utf-8")
+
+    def feature_json(self, directory):
+        (self.root / ".specify" / "feature.json").write_text(
+            json.dumps({"feature_directory": directory}), encoding="utf-8")
+
+    def test_config_wins(self):
+        self.config("specs/001-a")
+        self.feature_json("specs/002-b")
+        self.assertEqual(dash.active_feature(self.root), self.root / "specs" / "001-a")
+        self.assertEqual(request(self, "GET", "/api/project/spec"), "# Spec 001-a\n")
+
+    def test_feature_json_when_config_empty(self):
+        self.config("")
+        self.feature_json("specs/002-b")
+        self.assertEqual(dash.active_feature(self.root), self.root / "specs" / "002-b")
+        self.assertEqual(request(self, "GET", "/api/project/spec"), "# Spec 002-b\n")
+
+    def test_single_folder(self):
+        for name in ("001-a", "003-c"):
+            shutil.rmtree(self.root / "specs" / name)
+        self.assertEqual(dash.active_feature(self.root), self.root / "specs" / "002-b")
+        self.assertEqual(request(self, "GET", "/api/project/spec"), "# Spec 002-b\n")
+
+    def test_409_with_several_folders(self):
+        self.config("")
+        self.assertIsNone(dash.active_feature(self.root))
+        expected = {"error": "choose a feature", "features": ["001-a", "002-b", "003-c"]}
+        for path in ("/api/project/spec", "/api/project/plan", "/api/project/tasks",
+                     "/api/project/blocked", "/api/project/decisions"):
+            self.assertEqual(request(self, "GET", path, status=409), expected, path)
+
+    def test_config_is_not_per_feature(self):
+        self.config("")
+        self.assertIn("[run]", request(self, "GET", "/api/project/config"))
+
+    def test_select_feature_in_memory(self):
+        files = sorted(str(p) for p in self.root.rglob("*"))
+        result = request(self, "POST", "/api/project/select", {"feature": "003-c"})
+        self.assertEqual(result, {"ok": True, "path": str(self.root), "feature": "003-c"})
+        self.assertEqual(request(self, "GET", "/api/project/spec"), "# Spec 003-c\n")
+        self.assertEqual(sorted(str(p) for p in self.root.rglob("*")), files)  # nothing written
+
+    def test_select_unknown_feature(self):
+        result = request(self, "POST", "/api/project/select", {"feature": "../../etc"}, status=400)
+        self.assertEqual(result["error"], "unknown feature")
+        self.assertIsNone(dash.DashboardHandler.feature)
+
+    def test_find_file_removed(self):
+        self.assertFalse(hasattr(dash, "find_file"))
 
 
 def wait_for(url, timeout=10):
@@ -298,12 +384,14 @@ def main():
         shutil.rmtree(PROJECT)
     (PROJECT / ".sdd" / "runs").mkdir(parents=True)
 
-    # Sample project files
-    (PROJECT / "spec.md").write_text("# Feature Spec\n\n## User Story 1\n\nDo something.\n")
-    (PROJECT / "plan.md").write_text("# Plan\n\n- [ ] T101 Design\n- [ ] T102 Implement\n")
-    (PROJECT / "tasks.md").write_text("# Tasks\n\n## Phase 1: Setup\n\n- [x] T001 [P] First task in `a.py`\n- [ ] T002 [manual] Needs a person in `b.py`\n")
-    (PROJECT / "BLOCKED.md").write_text("## T002\n- status: open\n- reason: needs recording\n- question: Who will record?\n")
-    (PROJECT / "decisions.md").write_text("# Decisions\n\n- T011: Use Playwright (2026-10-24)\n")
+    # Sample feature files, in the folder `run.feature` names
+    feature = PROJECT / "specs" / "001"
+    feature.mkdir(parents=True)
+    (feature / "spec.md").write_text("# Feature Spec\n\n## User Story 1\n\nDo something.\n")
+    (feature / "plan.md").write_text("# Plan\n\n- [ ] T101 Design\n- [ ] T102 Implement\n")
+    (feature / "tasks.md").write_text("# Tasks\n\n## Phase 1: Setup\n\n- [x] T001 [P] First task in `a.py`\n- [ ] T002 [manual] Needs a person in `b.py`\n")
+    (feature / "BLOCKED.md").write_text("## T002\n- status: open\n- reason: needs recording\n- question: Who will record?\n")
+    (feature / "decisions.md").write_text("# Decisions\n\n- T011: Use Playwright (2026-10-24)\n")
     (PROJECT / ".sdd" / "config.toml").write_text("[run]\nfeature = \"specs/001\"\n")
 
     # Sample events.jsonl for run-001

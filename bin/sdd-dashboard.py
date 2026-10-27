@@ -11,7 +11,7 @@ Usage:
 Endpoints:
     GET /                         -- single-page HTML dashboard
     GET /api/projects             -- discover Speckit projects
-    POST /api/project/select      -- { "path": "..." } select and validate a project
+    POST /api/project/select      -- { "path"?, "feature"? } select a project and/or feature (memory only)
     GET /api/project/spec         -- read spec.md
     GET /api/project/plan         -- read plan.md
     GET /api/project/tasks        -- read tasks.md (parsed)
@@ -103,26 +103,34 @@ def discover_projects():
     return projects
 
 
-def find_file(project, names):
-    """Look for one of several candidate files, in common layouts."""
-    candidates = []
-    for name in names:
-        candidates.append(project / name)
-        candidates.append(project / "specs" / project.name / name)
-        specs_dir = project / "specs"
-        if specs_dir.is_dir():
-            try:
-                for sub in specs_dir.iterdir():
-                    if sub.is_dir():
-                        candidates.append(sub / name)
-            except OSError:
-                pass
-    for c in candidates:
-        try:
-            if c.is_file():
-                return c
-        except OSError:
-            continue
+def feature_names(project: Path) -> list[str]:
+    """Names of the subdirectories of `specs/`, sorted."""
+    try:
+        return sorted(p.name for p in (project / "specs").iterdir() if p.is_dir())
+    except OSError:
+        return []
+
+
+def active_feature(project: Path) -> Path | None:
+    """The feature folder every per-feature file is read from (data-model.md §4.2, FR-027).
+
+    Order: `run.feature` from `.sdd/config.toml` if non-empty → `feature_directory` from
+    `.specify/feature.json` → the only subdirectory of `specs/` → None (the page asks the person).
+    """
+    try:
+        feature = sdd_tasks.load_config(project / ".sdd" / "config.toml").get("run", {}).get("feature")
+    except (OSError, ValueError):  # unreadable or invalid TOML: no configured feature
+        feature = None
+    if isinstance(feature, str) and feature.strip():
+        return project / feature.strip()
+    data = read_json(project / ".specify" / "feature.json")
+    if isinstance(data, dict):
+        directory = data.get("feature_directory")
+        if isinstance(directory, str) and directory.strip():
+            return project / directory.strip()
+    names = feature_names(project)
+    if len(names) == 1:
+        return project / "specs" / names[0]
     return None
 
 
@@ -265,12 +273,30 @@ def project_blocked(blocked_path):
     return {"text": text, "entries": [{"id": i, **e} for i, e in entries.items()]}
 
 
+# Routes that read a file from the active feature folder (data-model.md §4.2), with that file's name.
+PER_FEATURE_ROUTES = {
+    "/api/project/spec": "spec.md",
+    "/api/project/plan": "plan.md",
+    "/api/project/tasks": "tasks.md",
+    "/api/project/blocked": "BLOCKED.md",
+    "/api/project/decisions": "decisions.md",
+}
+
+
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
     project = None
+    feature = None  # a `specs/` folder name chosen in the page; memory only, never written to disk
     html = ""
 
     def log_message(self, format, *args):  # noqa: ANN001, ARG002
         pass
+
+    def _feature_dir(self):
+        """The person's in-memory choice if one was made, else active_feature()."""
+        proj = DashboardHandler.project
+        if DashboardHandler.feature:
+            return proj / "specs" / DashboardHandler.feature
+        return active_feature(proj)
 
     def _send_json(self, obj, status=200):
         body = json.dumps(obj).encode("utf-8")
@@ -305,28 +331,22 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(discover_projects())
             return
         proj = DashboardHandler.project
-        if path == "/api/project/spec":
-            f = find_file(proj, ["spec.md"])
-            self._send_text(read_text(f) if f else "", content_type="text/markdown")
-            return
-        if path == "/api/project/plan":
-            f = find_file(proj, ["plan.md"])
-            self._send_text(read_text(f) if f else "", content_type="text/markdown")
-            return
-        if path == "/api/project/tasks":
-            self._send_json(project_tasks(find_file(proj, ["tasks.md"]), find_file(proj, ["BLOCKED.md"]),
-                                          proj / ".sdd" / "config.toml"))
-            return
-        if path == "/api/project/blocked":
-            self._send_json(project_blocked(find_file(proj, ["BLOCKED.md"])))
-            return
-        if path == "/api/project/decisions":
-            f = find_file(proj, ["decisions.md"])
-            self._send_text(read_text(f) if f else "", content_type="text/markdown")
+        if path in PER_FEATURE_ROUTES:
+            feature = self._feature_dir()
+            if feature is None:
+                self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409)
+                return
+            if path == "/api/project/tasks":
+                self._send_json(project_tasks(feature / "tasks.md", feature / "BLOCKED.md",
+                                              proj / ".sdd" / "config.toml"))
+            elif path == "/api/project/blocked":
+                self._send_json(project_blocked(feature / "BLOCKED.md"))
+            else:
+                self._send_text(read_text(feature / PER_FEATURE_ROUTES[path]) or "",
+                                content_type="text/markdown")
             return
         if path == "/api/project/config":
-            f = find_file(proj, [".sdd/config.toml"])
-            self._send_text(read_text(f) if f else "", content_type="text/plain")
+            self._send_text(read_text(proj / ".sdd" / "config.toml") or "", content_type="text/plain")
             return
         if path == "/api/runs":
             self._send_json(list_runs(proj))
@@ -358,19 +378,31 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 data = json.loads(body)
             except ValueError:
                 data = {}
-            new_path = data.get("path")
-            if not new_path:
-                self._send_json({"error": "path required"}, 400)
+            if not isinstance(data, dict):
+                data = {}
+            new_path, new_feature = data.get("path"), data.get("feature")
+            if not new_path and not new_feature:
+                self._send_json({"error": "path or feature required"}, 400)
                 return
-            p = Path(new_path).expanduser().resolve()
-            if not p.is_dir():
-                self._send_json({"error": "not a directory"}, 400)
+            p = DashboardHandler.project
+            if new_path:
+                p = Path(new_path).expanduser().resolve()
+                if not p.is_dir():
+                    self._send_json({"error": "not a directory"}, 400)
+                    return
+                if not is_speckit_project(p):
+                    self._send_json({"error": "not a speckit project (missing .sdd/config.toml or .specify/)"}, 400)
+                    return
+            if new_feature and new_feature not in feature_names(p):
+                self._send_json({"error": "unknown feature", "features": feature_names(p)}, 400)
                 return
-            if not is_speckit_project(p):
-                self._send_json({"error": "not a speckit project (missing .sdd/config.toml or .specify/)"}, 400)
-                return
+            # Memory only (FR-027): a new project drops an earlier feature choice unless one is given.
+            if new_path and p != DashboardHandler.project:
+                DashboardHandler.feature = None
             DashboardHandler.project = p
-            self._send_json({"ok": True, "path": str(p)})
+            if new_feature:
+                DashboardHandler.feature = new_feature
+            self._send_json({"ok": True, "path": str(p), "feature": DashboardHandler.feature})
             return
         self.send_response(404)
         self.end_headers()
