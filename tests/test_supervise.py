@@ -275,6 +275,15 @@ class SuperviseTest(unittest.TestCase):
         self.assertIn("profiles.bad.env.API_KEY", out.stdout)
         self.assertEqual(calls, [])
 
+    def test_config_errors_exit_2_even_without_a_profile(self):
+        (self.project / ".sdd" / "config.toml").write_text(
+            '[agents]\ncoder = "haiku"\n[run]\nisolation = "worktree"\n')
+        out, calls, _ = self.supervise([[*DONE]])
+        self.assertEqual(out.returncode, 2, out.stdout)
+        self.assertIn("agents.coder", out.stdout)
+        self.assertIn("worktree isolation was removed", out.stdout)
+        self.assertEqual(calls, [])
+
     def test_needs_an_initialised_project(self):
         (self.project / ".sdd" / "config.toml").unlink()
         out, calls, _ = self.supervise([[*DONE]])

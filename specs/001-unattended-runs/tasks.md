@@ -17,7 +17,7 @@
 - [x] T007 [US1] Workflow in `workflows/sdd-run.js` (FR-004–FR-006, FR-009)
 - [x] T008 [US1] Skill in `skills/sdd-run/SKILL.md` (FR-008, FR-010)
 - [ ] T009 [US1] [eval] End-to-end check SC-001: build a toy project fixture in `tests/e2e/make_toy.sh`, run `/sdd-run --yes` headless, assert commits, BLOCKED.md and `main` in `tests/e2e/check_toy.sh`; record the result in `specs/001-unattended-runs/research.md`
-- [ ] T010 [US1] Worktree isolation for parallel groups: when `[run] isolation = "worktree"`, run each task of a group in its own worktree (`isolation: 'worktree'`) and have the bookkeeper merge them onto the run branch in task order in `workflows/sdd-run.js`
+- [ ] T010 [US1] Worktree isolation for parallel groups: when `[run] isolation = "worktree"`, run each task of a group in its own worktree (`isolation: 'worktree'`) and have the bookkeeper merge them onto the run branch in task order in `workflows/sdd-run.js` — superseded-by T012 (specs/003-plugin-redesign: worktree isolation removed)
 - [x] T011 [US1] [decision] Browser check for `[ui]` tasks: **Playwright, outside the sandbox.** Chromium cannot start inside the macOS sandbox (language-app T243), and claude-in-chrome needs the person's real Chrome/sign-ins, so neither works unattended inside a run. `[ui]` means "verified by build and tests during the run and listed for a person to look at": the implementer writes Playwright tests, the verifier runs build+test, and a person runs `pnpm test:e2e` outside the sandbox (or the task is held person-like for GPU/browser-bound work).
 
 ## Phase 4: User Story 2 - Tag tasks (Priority: P1)

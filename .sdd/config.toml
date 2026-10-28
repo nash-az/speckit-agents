@@ -22,6 +22,7 @@ protected_paths = [
 commands = [
   "python3 -m unittest discover -s tests",
   "node --test tests/workflow.test.mjs",
+  "claude plugin test .",
 ]
 
 [allow]

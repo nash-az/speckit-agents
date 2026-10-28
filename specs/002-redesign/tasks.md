@@ -21,7 +21,7 @@
 - [x] T302 Credit-aware pause: `budgetOK()` stops before starting a new agent near the limit
 - [x] T303 Per-task dependency/download approval via `taskAllow` (`[dep:ok]`/`[download:ok]`)
 - [x] T304 Worktree isolation: `[run] isolation = "worktree"` runs each task of a parallel group in its own worktree; bookkeeper merges onto run branch in task order
-- [ ] T305 Tests: event feed, credit-aware pause, worktree merge
+- [ ] T305 Tests: event feed, credit-aware pause, worktree merge — superseded-by T012 (specs/003-plugin-redesign: worktree and event feed removed; credit-pause tests exist)
 
 ## Phase 4: Agents
 
@@ -32,10 +32,10 @@
 
 ## Phase 5: Skills
 
-- [ ] T501 `sdd-run`: `eventsDir` + `taskAllow` + `isolation` in workflow args; held tasks as "waiting on you" in confirmation and report; decision options/trade-offs; manual how-to steps
-- [ ] T502 `sdd-status`: list held tasks as "waiting on you" with questions; show `moved`/`product` state apart
-- [ ] T503 `sdd-unblock`: cover held tagged tasks; decisions register in `<feature>/decisions.md`
-- [ ] T504 `sdd-tag`: write how-to steps for `[manual]` tasks; options/trade-offs for `[decision]` tasks
+- [x] T501 `sdd-run`: `eventsDir` + `taskAllow` + `isolation` in workflow args; held tasks as "waiting on you" in confirmation and report; decision options/trade-offs; manual how-to steps
+- [x] T502 `sdd-status`: list held tasks as "waiting on you" with questions; show `moved`/`product` state apart
+- [x] T503 `sdd-unblock`: cover held tagged tasks; decisions register in `<feature>/decisions.md`
+- [x] T504 `sdd-tag`: write how-to steps for `[manual]` tasks; options/trade-offs for `[decision]` tasks
 
 ## Phase 6: Open tasks from v0.1
 
@@ -45,7 +45,7 @@
 
 ## Phase 7: Out of scope this cycle
 
-- [ ] T701 Project dashboard UI backed by server (backlog item 11) — deferred; event feed (T301) is the foundation
+- [ ] T701 Project dashboard UI backed by server (backlog item 11) — deferred; event feed (T301) is the foundation — superseded-by T047 (specs/003-plugin-redesign: dashboard built)
 - [ ] T702 Phone notifications (backlog item 1/10) — deferred; event feed is the foundation
 
 ## Dependencies & Execution Order

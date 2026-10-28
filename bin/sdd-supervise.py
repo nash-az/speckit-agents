@@ -393,13 +393,13 @@ def main(argv: list[str]) -> int:
         say(f"{args.project} has no .sdd/config.toml: run /sdd-init there first")
         return 2
     args.profile_config = {}
+    config = sdd_tasks.load_config(args.project / ".sdd" / "config.toml")
+    errors = sdd_tasks.config_errors(config)
+    for error in errors:
+        say(f"config error: {error}")
+    if errors:
+        return 2
     if args.profile:
-        config = sdd_tasks.load_config(args.project / ".sdd" / "config.toml")
-        errors = sdd_tasks.config_errors(config)
-        for error in errors:
-            say(f"config error: {error}")
-        if errors:
-            return 2
         profile = (config.get("profiles") or {}).get(args.profile)
         if not isinstance(profile, dict):
             say(f"unknown profile {args.profile}")
