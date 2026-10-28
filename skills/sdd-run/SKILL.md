@@ -1,7 +1,7 @@
 ---
 name: sdd-run
 description: Run the open tasks of the current Spec Kit feature unattended with subagents. Each task is implemented, verified and committed on an auto/ branch, and anything that needs a person goes to BLOCKED.md. Use when the user asks to build, implement or finish the feature without supervision.
-argument-hint: "[--phases 7,8] [--no-converge] [--max-tasks N] [--yes]"
+argument-hint: "[--phases 7,8] [--no-converge] [--max-tasks N] [--profile NAME] [--yes]"
 ---
 
 # /sdd-run
@@ -14,11 +14,12 @@ Paths: this skill's base directory is `<plugin>/skills/sdd-run`, so `<plugin>` i
 - Helper: `python3 <plugin>/bin/sdd-tasks.py`
 - Workflow: the plugin's saved workflow `speckit-agents:sdd-run` (source: `<plugin>/workflows/sdd-run.js`). Call it by `name`, never by `scriptPath`: a session in the user's project cannot read the plugin directory, so the Workflow tool refuses the path.
 
-Arguments (`$ARGUMENTS`): `--phases a,b` runs exactly those phase ids and skips step 2. `--no-converge` skips step 2. `--max-tasks N` caps how many tasks it attempts. `--yes` skips the confirmation.
+Arguments (`$ARGUMENTS`): `--phases a,b` runs exactly those phase ids and skips step 2. `--no-converge` skips step 2. `--max-tasks N` caps how many tasks it attempts. `--profile NAME` names the `[profiles.NAME]` table of `.sdd/config.toml` the run was launched with (step 1 checks it; the report records it). `--yes` skips the confirmation.
 
 ## 1. Preflight. Stop and tell the user at the first failure.
 1. `.sdd/config.toml` exists. If it does not, say to run `/sdd-init` first.
    Load the config: `python3 <helper> config`. If its `errors` list is not empty, stop: print each entry on its own line and say to fix `.sdd/config.toml`, then start `/sdd-run` again (data-model §3.8).
+   With `--profile NAME`: if the config has no `profiles.NAME` table, stop and say `unknown profile NAME`. Otherwise only record the name for the report (step 7): an interactive session cannot switch its model or provider, so the profile's `model` and `env` take effect only when `bin/sdd-supervise.py --profile NAME` starts the run.
    The feature folder is `run.feature`. If that is empty, read `feature_directory` from `.specify/feature.json`.
    The tasks file is `<feature>/tasks.md`. The blocked file is `<feature>/BLOCKED.md`.
    If `.sdd/run.json` exists, an earlier run stopped without closing (a usage limit, the supervisor pausing it, a crash or a kill). Say so, with its `run_id`. Its commits stay on its branch, and its unticked tasks run again.
@@ -87,6 +88,7 @@ Remind the user that permission prompts stop an unattended run, and that a headl
      "checks": [ ... ], "max_retries": <run.max_retries>, "allow": <allow table>,
      "commit_trailer": "<the attribution trailer your instructions give for commits, or empty>",
      "resume": <the checkpoint from step 1 when resuming, else null>,
+     "agentModels": <the config's agents table, or {}>,
      "taskAllow": { "<task id>": { "dependencies": true|false, "downloads": true|false }, ... } }
    ```
    `taskAllow` gives per-task permission overrides (for example a `[dep:ok]` task may add a dependency even when `[allow] dependencies = false`). Build it from the tasks' tags: a task tagged `[dep:ok]` gets `{ dependencies: true }`, one tagged `[download:ok]` gets `{ downloads: true }`.
@@ -109,6 +111,8 @@ Otherwise:
    - for `[decision]` held tasks, the options and trade-offs (or link to the research file);
    - for `[manual]` held tasks, the how-to steps (where, commands, what done looks like);
    - the skipped tasks with their reasons, the held tasks, the phase states, and `stopped` if it is set;
+   - the profile: the `--profile` name, or "none" (data-model §11);
+   - the model per role (`implementer`, `verifier`, `evaluator`, `bookkeeper`): the config's `agents.<role>`, or "run's model" when it has none;
    - the run's events: `python3 <helper> events . <run id>`.
 2. Commit the report as `chore(sdd): run report <run id>`, with the trailer.
 3. Remove `.sdd/run.json`.
