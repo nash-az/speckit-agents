@@ -1444,9 +1444,93 @@ class RunControlTest(unittest.TestCase):
         server.assert_called_once_with(("127.0.0.1", 8800), dash.DashboardHandler)
 
 
+class DecisionsTest(unittest.TestCase):
+    """FR-033: open [decision] tasks, and answers saved outside the project for /sdd-unblock."""
+
+    TASKS = ("## Phase 1: A\n\n"
+             "- [ ] T001 [decision] Pick a port. Options: (a) 80; (b) 8080\n"
+             "- [ ] T002 [manual] Record audio\n"
+             "- [x] T003 [decision] Already settled\n"
+             "- [ ] T004 Plain task\n")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.root = base / "project"
+        (self.root / ".sdd").mkdir(parents=True)
+        (self.root / "specs" / "001-a").mkdir(parents=True)
+        (self.root / "specs" / "001-a" / "tasks.md").write_text(self.TASKS, encoding="utf-8")
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature,
+                      dash.DashboardHandler.port, dash.DashboardHandler.allow_ports)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
+        dash.DashboardHandler.port, dash.DashboardHandler.allow_ports = 8765, ()
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(base / "state")})
+        self.env.start()
+        self.answers = dash.answers_dir(self.root)
+
+    def tearDown(self):
+        self.env.stop()
+        (dash.DashboardHandler.project, dash.DashboardHandler.feature,
+         dash.DashboardHandler.port, dash.DashboardHandler.allow_ports) = self.saved
+        self.tmp.cleanup()
+
+    def project_files(self):
+        return sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file())
+
+    def test_lists_only_open_decision_tasks(self):
+        data = request(self, "GET", "/api/decisions")
+        self.assertEqual([d["id"] for d in data["open"]], ["T001"])
+        self.assertIn("(b) 8080", data["open"][0]["text"])
+        self.assertIsNone(data["open"][0]["pending"])
+        self.assertFalse(data["recorded"])
+
+    def test_answer_is_saved_outside_the_project_and_listed_as_pending(self):
+        before = self.project_files()
+        request(self, "POST", "/api/decisions/answer", {"task": "T001", "answer": " (b) 8080, it is free "},
+                status=202)
+        saved = json.loads((self.answers / "T001.json").read_text())
+        self.assertEqual((saved["task"], saved["answer"]), ("T001", "(b) 8080, it is free"))
+        self.assertEqual(self.project_files(), before)  # FR-020: nothing in the project changed
+        data = request(self, "GET", "/api/decisions")
+        self.assertEqual(data["open"][0]["pending"]["answer"], "(b) 8080, it is free")
+
+    def test_answer_can_be_changed_before_it_is_applied(self):
+        for answer in ("(a)", "(b)"):
+            request(self, "POST", "/api/decisions/answer", {"task": "T001", "answer": answer}, status=202)
+        self.assertEqual(json.loads((self.answers / "T001.json").read_text())["answer"], "(b)")
+        self.assertEqual([p.name for p in self.answers.iterdir()], ["T001.json"])
+
+    def test_only_open_decisions_can_be_answered(self):
+        for task in ("T002", "T003", "T004", "T999"):
+            request(self, "POST", "/api/decisions/answer", {"task": task, "answer": "x"}, status=404)
+        self.assertFalse(self.answers.exists())
+
+    def test_bad_input_is_400(self):
+        bodies = ({"task": "../T001", "answer": "x"}, {"task": "T001"}, {"task": "T001", "answer": "  "},
+                  {"task": "T001", "answer": "x" * (dash.ANSWER_MAX_CHARS + 1)}, {"task": 1, "answer": "x"})
+        for body in bodies:
+            request(self, "POST", "/api/decisions/answer", body, status=400)
+        request(self, "POST", "/api/decisions/answer", raw=b"{nope", status=400)
+        self.assertFalse(self.answers.exists())
+
+    def test_origin_and_content_type_are_checked(self):
+        body = {"task": "T001", "answer": "x"}
+        request(self, "POST", "/api/decisions/answer", body, origin="http://evil.example", status=403)
+        request(self, "POST", "/api/decisions/answer", body, origin=None, status=403)
+        request(self, "POST", "/api/decisions/answer", body, content_type="text/plain", status=415)
+        self.assertFalse(self.answers.exists())
+
+    def test_the_page_has_a_decisions_view_with_a_save_button(self):
+        html = dash.build_html()
+        for needle in ('id="section-decisions"', "function loadDecisions", "/api/decisions/answer",
+                       "decision-submit", "Show decisions.md"):
+            self.assertIn(needle, html)
+
+
 class ReadOnlyTest(unittest.TestCase):
     """data-model.md §4.8 (FR-020): the dashboard's source has no way to write or run anything,
-    except `write_control()`, which writes `control.json` in the supervisor's state directory."""
+    except `write_control()` and `write_answer()` (FR-033), which write `control.json` and one answer file
+    in the supervisor's state directory, outside the project."""
 
     SOURCE = HERE.parent / "bin" / "sdd-dashboard.py"
     FORBIDDEN = (r"\.unlink\(", r"subprocess", r"os\.remove", r"shutil\.", r"git ",
@@ -1466,7 +1550,7 @@ class ReadOnlyTest(unittest.TestCase):
         for pattern in self.FORBIDDEN:
             self.assertIsNone(re.search(pattern, source), pattern)
         lines = source.splitlines()
-        writer = self.function_lines(source, "write_control")
+        writer = [*self.function_lines(source, "write_control"), *self.function_lines(source, "write_answer")]
         for pattern in (r"write_text", r"os\.replace"):
             hits = [n for n, line in enumerate(lines, 1) if re.search(pattern, line)]
             self.assertTrue(hits, pattern)

@@ -12,6 +12,7 @@ Do not run this while `.sdd/run.json` exists. If it exists, ask the user whether
 1. List what is waiting on the user:
    - Open entries in `<feature>/BLOCKED.md`: give the id, tag, reason and question, one line each.
    - Held tagged tasks from `python3 <plugin>/bin/sdd-tasks.py plan <tasks> --blocked <feature>/BLOCKED.md`: tasks tagged `manual`, `decision`, `dep`/`download` (not allowed), or with a holding BLOCKED.md entry (`wontfix`/`moved`). Give the id, tag and reason.
+   - Decisions the user already answered in the dashboard: `<state dir>/answers/T###.json`, where `<state dir>` is `~/.local/state/speckit-agents/<slug>` and `<slug>` is the absolute project path with every run of characters other than letters and digits turned into `-`, without a leading `-`. Each file is `{"task", "answer", "answered_at"}`. Show it as the user's answer to that `decision` task and apply it as step 2 says for `decision`, without asking the question again (still offer `/speckit-clarify` when it changes the spec). Delete the file once it is applied. Never edit an answer file, and leave the ones for tasks the user skips.
    Ask the user to work through them one at a time. They can skip any.
    For each entry, show the task line, the reason and the question.
 2. Act on the answer, depending on the entry's tag:

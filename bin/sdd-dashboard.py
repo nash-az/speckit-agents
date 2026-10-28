@@ -30,9 +30,12 @@ Endpoints:
     POST /api/run/resume          -- ask a held supervisor to start the next cycle
     POST /api/run/hold            -- while waiting for a usage window: stay paused after the reset
     POST /api/run/release         -- undo hold
+    GET /api/decisions            -- open [decision] tasks, with answers already given (FR-033)
+    POST /api/decisions/answer    -- { "task", "answer" } record a decision answer for /sdd-unblock
 Every POST needs an allowed Origin and `Content-Type: application/json` (data-model.md §4.9).
-The control routes write one request to `control.json` in the supervisor's state directory,
-outside the project; nothing else is ever written (§4.8).
+The control routes write one request to `control.json`, and the answer route one file per answer in
+`answers/` of the supervisor's state directory, both outside the project; nothing else is ever
+written (§4.8, FR-033).
 """
 
 from __future__ import annotations
@@ -288,6 +291,62 @@ def write_control(logs: Path, command: str, mode: str | None = None):
         tmp.write_text(json.dumps(control) + "\n", encoding="utf-8")
         os.replace(tmp, target)
         return control["id"]
+
+
+TASK_ID_RE = re.compile(r"^T\d{3,}$")
+ANSWER_MAX_CHARS = 4000
+
+
+def answers_dir(project: Path) -> Path:
+    """Where the person's decision answers wait for `/sdd-unblock` (outside the project, like control.json)."""
+    return logs_dir(project) / "answers"
+
+
+def read_answers(project: Path) -> dict:
+    """{task id: {"answer", "answered_at"}} for every answer file that parses."""
+    found = {}
+    try:
+        files = sorted(answers_dir(project).glob("T*.json"))
+    except OSError:
+        return found
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("answer"), str) and TASK_ID_RE.match(f.stem):
+            found[f.stem] = {"answer": data["answer"], "answered_at": data.get("answered_at")}
+    return found
+
+
+def open_decisions(tasks_data: dict, project: Path) -> list:
+    """The `[decision]` tasks that still wait on a person, each with the answer the person already
+    gave in the dashboard, if any (`pending`: written, not yet applied by `/sdd-unblock`)."""
+    answers = read_answers(project)
+    found = []
+    for phase in (tasks_data or {}).get("phases", []):
+        for task in phase.get("tasks", []):
+            if task.get("done") or task.get("status_tag") != "decision":
+                continue
+            found.append({"id": task["id"], "text": task.get("text", ""),
+                          "question": task.get("question"), "pending": answers.get(task["id"])})
+    return found
+
+
+_ANSWER_LOCK = threading.Lock()
+
+
+def write_answer(project: Path, task_id: str, answer: str) -> None:
+    """The second writer in this file (FR-033): one answer for `/sdd-unblock` in
+    `<state dir>/answers/<task id>.json`, written to a temp file and moved into place. It lives
+    beside control.json, outside the project, so FR-020 still holds."""
+    with _ANSWER_LOCK:
+        target_dir = answers_dir(project)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        record = {"task": task_id, "answer": answer, "answered_at": int(time.time())}
+        tmp = target_dir / f"{task_id}.json.tmp"
+        tmp.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        os.replace(tmp, target_dir / f"{task_id}.json")
 
 
 # A run whose journal or agent transcripts changed within this many seconds is `running` (§4.5).
@@ -608,6 +667,38 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         self._send_json({"ok": True, "id": request_id}, 202, cors)
 
+    def _answer(self):
+        """`POST /api/decisions/answer` `{"task": "T062", "answer": "…"}` (FR-033), after the §4.9
+        checks: 400 for a bad body, task id or answer, 404 when the task is not an open decision,
+        else one answer file in the state directory and `202 {"ok": true}`. Nothing in the project
+        changes; `/sdd-unblock` applies the answer."""
+        cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
+        try:
+            data = self._read_json_body()
+        except ValueError:
+            self._send_json({"error": "body must be JSON"}, 400, cors)
+            return
+        task_id = data.get("task") if isinstance(data, dict) else None
+        answer = data.get("answer") if isinstance(data, dict) else None
+        if not isinstance(task_id, str) or not TASK_ID_RE.match(task_id):
+            self._send_json({"error": "task must be a task id such as T062"}, 400, cors)
+            return
+        if not isinstance(answer, str) or not answer.strip() or len(answer) > ANSWER_MAX_CHARS:
+            self._send_json({"error": f"answer must be 1 to {ANSWER_MAX_CHARS} characters"}, 400, cors)
+            return
+        proj = DashboardHandler.project
+        feature = self._feature_dir()
+        if feature is None:
+            self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409, cors)
+            return
+        tasks_data = project_tasks(feature / "tasks.md", feature / "BLOCKED.md",
+                                   proj / ".sdd" / "config.toml")
+        if task_id not in {d["id"] for d in open_decisions(tasks_data, proj)}:
+            self._send_json({"error": "not an open decision"}, 404, cors)
+            return
+        write_answer(proj, task_id, answer.strip())
+        self._send_json({"ok": True}, 202, cors)
+
     def _feature_dir(self):
         """The person's in-memory choice if one was made, else active_feature()."""
         proj = DashboardHandler.project
@@ -692,6 +783,16 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             else:
                 self._send_json(project_blocked(feature / "BLOCKED.md"))
             return
+        if path == "/api/decisions":
+            feature = self._feature_dir()
+            if feature is None:
+                self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409)
+                return
+            tasks_data = project_tasks(feature / "tasks.md", feature / "BLOCKED.md",
+                                       proj / ".sdd" / "config.toml")
+            self._send_json({"open": open_decisions(tasks_data, proj),
+                             "recorded": (feature / "decisions.md").is_file()})
+            return
         if path == "/api/runs":
             self._send_json(list_runs(proj))
             return
@@ -735,6 +836,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path in CONTROL_ROUTES:
             self._control(CONTROL_ROUTES[path])
+            return
+        if path == "/api/decisions/answer":
+            self._answer()
             return
         if path == "/api/project/select":
             try:
@@ -979,6 +1083,9 @@ def build_html():
   .event-payload { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; padding-left: 0.75rem; }
 
   /* Buttons */
+  .decision-answer { width: 100%; margin: 0.5rem 0; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; font-size: 0.875rem; box-sizing: border-box; }
+  .decision-options { margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .decision-saved { margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted, inherit); }
   .btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 0.875rem; cursor: pointer; transition: all 0.15s; font-family: inherit; }
   .btn:hover { border-color: var(--accent); background: var(--surface-hover); }
   .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
@@ -1151,6 +1258,16 @@ def build_html():
         <div class="card">
           <div class="card-title">Raw document <button class="btn" data-raw="blocked">Show BLOCKED.md</button></div>
           <div id="raw-blocked" class="markdown raw-doc" style="display:none;"></div>
+        </div>
+      </section>
+
+      <!-- Decisions -->
+      <section id="section-decisions" class="section" style="display:none;">
+        <div class="card-title">Decisions waiting on you</div>
+        <div id="decisions-list"></div>
+        <div class="card">
+          <div class="card-title">Recorded decisions <button class="btn" data-raw="decisions">Show decisions.md</button></div>
+          <div id="raw-decisions" class="markdown raw-doc" style="display:none;"></div>
         </div>
       </section>
 
@@ -1432,7 +1549,7 @@ def build_html():
       decisions: 'Decisions', constitution: 'Constitution', learnings: 'Learnings', config: 'Config',
       tasks: 'tasks.md', blocked: 'BLOCKED.md'
     };
-    var RAW_DOCS = { tasks: true, blocked: true };
+    var RAW_DOCS = { tasks: true, blocked: true, decisions: true };
     var DOC_NOTICE = 'The document renderer did not load (offline?), so this is the plain text.';
 
     // marked, DOMPurify and highlight.js, or null when any of them failed to load.
@@ -1639,6 +1756,7 @@ def build_html():
         if (name === 'overview') loadOverview();
         if (name === 'tasks') loadTasks();
         if (name === 'blocked') loadBlocked();
+        if (name === 'decisions') loadDecisions();
         if (name === 'runs') loadRuns();
         if (name === 'status') loadStatus();
         if (isDoc) loadDoc(name);
@@ -1728,6 +1846,72 @@ def build_html():
         });
       });
     }
+
+    // Decisions (FR-033): the open [decision] tasks, each with a box for the person's answer. An answer is
+    // saved outside the project; /sdd-unblock applies it. The list is not redrawn while a box has focus.
+    function decisionOptions(text) {
+      var seen = {}, out = [], re = /\\(([a-z])\\)/g, m;
+      while ((m = re.exec(text || ''))) { if (!seen[m[1]]) { seen[m[1]] = true; out.push(m[1]); } }
+      return out;
+    }
+
+    function decisionHtml(d) {
+      var opts = decisionOptions(d.text).map(function(o) {
+        return '<button class="btn decision-option" data-task="' + escapeHtml(d.id) + '" data-option="' + escapeHtml(o) + '">Choose (' + escapeHtml(o) + ')</button>';
+      }).join(' ');
+      var pending = d.pending
+        ? '<div class="decision-saved">Your answer is saved: <em>' + escapeHtml(d.pending.answer) + '</em>. ' +
+          'Apply it with <code>/sdd-unblock</code> in your Claude session; you can change it until then.</div>'
+        : '';
+      return '<div class="blocked-item decision-item" data-task="' + escapeHtml(d.id) + '">' +
+        '<div class="blocked-header"><div class="blocked-id">' + escapeHtml(d.id) + '</div>' + statusBadge('held', { tag: 'decision' }) + '</div>' +
+        '<div class="blocked-reason">' + escapeHtml(d.text) + '</div>' +
+        (opts ? '<div class="decision-options">' + opts + '</div>' : '') +
+        '<textarea class="decision-answer" id="answer-' + escapeHtml(d.id) + '" rows="3" placeholder="Your decision, and why"></textarea>' +
+        '<button class="btn decision-submit" data-task="' + escapeHtml(d.id) + '">Save decision</button>' + pending + '</div>';
+    }
+
+    function loadDecisions() {
+      fetchJSON('/api/decisions', 'GET').then(function(data) {
+        data = data || {};
+        var el = document.getElementById('decisions-list');
+        var open = data.open || [];
+        if (el.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA') return;
+        if (open.length === 0) {
+          el.innerHTML = '<div class="empty"><div class="empty-icon">✅</div><div>No decisions are waiting on you.' +
+            (data.recorded ? '' : ' None have been recorded yet (no decisions.md).') + '</div></div>';
+          return;
+        }
+        el.innerHTML = open.map(decisionHtml).join('');
+        open.forEach(function(d) {
+          var box = document.getElementById('answer-' + d.id);
+          if (box && d.pending) box.value = d.pending.answer;
+        });
+      }).catch(function(e) { console.error('loadDecisions error', e); });
+    }
+
+    function saveDecision(task) {
+      var box = document.getElementById('answer-' + task);
+      var answer = box ? box.value.trim() : '';
+      if (!answer) { toast('Write your decision first'); return; }
+      fetch('/api/decisions/answer', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: task, answer: answer })
+      }).then(function(res) {
+        toast(res.ok ? 'Saved. Run /sdd-unblock to apply it.' : 'Could not save the decision (' + res.status + ')');
+        if (res.ok) { if (box) box.blur(); loadDecisions(); }
+      }).catch(function(e) { console.error('saveDecision error', e); toast('Could not save the decision'); });
+    }
+
+    document.addEventListener('click', function(ev) {
+      var t = ev.target;
+      if (!t || !t.classList) return;
+      if (t.classList.contains('decision-submit')) saveDecision(t.getAttribute('data-task'));
+      if (t.classList.contains('decision-option')) {
+        var box = document.getElementById('answer-' + t.getAttribute('data-task'));
+        if (box) { box.value = '(' + t.getAttribute('data-option') + ') ' + box.value.replace(/^\\([a-z]\\)\\s*/, ''); box.focus(); }
+      }
+    });
 
     function loadBlocked() {
       fetchJSON('/api/project/blocked', 'GET').then(function(data) {
@@ -2005,6 +2189,7 @@ def build_html():
       loadOverview();
       if (selectedSection === 'tasks') loadTasks();
       if (selectedSection === 'blocked') loadBlocked();
+      if (selectedSection === 'decisions') loadDecisions();
       if (selectedSection === 'runs') { loadRuns(); loadEvents(); }
       if (selectedSection === 'status') loadStatus();
       try { document.getElementById('refresh-time').textContent = new Date().toLocaleTimeString(); } catch(e) {}
