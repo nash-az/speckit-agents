@@ -63,7 +63,10 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
     T038 is skill text, only exercised by a real run (quickstart §5, T042). Phase 9 is next: T040–T041 first (`--phases 9 --max-tasks 2`),
     T042 (full validation) only after Phase 10 (stop/resume, T045–T048) is built.
     **Phase 9 T040–T041 are implemented** (run `20261028-0957`, 2 task commits, no blocks; 196 Python and 24 node tests pass).
-    Remaining: Phase 10 (T045–T048), then T042 (full validation), and T002.
+    **Phase 10 (T045–T048, stop/resume/keep paused) is implemented** (run `20261028-1005`: paused by the user after T047 while T048's
+    commit was pending, then resumed and finished; 231 Python and 24 node tests pass). The Stop/Resume banner has not been seen in a browser yet.
+    Remaining: T042 (full validation, quickstart §1–§8), T002, merging `auto/20261027-2024`, and the design fold-in after the user's review.
+    The dashboard runs as one process: `python3 bin/sdd-dashboard.py --project . --port 8777` (API and page on one port until the UI split).
   - **Branch:** every run since Phase 4 continued on `auto/20261027-2024` (the skill stays on a current `auto/` branch), so
     Phases 4–9 and the doc commits since `a575a64` are NOT on `main` yet. Merging is the user's call; nothing is pushed.
     A leftover branch `worktree-agent-a8daf0fca12087451` is checked out in some worktree; not created by these runs, left alone.
