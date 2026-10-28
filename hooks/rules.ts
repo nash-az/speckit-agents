@@ -31,8 +31,24 @@ export function relativeTo(root: string, path: string): string {
   return path.startsWith(base) ? path.slice(base.length) : path.replace(/^\.\//, '')
 }
 
+// Resolves `.` and `..` segments without Node's `path` (the hook runtime may not provide it).
+// A leading `/` and any `..` that climbs above the start are kept, so they never collapse into the project.
+export function posixNormalize(path: string): string {
+  const out: string[] = []
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..' && out.length > 0 && out[out.length - 1] !== '..') out.pop()
+    else out.push(segment)
+  }
+  return (path.startsWith('/') ? '/' : '') + out.join('/')
+}
+
+// Agents' throw-away files live in .sdd/scratch/ (FR-013), so it is never protected.
+const SCRATCH = '.sdd/scratch/'
+
 export function protectedPath(marker: RunMarker, root: string, path: string): string | undefined {
-  const rel = relativeTo(root, path)
+  const rel = posixNormalize(relativeTo(root, path))
+  if (rel.startsWith(SCRATCH)) return undefined
   return marker.protected_paths.find(glob => globToRegExp(glob).test(rel))
 }
 

@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
-import { bashRefusal, globToRegExp, protectedPath, type RunMarker } from '../hooks/rules.ts'
+import { bashRefusal, globToRegExp, posixNormalize, protectedPath, type RunMarker } from '../hooks/rules.ts'
 
 const marker: RunMarker = {
   run_id: 'r1',
@@ -47,6 +47,22 @@ describe('rules', () => {
     expect(bashRefusal(marker, 'rm -f /repo/.sdd/run.json', 'auto/r1', '/repo')).toBeDefined()
   })
 
+  test('posixNormalize resolves . and .. segments', () => {
+    expect(posixNormalize('.sdd/scratch/../config.toml')).toBe('.sdd/config.toml')
+    expect(posixNormalize('./.sdd//scratch/./r1/x.py')).toBe('.sdd/scratch/r1/x.py')
+    expect(posixNormalize('../.sdd/scratch/x')).toBe('../.sdd/scratch/x')
+    expect(posixNormalize('/repo/a/../b')).toBe('/repo/b')
+  })
+
+  test('.sdd/scratch/ is writable even when .sdd/** is protected', () => {
+    const sdd: RunMarker = { ...marker, protected_paths: ['.sdd/**'] }
+    expect(protectedPath(sdd, '/repo', '/repo/.sdd/scratch/r1/T1/x.py')).toBeUndefined()
+    expect(protectedPath(sdd, '/repo', '.sdd/scratch/../config.toml')).toBe('.sdd/**')
+    expect(protectedPath(sdd, '/repo', '/repo/.sdd/config.toml')).toBe('.sdd/**')
+    expect(bashRefusal(sdd, 'echo x > .sdd/scratch/r1/T1/out.txt', 'auto/r1', '/repo')).toBeUndefined()
+    expect(bashRefusal(sdd, 'echo x > .sdd/scratch/../config.toml', 'auto/r1', '/repo')).toBeDefined()
+  })
+
   test('reads that redirect elsewhere are not writes', () => {
     for (const cmd of [
       'cat specs/001-x/*.md .specify/memory/constitution.md 2>/dev/null; ls src',
@@ -61,11 +77,10 @@ describe('rules', () => {
 })
 
 describe('hooks', () => {
-  const run = JSON.stringify(marker)
-
   const refused = (r: { isError?: boolean; deny?: string }) => r.isError === true || r.deny !== undefined
 
-  function engineBelow(on: On, active: boolean, branch = 'auto/r1') {
+  function engineBelow(on: On, active: boolean, branch = 'auto/r1', runMarker: RunMarker = marker) {
+    const run = JSON.stringify(runMarker)
     on('session.root', () => ({ value: '/repo' }))
     on('fs.read', ($, e) =>
       active && e.path === '/repo/.sdd/run.json' ? { value: run } : { deny: 'ENOENT' })
@@ -101,5 +116,29 @@ describe('hooks', () => {
     engineBelow(on, true)
     expect(refused(await $.tool.call({ tool: 'Bash', command: 'rm .sdd/run.json' }))).toBe(false)
     expect(refused(await $.tool.call({ tool: 'Bash', command: 'rm .sdd/run.json', agentId: 'a1' } as never))).toBe(true)
+  })
+
+  const sdd: RunMarker = { ...marker, protected_paths: ['.sdd/**'] }
+  const edit = (file_path: string) => ({ tool: 'Edit', file_path, old_string: 'a', new_string: 'b', agentId: 'a1' }) as never
+
+  test('a subagent may edit .sdd/scratch/ while .sdd/** is protected', async ($, on) => {
+    engineBelow(on, true, 'auto/r1', sdd)
+    expect(refused(await $.tool.call(edit('/repo/.sdd/scratch/r1/T1/x.py')))).toBe(false)
+  })
+
+  test('a subagent may not climb out of .sdd/scratch/', async ($, on) => {
+    engineBelow(on, true, 'auto/r1', sdd)
+    expect(refused(await $.tool.call(edit('/repo/.sdd/scratch/../config.toml')))).toBe(true)
+  })
+
+  test('a subagent may not edit .sdd/config.toml', async ($, on) => {
+    engineBelow(on, true, 'auto/r1', sdd)
+    expect(refused(await $.tool.call(edit('/repo/.sdd/config.toml')))).toBe(true)
+  })
+
+  test('a subagent may write to .sdd/scratch/ from the shell', async ($, on) => {
+    engineBelow(on, true, 'auto/r1', sdd)
+    const command = 'echo x > .sdd/scratch/r1/T1/out.txt'
+    expect(refused(await $.tool.call({ tool: 'Bash', command, agentId: 'a1' } as never))).toBe(false)
   })
 })
