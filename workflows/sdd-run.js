@@ -95,13 +95,22 @@ function taskBrief(task) {
 const context = [
   `Project root: ${A.root}`,
   `Tasks file: ${A.tasks_file} (read the plan, spec, data model and contracts next to it as the task needs).`,
-  `Allowed this run: new dependencies ${A.allow?.dependencies ? 'yes' : 'no'}, large downloads ${A.allow?.downloads ? 'yes' : 'no'}.`,
 ].join('\n')
+
+// What this task may add (data-model.md §5.2, FR-014): taskAllow overrides the task's
+// `dep:ok` / `download:ok` tags, which override the run's [allow] defaults.
+function allowLine(task) {
+  const o = TASK_ALLOW[task.id] ?? {}
+  const deps = o.dependencies ?? (task.tags.includes('dep:ok') || !!A.allow?.dependencies)
+  const downloads = o.downloads ?? (task.tags.includes('download:ok') || !!A.allow?.downloads)
+  return `Allowed for this task: new dependencies ${deps ? 'yes' : 'no'}, large downloads ${downloads ? 'yes' : 'no'}.`
+}
 
 async function implement(task, feedback, attempt, continuing) {
   const evalTask = task.tags.includes('eval')
   const prompt = [
     context,
+    allowLine(task),
     '',
     taskBrief(task),
     '',
@@ -219,10 +228,12 @@ async function bookkeep(outcomes, mode, failing, note) {
   return agent(prompt, { label: `commit:${outcomes.map(o => o.id).join(',')}`, phase: 'Commit', agentType: 'speckit-agents:sdd-bookkeeper', schema: BOOKKEEP_SCHEMA, effort: 'low', ...modelOpt('bookkeeper') })
 }
 
-async function repair(outcomes, failing) {
+// tasks: the phase's task map (phaseInfo.tasks), for one allow line per approved task.
+async function repair(outcomes, failing, tasks) {
   const ids = outcomes.filter(o => o.outcome === 'approved').map(o => o.id)
   const prompt = [
     context,
+    ids.map(id => `${id}: ${allowLine(tasks[id])}`).join('\n'),
     '',
     `Tasks ${ids.join(', ')} were each approved alone, but together the project checks fail:`,
     failing,
@@ -301,7 +312,7 @@ for (const phaseInfo of A.plan.phases) {
     }
     if (book && !book.checks_passed && outcomes.some(o => o.outcome === 'approved')) {
       log(`Checks failed after ${group.join(', ')}; trying one repair`)
-      await repair(outcomes, book.failing_output)
+      await repair(outcomes, book.failing_output, phaseInfo.tasks)
       book = await bookkeep(outcomes, 'commit')
       if (book && book.checks_ran && !book.checks_passed) {
         book = await bookkeep(outcomes, 'discard', book.failing_output)

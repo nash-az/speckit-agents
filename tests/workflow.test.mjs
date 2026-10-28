@@ -192,6 +192,51 @@ test('agentModels per role: evaluator for eval tasks, verifier, bookkeeper, impl
   assert.equal(repair.opts.model, 'm-impl')
 })
 
+// Per-task allow line (data-model.md §5.2, FR-014).
+const withAllow = (allow, tags = {}, taskAllow) => a => {
+  a.allow = allow
+  for (const [id, t] of Object.entries(tags)) a.plan.phases[0].tasks[id].tags = t
+  if (taskAllow) a.taskAllow = taskAllow
+  return a
+}
+const implPrompt = (calls, id) => calls.find(c => c.label === `impl:${id}`).prompt
+
+test('with allow.dependencies false, a dep:ok task gets "new dependencies yes" and another gets "no"', async () => {
+  const { calls } = await run(['T1', 'T2'], {}, undefined, withAllow({ dependencies: false }, { T1: ['dep:ok'] }))
+  assert.match(implPrompt(calls, 'T1'), /^Allowed for this task: new dependencies yes, large downloads no\.$/m)
+  assert.match(implPrompt(calls, 'T2'), /^Allowed for this task: new dependencies no, large downloads no\.$/m)
+  for (const c of calls) assert.doesNotMatch(c.prompt, /Allowed this run:/)
+})
+
+test('the allow line comes right after the context in the implementer prompt', async () => {
+  const { calls } = await run(['T1'])
+  assert.match(implPrompt(calls, 'T1'), /^Tasks file: .*\nAllowed for this task: /m)
+})
+
+test('taskAllow overrides the tag and the run default', async () => {
+  const { calls } = await run(['T1', 'T2'], {}, undefined, withAllow(
+    { dependencies: false, downloads: true },
+    { T1: ['dep:ok'] },
+    { T1: { dependencies: false }, T2: { dependencies: true, downloads: false } },
+  ))
+  assert.match(implPrompt(calls, 'T1'), /^Allowed for this task: new dependencies no, large downloads yes\.$/m)
+  assert.match(implPrompt(calls, 'T2'), /^Allowed for this task: new dependencies yes, large downloads no\.$/m)
+})
+
+test('repair gets one allow line per approved task', async () => {
+  let commits = 0
+  const failing = { checks_ran: true, checks_passed: false, failing_output: 'boom', commits: [], blocked_recorded: [] }
+  const passing = { checks_ran: true, checks_passed: true, failing_output: '', commits: ['c1'], blocked_recorded: [] }
+  const both = a => { a.plan.phases[0].groups = [['T1', 'T2']]; return withAllow({ dependencies: false }, { T1: ['dep:ok'] })(a) }
+  const { calls, labels } = await run(['T1', 'T2'], {
+    'commit:T1,T2': () => (commits++ === 0 ? failing : passing),
+    'repair:T1,T2': { status: 'done', summary: 'fixed', files_changed: ['x.py'] },
+  }, undefined, both)
+  const repair = calls.find(c => c.label === 'repair:T1,T2')
+  assert.ok(repair, `no repair call in ${labels}`)
+  assert.match(repair.prompt, /^T1: Allowed for this task: new dependencies yes, large downloads no\.\nT2: Allowed for this task: new dependencies no, large downloads no\.$/m)
+})
+
 test('credit-aware pause skips starting a new agent when remaining budget is below RESERVE', async () => {
   const budget = { total: 1_000_000, spent: () => 860_000, remaining: () => 140_000 } // below 150_000 RESERVE
   const { out, labels } = await run(['T1'], {}, undefined, a => a, budget)
