@@ -5,6 +5,7 @@ $FAKE_DIR/scenario.json: {"cycles": [[step, ...], ...]}. Steps: {"emit": event},
 {"journal": event}, {"transcript": true}, {"sleep": seconds}, {"exit": code}.
 Each invocation appends its arguments to $FAKE_DIR/calls and writes its environment to $FAKE_DIR/env<n>.json.
 {"transcript": "<name>"} launches another workflow in $FAKE_DIR/<name>; later journal steps go there.
+{"control": request} writes a dashboard request to $FAKE_CONTROL (the supervisor's control.json), atomically.
 """
 import json
 import os
@@ -35,6 +36,11 @@ for step in steps:
             wf.mkdir(exist_ok=True)
         text = f"Workflow launched in background. Task ID: x\nTranscript dir: {wf}\nRun ID: wf_x"
         print(json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "content": text}]}}), flush=True)
+    elif "control" in step:
+        target = Path(os.environ["FAKE_CONTROL"])
+        tmp = target.with_name("control.json.tmp")
+        tmp.write_text(json.dumps(step["control"]))
+        os.replace(tmp, target)
     elif "sleep" in step:
         time.sleep(step["sleep"])
     elif "exit" in step:

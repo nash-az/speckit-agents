@@ -19,6 +19,11 @@ It ends when a run finishes without being cut off, when a reset is further away 
 environment of [profiles.NAME] in the project's .sdd/config.toml and passes the name on to
 /sdd-run, which records it in the report. Progress lines go to stdout (one line per event),
 and the current state to <state dir>/status.json. Only the standard library is used.
+
+The dashboard can stop and resume a supervised run (data-model §12): it writes one request to
+<state dir>/control.json, which this script reads and deletes. `stop` (after the current task, or
+now) ends the cycle and holds until `resume`; while waiting for a usage window, `hold` keeps the
+run paused after the reset and `release` undoes that. Held longer than --max-wait-hours ends it.
 """
 from __future__ import annotations
 
@@ -114,6 +119,7 @@ class Cycle:
         self.result_seen = False
         self.stop_reason: str | None = None
         self.pause_window: str | None = None  # the window that crossed the threshold
+        self.operator = False  # an operator asked to stop after the current task (data-model §12.2)
         self.lock = threading.Lock()
 
     def command(self) -> list[str]:
@@ -152,7 +158,8 @@ class Cycle:
                     resets = window.get("resets_at")
                     say(f"usage {name} {u:.0%}" + (f", resets {time.strftime('%a %H:%M', time.localtime(resets))}" if resets else ""))
             if self.status and before != {k: v.get("utilization") for k, v in self.usage.windows.items()}:
-                write_status(self.status, state="running", cycle=self.cycle_no, stream=str(self.log_path),
+                extra = {"state": "stopping", "mode": "after-task"} if self.operator else {"state": "running"}
+                write_status(self.status, **extra, cycle=self.cycle_no, stream=str(self.log_path),
                              usage=self.usage.windows, threshold=self.args.threshold)
         elif kind == "result":
             self.result_seen = True
@@ -180,7 +187,7 @@ class Cycle:
         return started, finished
 
     def run(self) -> str:
-        """Run until the process ends. Returns 'finished', 'paused' or 'limit'."""
+        """Run until the process ends. Returns 'finished', 'paused', 'limit' or 'operator'."""
         env = dict(os.environ, **self.args.profile_config.get("env", {}), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="0")
         proc = subprocess.Popen(self.command(), cwd=self.args.project, env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
@@ -213,6 +220,27 @@ class Cycle:
                 pause_at = finished
                 self.pause_window = name
                 say(f"{name} at {u:.0%}: pausing after the next agent finishes")
+            # Operator requests from the dashboard (data-model §12.2). Anything but `stop` is
+            # meaningless while a run is going; read_control() has already deleted it.
+            control = read_control(self.log_path.parent)
+            if control and control.get("command") == "stop":
+                if control.get("mode") == "now":
+                    self.stop_reason = "operator"
+                    say("stop requested by the operator: stopping now")
+                    stop(proc)
+                    break
+                if not self.operator:
+                    self.operator = True
+                    if pause_at is None:
+                        pause_at = finished
+                    say("stop requested by the operator: stopping after the current agent finishes")
+                    if self.status:
+                        with self.lock:
+                            write_status(self.status, state="stopping", mode="after-task", cycle=self.cycle_no,
+                                         stream=str(self.log_path), usage=self.usage.windows,
+                                         threshold=self.args.threshold)
+            elif control:
+                say(f"ignoring operator request {control.get('command')!r} while the run is going")
             if self.args.pause_after and finished >= self.args.pause_after:
                 self.args.pause_after = 0  # once, for end-to-end tests of the resume path
                 self.stop_reason = "paused"
@@ -222,7 +250,7 @@ class Cycle:
             if pause_at is not None:
                 idle = started == finished
                 if finished > pause_at or idle or hard:
-                    self.stop_reason = "paused"
+                    self.stop_reason = "operator" if self.operator else "paused"
                     if finished > pause_at or idle:
                         say("safe point: stopping the run" + (" (no agent running)" if idle else ""))
                     else:
@@ -263,8 +291,63 @@ def sleep_until(target: float) -> None:
 
 
 def write_status(path: Path, **fields) -> None:
+    fields["pid"] = os.getpid()  # the dashboard checks that the supervisor is alive (data-model §12.1)
     fields["updated"] = int(time.time())
     path.write_text(json.dumps(fields, indent=2) + "\n", encoding="utf-8")
+
+
+def read_control(logs: Path) -> dict | None:
+    """The dashboard's pending request in <state dir>/control.json (data-model §12.1), or None.
+    The supervisor owns deletion: the file is removed whenever a request is returned."""
+    path = logs / "control.json"
+    try:
+        control = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(control, dict):
+        return None
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return control
+
+
+def hold(args: argparse.Namespace, logs: Path, status: Path, cycle_no: int, reason: str) -> bool:
+    """Held after an operator stop or a kept pause: True when Resume comes, False after --max-wait-hours."""
+    write_status(status, state="held", reason=reason, cycle=cycle_no)
+    say(f"held ({reason}): waiting for Resume from the dashboard")
+    deadline = time.time() + args.max_wait_hours * 3600
+    while time.time() < deadline:
+        time.sleep(max(0.0, min(args.poll, deadline - time.time())))
+        control = read_control(logs)
+        if not control:
+            continue
+        if control.get("command") == "resume":
+            say("resume requested by the operator")
+            return True
+        say(f"ignoring operator request {control.get('command')!r} while held")
+    return False
+
+
+def wait_for_reset(args: argparse.Namespace, logs: Path, status: Path, target: float, fields: dict) -> bool:
+    """Sleep until the usage window resets, in steps of --poll, reading operator requests.
+    Returns keep_paused: True when the operator asked to stay paused after the reset."""
+    keep_paused = False
+    while (left := target - time.time()) > 0:
+        time.sleep(min(left, args.poll))
+        control = read_control(logs)
+        if not control:
+            continue
+        command = control.get("command")
+        if command in ("hold", "release") and keep_paused != (command == "hold"):
+            keep_paused = command == "hold"
+            say("the operator asked to stay paused after the reset" if keep_paused
+                else "the operator let the run resume after the reset")
+            write_status(status, **fields, keep_paused=keep_paused)
+        elif command not in ("hold", "release"):
+            say(f"ignoring operator request {command!r} while waiting for the usage window")
+    return keep_paused
 
 
 def thresholds(text: str) -> dict[str, float]:
@@ -327,6 +410,12 @@ def main(argv: list[str]) -> int:
     logs = state_dir(args.project)
     status = logs / "status.json"
     say(f"project {args.project}; logs in {logs}")
+    # A request left over from an earlier supervisor is not meant for this one (data-model §12.2).
+    try:
+        (logs / "control.json").unlink()
+        say("deleted a leftover control.json")
+    except FileNotFoundError:
+        pass
     # A supervisor restarted while an earlier one was waiting for a reset keeps waiting.
     try:
         last = json.loads(status.read_text(encoding="utf-8"))
@@ -344,7 +433,13 @@ def main(argv: list[str]) -> int:
         cycle = Cycle(args, log_path, status, cycle_no)
         write_status(status, state="running", cycle=cycle_no, stream=str(log_path), threshold=args.threshold)
         outcome = cycle.run()
-        name, u, _ = cycle.usage.highest()
+        if outcome == "operator":
+            say(f"cycle {cycle_no}: stopped by the operator")
+            if not hold(args, logs, status, cycle_no, "stopped by operator"):
+                say("held longer than --max-wait-hours: stopping")
+                write_status(status, state="stopped", reason="held too long", cycle=cycle_no)
+                return 3
+            continue
         if outcome == "finished" and (args.project / ".sdd" / "run.json").exists():
             say(f"cycle {cycle_no}: the run ended but .sdd/run.json is still there, so it was cut off by "
                 "something other than the usage limit: read its report, then start /sdd-run or this script again to resume")
@@ -371,9 +466,15 @@ def main(argv: list[str]) -> int:
             write_status(status, state="stopped", reason=f"{window} resets too late", resets_at=resets_at, cycle=cycle_no)
             return 3
         say(f"{outcome}: waiting until {time.strftime('%H:%M', time.localtime(resets_at + RESET_MARGIN_S))} for the {window} window to reset")
-        write_status(status, state="waiting", window=window, resets_at=resets_at, cycle=cycle_no, usage=cycle.usage.windows)
-        if not args.no_sleep:
-            sleep_until(time.time() + wait)
+        waiting = {"state": "waiting", "window": window, "resets_at": resets_at, "cycle": cycle_no,
+                   "usage": cycle.usage.windows}
+        write_status(status, **waiting, keep_paused=False)
+        # --no-sleep (tests) skips the wait and so ignores `hold`.
+        if not args.no_sleep and wait_for_reset(args, logs, status, time.time() + wait, waiting):
+            if not hold(args, logs, status, cycle_no, "kept paused; the usage window has reset"):
+                say("held longer than --max-wait-hours: stopping")
+                write_status(status, state="stopped", reason="held too long", cycle=cycle_no)
+                return 3
     say(f"stopping after {args.max_cycles} cycles")
     write_status(status, state="stopped", reason="max cycles")
     return 4

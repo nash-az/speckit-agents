@@ -1,6 +1,7 @@
 """bin/sdd-supervise.py against a scripted stand-in for `claude -p` (tests/fake/claude)."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -279,6 +280,157 @@ class SuperviseTest(unittest.TestCase):
         out, calls, _ = self.supervise([[*DONE]])
         self.assertEqual(out.returncode, 2)
         self.assertEqual(calls, [])
+
+
+class RunControlTest(unittest.TestCase):
+    """Stop, resume, hold and release from the dashboard's control.json (FR-029, data-model §12)."""
+
+    MARGIN = 120  # sdd-supervise.RESET_MARGIN_S: a reset this far in the past is due now
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.project = self.dir / "project"
+        (self.project / ".sdd").mkdir(parents=True)
+        (self.project / ".sdd" / "config.toml").write_text("")
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", str(self.project.resolve())).strip("-")
+        self.logs = self.dir / "state" / "speckit-agents" / slug
+        self.env = dict(os.environ, FAKE_DIR=str(self.dir), XDG_STATE_HOME=str(self.dir / "state"),
+                        FAKE_CONTROL=str(self.logs / "control.json"))
+        self.procs = []
+
+    def tearDown(self):
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        shutil.rmtree(self.dir)
+
+    def start(self, cycles, *extra):
+        (self.dir / "scenario.json").write_text(json.dumps({"cycles": cycles}))
+        proc = subprocess.Popen([sys.executable, str(SCRIPT), "--project", str(self.project), "--claude", str(FAKE),
+                                 "--poll", "0.1", *extra], env=self.env, stdout=subprocess.PIPE, text=True)
+        self.procs.append(proc)
+        return proc
+
+    def finish(self, proc):
+        out, _ = proc.communicate(timeout=60)
+        calls = (self.dir / "calls").read_text().splitlines() if (self.dir / "calls").exists() else []
+        return out, calls
+
+    def status(self):
+        try:
+            return json.loads((self.logs / "status.json").read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def wait_for(self, predicate, what, timeout=20):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate(self.status()):
+                return self.status()
+            time.sleep(0.05)
+        self.fail(f"timed out waiting for {what}; status {self.status()}")
+
+    def control(self, command, **fields):
+        """Write a request like the dashboard does, then wait until the supervisor has consumed it."""
+        path = self.logs / "control.json"
+        tmp = self.logs / "control.json.tmp"
+        tmp.write_text(json.dumps({"id": "x", "command": command, "requested_at": int(time.time()), **fields}))
+        os.replace(tmp, path)
+        deadline = time.time() + 10
+        while path.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(path.exists(), f"the supervisor did not consume {command}")
+
+    def waits_briefly(self):
+        """A cycle that pauses at a safe point for a five-hour window resetting in about 4 s."""
+        return [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.95, resets_in=4 - self.MARGIN),
+                {"sleep": 0.3}, finished("a"), {"sleep": 30}, *DONE]
+
+    def test_hold_during_the_wait_ends_held_at_the_reset_and_times_out(self):
+        proc = self.start([self.waits_briefly(), [*DONE]], "--max-wait-hours", "0.002")
+        self.wait_for(lambda s: s.get("state") == "waiting", "waiting")
+        self.assertFalse(self.status()["keep_paused"])
+        self.control("hold")
+        self.assertTrue(self.wait_for(lambda s: s.get("keep_paused"), "keep_paused")["state"] == "waiting")
+        held = self.wait_for(lambda s: s.get("state") == "held", "held")
+        self.assertEqual(held["reason"], "kept paused; the usage window has reset")
+        self.assertEqual(held["pid"], proc.pid)
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 3, out)
+        self.assertEqual(len(calls), 1, "a kept pause starts no cycle at the reset")
+        self.assertEqual(self.status()["state"], "stopped")
+        self.assertEqual(self.status()["reason"], "held too long")
+
+    def test_release_before_the_reset_lets_the_cycle_start(self):
+        proc = self.start([self.waits_briefly(), [*DONE]])
+        self.wait_for(lambda s: s.get("state") == "waiting", "waiting")
+        self.control("hold")
+        self.wait_for(lambda s: s.get("keep_paused") is True, "keep_paused")
+        self.control("release")
+        self.wait_for(lambda s: s.get("keep_paused") is False, "released")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("held", out)
+
+    def test_stop_and_resume_during_the_wait_are_discarded(self):
+        proc = self.start([self.waits_briefly(), [*DONE]])
+        self.wait_for(lambda s: s.get("state") == "waiting", "waiting")
+        self.control("stop", mode="now")
+        self.control("resume")
+        self.assertEqual(self.status()["state"], "waiting")
+        self.assertFalse(self.status()["keep_paused"])
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("ignoring operator request 'stop' while waiting", out)
+        self.assertIn("ignoring operator request 'resume' while waiting", out)
+
+    def test_after_task_stop_waits_for_the_agent_then_resume_starts_a_second_cycle(self):
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), {"control": {"command": "stop", "mode": "after-task"}},
+                  {"sleep": 1.5}, finished("a"), started("b", "verify:T1"), {"sleep": 30}, *DONE]
+        t0 = time.time()
+        proc = self.start([cycle1, [{"transcript": True}, *DONE]])
+        stopping = self.wait_for(lambda s: s.get("state") == "stopping", "stopping")
+        self.assertEqual(stopping["mode"], "after-task")
+        held = self.wait_for(lambda s: s.get("state") == "held", "held")
+        self.assertGreaterEqual(time.time() - t0, 1.5, "the running agent was allowed to finish")
+        self.assertEqual(held["reason"], "stopped by operator")
+        self.assertEqual(len((self.dir / "calls").read_text().splitlines()), 1)
+        self.control("resume")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("safe point", out)
+
+    def test_stop_now_stops_at_once_and_a_stop_while_held_is_discarded(self):
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), {"control": {"command": "stop", "mode": "now"}},
+                  {"sleep": 30}, *DONE]
+        t0 = time.time()
+        proc = self.start([cycle1, [*DONE]])
+        self.wait_for(lambda s: s.get("state") == "held", "held")
+        self.assertLess(time.time() - t0, 25, "stop now does not wait for the agent")
+        self.control("stop", mode="after-task")
+        self.assertEqual(self.status()["state"], "held")
+        self.control("resume")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("stopping now", out)
+        self.assertIn("ignoring operator request 'stop' while held", out)
+        self.assertNotIn("safe point", out)
+
+    def test_a_stale_control_file_is_deleted_at_startup(self):
+        self.logs.mkdir(parents=True)
+        (self.logs / "control.json").write_text(json.dumps({"id": "old", "command": "stop", "mode": "now"}))
+        proc = self.start([[{"transcript": True}, {"sleep": 1.0}, *DONE]], "--no-sleep")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse((self.logs / "control.json").exists())
+        self.assertIn("deleted a leftover control.json", out)
+        self.assertEqual(self.status()["state"], "done")
 
 
 if __name__ == "__main__":
