@@ -2,7 +2,7 @@
 """Run /sdd-run unattended across usage limits: pause before the limit, resume after the reset.
 
   sdd-supervise.py [--project DIR] [--threshold five_hour=0.95,seven_day=0.99] [--run-args "--phases 15"]
-                   [--max-wait-hours 12] [--max-cycles 20]
+                   [--max-wait-hours 12] [--max-cycles 20] [--profile NAME]
 
 Each cycle starts a headless `claude -p "/sdd-run --yes …"` and reads its stream-json output.
 Claude Code reports the account's usage there as `rate_limit_event` lines (five-hour and
@@ -15,12 +15,15 @@ that was cut off continues from the edits in the tree. If the limit is hit befor
 the run is stopped at once; at most the step in flight is redone.
 
 It ends when a run finishes without being cut off, when a reset is further away than
---max-wait-hours, or after --max-cycles runs. Progress lines go to stdout (one line per event),
+--max-wait-hours, or after --max-cycles runs. --profile NAME runs `claude` with the model and
+environment of [profiles.NAME] in the project's .sdd/config.toml and passes the name on to
+/sdd-run, which records it in the report. Progress lines go to stdout (one line per event),
 and the current state to <state dir>/status.json. Only the standard library is used.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -30,6 +33,10 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+# The project config (run profiles) is read with the task helper's own loader (data-model §9).
+_spec = importlib.util.spec_from_file_location("sdd_tasks", Path(__file__).with_name("sdd-tasks.py"))
+sdd_tasks = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_tasks)
 
 TRANSCRIPT_RE = re.compile(r"Transcript dir: (\S+)")
 SAFE_GRACE_S = 20     # after SIGINT, before SIGTERM
@@ -110,8 +117,10 @@ class Cycle:
         self.lock = threading.Lock()
 
     def command(self) -> list[str]:
-        prompt = f"/sdd-run --yes {self.args.run_args}".strip()
-        return [self.args.claude, "-p", prompt, "--permission-mode", "dontAsk", "--allowedTools", "Skill",
+        profile_arg = f"--profile {self.args.profile} " if self.args.profile else ""
+        prompt = f"/sdd-run --yes {profile_arg}{self.args.run_args}".strip()
+        model = ["--model", self.args.profile_config["model"]] if self.args.profile else []
+        return [self.args.claude, "-p", prompt, *model, "--permission-mode", "dontAsk", "--allowedTools", "Skill",
                 "--output-format", "stream-json", "--verbose"]
 
     def read_stream(self, stream) -> None:  # noqa: ANN001
@@ -172,7 +181,7 @@ class Cycle:
 
     def run(self) -> str:
         """Run until the process ends. Returns 'finished', 'paused' or 'limit'."""
-        env = dict(os.environ, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="0")
+        env = dict(os.environ, **self.args.profile_config.get("env", {}), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="0")
         proc = subprocess.Popen(self.command(), cwd=self.args.project, env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
         reader = threading.Thread(target=self.read_stream, args=(proc.stdout,), daemon=True)
@@ -281,6 +290,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--run-args", default="", help='extra /sdd-run arguments, e.g. "--phases 15"')
     parser.add_argument("--max-wait-hours", type=float, default=12.0)
     parser.add_argument("--max-cycles", type=int, default=20)
+    parser.add_argument("--profile", default="",
+                        help="run with [profiles.NAME] from .sdd/config.toml: its model and env for claude")
     parser.add_argument("--claude", default="claude", help=argparse.SUPPRESS)
     parser.add_argument("--poll", type=float, default=2.0, help=argparse.SUPPRESS)
     parser.add_argument("--no-sleep", action="store_true", help=argparse.SUPPRESS)  # tests
@@ -291,6 +302,20 @@ def main(argv: list[str]) -> int:
     if not (args.project / ".sdd" / "config.toml").exists():
         say(f"{args.project} has no .sdd/config.toml: run /sdd-init there first")
         return 2
+    args.profile_config = {}
+    if args.profile:
+        config = sdd_tasks.load_config(args.project / ".sdd" / "config.toml")
+        errors = sdd_tasks.config_errors(config)
+        for error in errors:
+            say(f"config error: {error}")
+        if errors:
+            return 2
+        profile = (config.get("profiles") or {}).get(args.profile)
+        if not isinstance(profile, dict):
+            say(f"unknown profile {args.profile}")
+            return 2
+        args.profile_config = profile
+        say(f"profile {args.profile}: model {profile['model']}")
 
     logs = state_dir(args.project)
     status = logs / "status.json"

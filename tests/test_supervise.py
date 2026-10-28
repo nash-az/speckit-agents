@@ -211,6 +211,44 @@ class SuperviseTest(unittest.TestCase):
         self.assertIn("an earlier supervisor was waiting for the five_hour window", out.stdout)
         self.assertEqual(len(calls), 1)
 
+    PROFILES = ('[profiles.local]\nmodel = "qwen3-coder"\n'
+                'env = { ANTHROPIC_BASE_URL = "http://localhost:4000" }\n')
+
+    def test_profile_sets_the_model_env_and_prompt(self):
+        (self.project / ".sdd" / "config.toml").write_text(self.PROFILES)
+        out, calls, _ = self.supervise([[{"transcript": True}, *DONE]], "--profile", "local")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 1)
+        argv = calls[0]
+        self.assertIn("--model", argv)
+        self.assertEqual(argv[argv.index("--model") + 1], "qwen3-coder")
+        self.assertTrue(argv[1].startswith("/sdd-run --yes --profile local"), argv[1])
+        env = json.loads((self.dir / "env0.json").read_text())
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "http://localhost:4000")
+        self.assertEqual(env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"], "0")
+
+    def test_without_a_profile_no_model_is_passed(self):
+        out, calls, _ = self.supervise([[{"transcript": True}, *DONE]])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertNotIn("--model", calls[0])
+        self.assertNotIn("--profile", calls[0][1])
+
+    def test_unknown_profile_exits_2(self):
+        (self.project / ".sdd" / "config.toml").write_text(self.PROFILES)
+        out, calls, _ = self.supervise([[*DONE]], "--profile", "cloud")
+        self.assertEqual(out.returncode, 2, out.stdout)
+        self.assertIn("unknown profile cloud", out.stdout)
+        self.assertEqual(calls, [])
+
+    def test_config_errors_exit_2_before_starting(self):
+        (self.project / ".sdd" / "config.toml").write_text(
+            self.PROFILES + '[profiles.bad]\nenv = { API_KEY = "x" }\n')
+        out, calls, _ = self.supervise([[*DONE]], "--profile", "local")
+        self.assertEqual(out.returncode, 2, out.stdout)
+        self.assertIn("profiles.bad.model: missing", out.stdout)
+        self.assertIn("profiles.bad.env.API_KEY", out.stdout)
+        self.assertEqual(calls, [])
+
     def test_needs_an_initialised_project(self):
         (self.project / ".sdd" / "config.toml").unlink()
         out, calls, _ = self.supervise([[*DONE]])
