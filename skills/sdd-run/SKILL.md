@@ -97,8 +97,16 @@ Remind the user that permission prompts stop an unattended run, and that a headl
 4. Tell the user in one line that the run started, on which branch, and that `/workflows` shows progress. Then end your turn. The workflow notifies you when it finishes.
 
 ## 7. When the workflow finishes
+Both branches below run the **end-of-run steps** (data-model §8) right after writing the report and before committing it:
+1. **Project lessons.** Read the run's events (`python3 <helper> events . <run id>`) and the run outcome. Write down facts true of this codebase that would change how the next run goes: a check command that needs a flag, a path the sandbox refuses, a test that is slow or flaky, a recurring verifier complaint. Append them to `.sdd/learnings.md` (create it if it is missing) as bullets under one heading `## <run id> (<YYYY-MM-DD>)`, today's local date. Read the file first and leave out any bullet it already has. No new lessons: add no heading at all.
+2. **Plugin feedback.** Problems with the plugin itself, not with this project: a command the plugin's own prompt told an agent to run that the guard or permissions refused, an agent schema error, a crash, a prompt that contradicts the guard. Append one JSON line per problem to `.sdd/plugin-feedback.jsonl` (create it if it is missing), with exactly these fields and no others:
+   `{"id": "<run id>-<n>", "date": "YYYY-MM-DD", "run_id": "<run id>", "project": "<project dir name>", "text": "<the problem>", "evidence": "<event kinds/ids or a short quote>"}`
+   `<n>` counts from 1 within this run, continuing after any entries this run id already has in the file. This file is git-ignored (data-model §7): never commit it.
+3. **Counts in the report.** Add a line to the report: `Learnings: <l> lessons written to .sdd/learnings.md; plugin feedback: <f> entries written to .sdd/plugin-feedback.jsonl.`
+4. **Commit** the report together with the lessons: `git add -- .sdd/runs/<run id>.md .sdd/learnings.md` (leave out `.sdd/learnings.md` only if the file does not exist), then commit as the branch below says.
+
 If `stopped` starts with `interrupted`, the run was cut off (usage limit or stop) and is meant to be resumed:
-- Write the report as below, marked **interrupted**, with the `interrupted` and `resumed` lists, and commit only the report file (`git add -- .sdd/runs/<run id>.md`): the tree holds the interrupted work.
+- Write the report as below, marked **interrupted**, with the `interrupted` and `resumed` lists. Run the end-of-run steps, then commit only the report and the lessons (`git add -- .sdd/runs/<run id>.md .sdd/learnings.md`): the tree holds the interrupted work, so add nothing else.
 - Keep `.sdd/run.json`: the next `/sdd-run` (or `bin/sdd-supervise.py` after the reset) resumes from it.
 - Notify `sdd run <id>: interrupted, <n> done; resumes on the next /sdd-run`, and tell the user the same. Then stop; skip the items below.
 
@@ -113,8 +121,9 @@ Otherwise:
    - the skipped tasks with their reasons, the held tasks, the phase states, and `stopped` if it is set;
    - the profile: the `--profile` name, or "none" (data-model §11);
    - the model per role (`implementer`, `verifier`, `evaluator`, `bookkeeper`): the config's `agents.<role>`, or "run's model" when it has none;
-   - the run's events: `python3 <helper> events . <run id>`.
-2. Commit the report as `chore(sdd): run report <run id>`, with the trailer.
+   - the run's events: `python3 <helper> events . <run id>`;
+   - how many lessons and plugin feedback entries the end-of-run steps wrote.
+2. Run the end-of-run steps above, then commit the report and `.sdd/learnings.md` (`git add -- .sdd/runs/<run id>.md .sdd/learnings.md`) as `chore(sdd): run report <run id>`, with the trailer.
 3. Remove `.sdd/run.json`.
 4. Send a push notification if the PushNotification tool is available: `sdd run <id>: <n> done, <m> blocked`.
 5. Tell the user:
