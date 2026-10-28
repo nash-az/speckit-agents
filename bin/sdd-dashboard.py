@@ -909,6 +909,14 @@ def build_html():
   .doc-notice { font-size: 0.8125rem; color: var(--warning); margin-bottom: 0.5rem; }
   .stale-banner { background: rgba(239,68,68,0.15); border: 1px solid var(--danger); color: var(--danger); border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.875rem; }
   .stale-banner code { font-family: 'JetBrains Mono', monospace; }
+  /* Run banner (data-model.md §12.4): stop and resume the supervisor */
+  .run-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.875rem; }
+  .run-banner-text { font-weight: 500; }
+  .run-banner-actions { display: flex; gap: 0.5rem; }
+  .run-banner .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .run-banner-reason, .run-banner-error { color: var(--text-muted); }
+  .run-banner-error { color: var(--danger); }
+  .run-banner code { font-family: 'JetBrains Mono', monospace; }
   .doc-plain { white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; font-size: 0.875rem; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; }
   .raw-doc { margin-top: 0.75rem; }
 
@@ -1044,6 +1052,8 @@ def build_html():
     <div class="content">
       <!-- Stale run (data-model.md §4.5): run.json is left behind and nothing is running -->
       <div id="stale-banner" class="stale-banner" role="alert" style="display:none;"></div>
+      <!-- Run controls (data-model.md §12.4): stop, resume, keep paused, let it resume -->
+      <div id="run-banner" class="run-banner" role="status" style="display:none;"></div>
 
       <!-- Feature picker: no active feature (409 from a per-feature request) -->
       <div id="feature-picker" class="card feature-picker" style="display:none;">
@@ -1852,7 +1862,142 @@ def build_html():
           el.innerHTML = '';
           el.style.display = 'none';
         }
+        renderRunBanner(run);
       }).catch(function(e) { console.error('loadRunState error', e); });
+    }
+
+    // Run banner (data-model.md §12.4, FR-029, FR-030): what the supervisor accepts now comes from
+    // /api/run/current's `controls` (§12.3); the banner never decides that itself.
+    var runBannerError = '';
+    var stoppingTask = null;
+    var lastBannerState = null;
+
+    // The supervisor's state, read back from `controls` (one row of the §12.3 table each).
+    function supervisorState(run) {
+      var c = (run && run.controls) || {};
+      if (run && run.stopping) return 'stopping';
+      if (c.stop) return 'running';
+      if (c.resume) return 'held';
+      if (c.hold) return 'waiting';
+      if (c.release) return 'waiting-kept';
+      return 'none';
+    }
+
+    // HH:MM of the usage reset, as written in `controls.reason` for the waiting rows.
+    function resetTimeFromReason(reason) {
+      var m = /([0-9]{2}:[0-9]{2}|[?])$/.exec(reason || '');
+      return m ? m[1] : '?';
+    }
+
+    function controlButton(label, command, mode, enabled, reason, confirmText) {
+      var attrs = ' class="btn" data-control="' + command + '"';
+      if (mode) attrs += ' data-mode="' + mode + '"';
+      if (confirmText) attrs += ' data-confirm="' + escapeHtml(confirmText) + '"';
+      if (!enabled) attrs += ' disabled title="' + escapeHtml(reason || 'not available now') + '"';
+      return '<button type="button"' + attrs + '>' + escapeHtml(label) + '</button>';
+    }
+
+    function reasonHtml(reason) {
+      // Reasons may name a command in backticks (`python3 bin/sdd-supervise.py`).
+      return escapeHtml(reason).replace(/`([^`]+)`/g, '<code>$1</code>');
+    }
+
+    function renderRunBanner(run) {
+      var el = document.getElementById('run-banner');
+      if (!el) return;
+      var c = (run && run.controls) || {};
+      var state = supervisorState(run);
+      var hasRun = run && run.state && run.state !== 'none';
+      if (state === 'none' && !hasRun) {
+        el.innerHTML = '';
+        el.style.display = 'none';
+        return;
+      }
+      if (state !== lastBannerState) runBannerError = '';  // a 409 text belongs to the state it was shown in
+      lastBannerState = state;
+      var reason = c.reason || null;
+      var text = '', buttons = [];
+      if (state === 'running') {
+        text = 'Run ' + escapeHtml(run.run_id || '') + ' is running';
+        buttons.push(controlButton('Stop after current task', 'stop', 'after-task', true, reason));
+        buttons.push(controlButton('Stop now', 'stop', 'now', true, reason,
+          'Stop the run now? The current agent is stopped and its task is resumed from the journal on the next start.'));
+      } else if (state === 'stopping') {
+        text = 'Stopping after ' + escapeHtml(stoppingTask || 'the current task') + '…';
+        buttons.push(controlButton('Stop now', 'stop', 'now', !!c.stop, reason,
+          'Stop the run now? The current agent is stopped and its task is resumed from the journal on the next start.'));
+      } else if (state === 'held') {
+        text = 'Stopped by you';
+        buttons.push(controlButton('Resume', 'resume', null, !!c.resume, reason));
+      } else if (state === 'waiting') {
+        text = 'Waiting for credits until ' + escapeHtml(resetTimeFromReason(reason));
+        buttons.push(controlButton('Keep paused', 'hold', null, !!c.hold, reason));
+        buttons.push(controlButton('Stop after current task', 'stop', 'after-task', false, reason));
+      } else if (state === 'waiting-kept') {
+        text = 'Will stay paused after the reset at ' + escapeHtml(resetTimeFromReason(reason));
+        buttons.push(controlButton('Let it resume', 'release', null, !!c.release, reason));
+        buttons.push(controlButton('Stop after current task', 'stop', 'after-task', false, reason));
+      } else {
+        text = 'Run ' + escapeHtml(run.run_id || '') + ' has no supervisor';
+        buttons.push(controlButton('Stop after current task', 'stop', 'after-task', false, reason));
+        buttons.push(controlButton('Stop now', 'stop', 'now', false, reason));
+        buttons.push(controlButton('Resume', 'resume', null, false, reason));
+      }
+      var anyDisabled = buttons.some(function(b) { return b.indexOf(' disabled ') !== -1; });
+      var html = '<span class="run-banner-text">' + text + '</span>' +
+        '<span class="run-banner-actions">' + buttons.join('') + '</span>';
+      if (anyDisabled && reason) html += '<span class="run-banner-reason">' + reasonHtml(reason) + '</span>';
+      if (runBannerError) html += '<span class="run-banner-error" role="alert">' + escapeHtml(runBannerError) + '</span>';
+      el.innerHTML = html;
+      el.style.display = '';
+      el.querySelectorAll('button[data-control]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var question = btn.getAttribute('data-confirm');
+          if (question && !window.confirm(question)) return;
+          postControl(btn.getAttribute('data-control'), btn.getAttribute('data-mode'));
+        });
+      });
+      if (state === 'stopping' && run.run_id) loadStoppingTask(run.run_id);
+      else stoppingTask = null;
+    }
+
+    // The task the run stops after: the newest task event of the run.
+    function loadStoppingTask(runId) {
+      fetchJSON('/api/runs/' + encodeURIComponent(runId) + '/events', 'GET').then(function(data) {
+        var events = (data && data.events) || [];
+        var id = null;
+        events.forEach(function(ev) { if (ev && typeof ev.id === 'string') id = ev.id; });
+        if (id !== stoppingTask) {
+          stoppingTask = id;
+          var el = document.querySelector('#run-banner .run-banner-text');
+          if (el) el.textContent = 'Stopping after ' + (id || 'the current task') + '…';
+        }
+      });
+    }
+
+    // POST /api/run/<command> (§12.3). A 409 shows its `error` text; after a 202 the banner
+    // refreshes at once.
+    function postControl(command, mode) {
+      var body = mode ? { mode: mode } : {};
+      fetch('/api/run/' + command, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(function(res) {
+        return res.json().catch(function() { return {}; }).then(function(data) {
+          if (res.status === 202) {
+            runBannerError = '';
+            loadRunState();
+            return;
+          }
+          runBannerError = (data && data.error) || ('request failed (' + res.status + ')');
+          toast(runBannerError);
+          loadRunState();
+        });
+      }).catch(function(e) {
+        runBannerError = 'request failed: ' + e;
+        toast(runBannerError);
+      });
     }
 
     function refreshAll() {

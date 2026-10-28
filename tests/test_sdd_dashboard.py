@@ -487,6 +487,29 @@ class CurrentRunTest(unittest.TestCase):
         self.assertIn(".stale-banner { background: rgba(239,68,68,0.15); border: 1px solid var(--danger); "
                       "color: var(--danger);", html)
 
+    def test_run_banner_in_page(self):
+        """data-model.md §12.4 (FR-029, FR-030): the run banner's strings, routes and polling."""
+        html = dash.build_html()
+        self.assertIn('id="run-banner"', html)
+        for text in ("Stop after current task", "Stop now", "Stopping after ", "Stopped by you", "Resume",
+                     "Waiting for credits until ", "Keep paused", "Will stay paused after the reset at ",
+                     "Let it resume"):
+            self.assertIn(text, html)
+        for command in ("'stop', 'after-task'", "'stop', 'now'", "'resume'", "'hold'", "'release'"):
+            self.assertIn(command, html)
+        self.assertIn("fetch('/api/run/' + command, {", html)
+        self.assertIn("method: 'POST',", html)
+        self.assertIn("headers: { 'Content-Type': 'application/json' },", html)
+        self.assertIn("window.confirm(question)", html)
+        self.assertIn("res.status === 202", html)
+        self.assertIn("(data && data.error)", html)
+        self.assertIn(' disabled title="', html)
+        self.assertIn("c.reason", html)
+        self.assertIn("setInterval(refreshAll, 3000)", html)
+        # Every route the banner calls exists on the server.
+        for command in ("stop", "resume", "hold", "release"):
+            self.assertIn("/api/run/" + command, dash.CONTROL_ROUTES)
+
 
 class TaskLogTest(unittest.TestCase):
     """`/api/runs/<id>/tasks/<task>/log` (data-model.md §4.6, FR-021) over a fixture transcript
