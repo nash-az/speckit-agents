@@ -24,7 +24,15 @@ Endpoints:
     GET /api/runs/<id>/tasks/<task>/log -- live transcript of the task's agent (data-model.md §4.6)
     GET /api/runs/<id>/report     -- run report markdown (id must look like 20261027-1431)
     GET /api/status               -- supervisor status (usage windows)
-    GET /api/run/current          -- run state: none | running | paused | stale (data-model.md §4.5)
+    GET /api/run/current          -- run state: none | running | paused | stale, plus `controls`
+                                     (data-model.md §4.5, §12.3)
+    POST /api/run/stop            -- { "mode"?: "after-task" | "now" } ask the supervisor to stop
+    POST /api/run/resume          -- ask a held supervisor to start the next cycle
+    POST /api/run/hold            -- while waiting for a usage window: stay paused after the reset
+    POST /api/run/release         -- undo hold
+Every POST needs an allowed Origin and `Content-Type: application/json` (data-model.md §4.9).
+The control routes write one request to `control.json` in the supervisor's state directory,
+outside the project; nothing else is ever written (§4.8).
 """
 
 from __future__ import annotations
@@ -35,8 +43,10 @@ import importlib.util
 import json
 import os
 import re
+import threading
 import time
 import urllib.parse
+import uuid
 from pathlib import Path
 
 # All task state comes from bin/sdd-tasks.py, so the CLI and the dashboard cannot disagree
@@ -44,12 +54,17 @@ from pathlib import Path
 _spec = importlib.util.spec_from_file_location("sdd_tasks", Path(__file__).with_name("sdd-tasks.py"))
 sdd_tasks = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_tasks)
 
+# The supervisor's state directory comes from the supervisor itself, so both use the same one
+# (data-model.md §12.3).
+_spec = importlib.util.spec_from_file_location("sdd_supervise", Path(__file__).with_name("sdd-supervise.py"))
+sdd_supervise = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_supervise)
+
 DEFAULT_PORT = 8765
-STATE_BASE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "speckit-agents"
 
 
-def slug_for(project: Path) -> str:
-    return re.sub(r"[^A-Za-z0-9]+", "-", str(project.resolve())).strip("-")
+def logs_dir(project: Path) -> Path:
+    """The supervisor's state directory for the project (outside the project)."""
+    return sdd_supervise.state_dir(project)
 
 
 def read_text(path):
@@ -181,9 +196,98 @@ def get_report(project, run_id):
 
 
 def get_status(project):
-    state_dir = STATE_BASE / slug_for(project)
-    status_file = state_dir / "status.json"
+    try:
+        status_file = logs_dir(project) / "status.json"
+    except OSError:  # the state directory cannot be created (e.g. a sandbox): no supervisor
+        return None
     return read_json(status_file)
+
+
+def supervisor_alive(status) -> bool:
+    """True when `status.json` names a live process (data-model.md §12.3). Signal 0 only checks
+    that the process exists; no other signal is ever sent. `PermissionError` counts as alive."""
+    pid = status.get("pid") if isinstance(status, dict) else None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+NO_SUPERVISOR = "no supervisor is running; start one with `python3 bin/sdd-supervise.py`"
+STOP_MODES = ("after-task", "now")
+
+
+def _reset_time(status) -> str:
+    resets_at = status.get("resets_at")
+    if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool):
+        return time.strftime("%H:%M", time.localtime(resets_at))
+    return "?"
+
+
+def run_controls(status) -> dict:
+    """The `controls` table of data-model.md §12.3: which commands the supervisor accepts now."""
+    controls = {"stop": False, "resume": False, "hold": False, "release": False, "reason": None}
+    if not isinstance(status, dict) or not supervisor_alive(status):
+        controls["reason"] = NO_SUPERVISOR
+        return controls
+    state = status.get("state")
+    if state == "running":
+        controls["stop"] = True
+    elif state == "stopping":
+        controls["stop"] = True  # only `mode: now`; an after-task stop is already under way
+        controls["reason"] = "stopping after the current task"
+    elif state == "held":
+        controls["resume"] = True
+    elif state == "waiting":
+        if status.get("keep_paused") is True:
+            controls["release"] = True
+            controls["reason"] = f"will stay paused after the reset at {_reset_time(status)}"
+        else:
+            controls["hold"] = True
+            controls["reason"] = f"waiting for the usage window to reset at {_reset_time(status)}"
+    return controls
+
+
+def run_state(project, now=None):
+    """`GET /api/run/current`: current_run() plus `controls`, `by` (held) and `stopping`."""
+    result = current_run(project, now)
+    status = get_status(project)
+    result["controls"] = run_controls(status)
+    state = status.get("state") if isinstance(status, dict) else None
+    if state == "held":
+        result["by"] = "operator"
+    if state == "stopping":
+        result["stopping"] = True
+    return result
+
+
+_CONTROL_LOCK = threading.Lock()
+
+
+def write_control(logs: Path, command: str, mode: str | None = None):
+    """The only writer in this file (data-model.md §4.8, §12.3): one request for the supervisor in
+    `<logs>/control.json`, written to `control.json.tmp` and moved into place, so the supervisor
+    never reads half a file. Returns the request id, or False when a request is already pending
+    (it is never overwritten before the supervisor consumes it)."""
+    with _CONTROL_LOCK:
+        target = logs / "control.json"
+        if target.exists():
+            return False
+        control = {"id": uuid.uuid4().hex, "command": command}
+        if command == "stop":
+            control["mode"] = mode or "after-task"
+        control["requested_at"] = int(time.time())
+        tmp = logs / "control.json.tmp"
+        tmp.write_text(json.dumps(control) + "\n", encoding="utf-8")
+        os.replace(tmp, target)
+        return control["id"]
 
 
 # A run whose journal or agent transcripts changed within this many seconds is `running` (§4.5).
@@ -396,12 +500,18 @@ DOC_ALIASES = {
 # also rules out path traversal through `/api/runs/<id>/…`.
 RUN_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{4}[a-z0-9-]*$")
 
+# Run control routes (data-model.md §12.3): path -> the command written to control.json.
+CONTROL_ROUTES = {"/api/run/stop": "stop", "/api/run/resume": "resume",
+                  "/api/run/hold": "hold", "/api/run/release": "release"}
+
 
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
     project = None
     started_project = None  # the --project the server was started with; /api/projects lists only it
     feature = None  # a `specs/` folder name chosen in the page; memory only, never written to disk
     html = ""
+    port = DEFAULT_PORT  # the dashboard's own port, for the allowed Origins (§4.9)
+    allow_ports = ()  # --allow-port: other localhost ports whose pages may POST (the UI server's)
 
     def log_message(self, format, *args):  # noqa: ANN001, ARG002
         pass
@@ -413,6 +523,91 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self._send_json({"error": "misdirected request"}, 421)
         return False
 
+    @classmethod
+    def allowed_origins(cls):
+        """`http://<localhost name>:<port>` for the dashboard's port and each --allow-port (§4.9)."""
+        return {f"http://{name}:{p}" for p in (cls.port, *cls.allow_ports) for name in ALLOWED_HOSTS}
+
+    def _origin(self):
+        """The request's Origin when it is allowed, else None."""
+        origin = (self.headers.get("Origin") or "").strip()
+        return origin if origin in self.allowed_origins() else None
+
+    def _post_allowed(self):
+        """§4.9, for every POST after the Host check: an allowed Origin (else 403) and a JSON
+        Content-Type, parameters ignored (else 415). False after sending the error."""
+        if self._origin() is None:
+            self._send_json({"error": "origin not allowed"}, 403)
+            return False
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            self._send_json({"error": "Content-Type must be application/json"}, 415)
+            return False
+        return True
+
+    def _read_json_body(self):
+        """The request body as JSON; an empty body is `{}`. Raises ValueError when it does not parse."""
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        return json.loads(body) if body.strip() else {}
+
+    def do_OPTIONS(self):  # noqa: N802
+        """CORS preflight for the control routes only, and only for an allowed Origin (§4.9)."""
+        if not self._host_allowed():
+            return
+        path = self.path.split("?")[0]
+        if path not in CONTROL_ROUTES:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        origin = self._origin()
+        if origin is None:
+            self._send_json({"error": "origin not allowed"}, 403)
+            return
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", "POST")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Vary", "Origin")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _control(self, command):
+        """`POST /api/run/<command>` (data-model.md §12.3), after the §4.9 checks: 400 for a bad body
+        or `mode`, 409 when the command is not available now or a request is pending (nothing is
+        written), else one `control.json` and `202 {"ok": true, "id"}`."""
+        cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
+        try:
+            data = self._read_json_body()
+        except ValueError:
+            self._send_json({"error": "body must be JSON"}, 400, cors)
+            return
+        if not isinstance(data, dict):
+            self._send_json({"error": "body must be a JSON object"}, 400, cors)
+            return
+        mode = None
+        if command == "stop":
+            mode = data.get("mode", "after-task")
+            if mode not in STOP_MODES:
+                self._send_json({"error": "unknown mode", "modes": list(STOP_MODES)}, 400, cors)
+                return
+        proj = DashboardHandler.project
+        status = get_status(proj)
+        controls = run_controls(status)
+        allowed = controls[command]
+        state = status.get("state") if isinstance(status, dict) else None
+        if command == "stop" and state == "stopping" and mode != "now":
+            allowed = False  # an after-task stop is already under way; only `now` is left
+        if not allowed:
+            self._send_json({"error": controls["reason"] or "not available now"}, 409, cors)
+            return
+        request_id = write_control(logs_dir(proj), command, mode)
+        if not request_id:
+            self._send_json({"error": "a request is already pending"}, 409, cors)
+            return
+        self._send_json({"ok": True, "id": request_id}, 202, cors)
+
     def _feature_dir(self):
         """The person's in-memory choice if one was made, else active_feature()."""
         proj = DashboardHandler.project
@@ -420,10 +615,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return proj / "specs" / DashboardHandler.feature
         return active_feature(proj)
 
-    def _send_json(self, obj, status=200):
+    def _send_json(self, obj, status=200, headers=None):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -525,7 +722,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(get_status(proj))
             return
         if path == "/api/run/current":
-            self._send_json(current_run(proj))
+            self._send_json(run_state(proj))
             return
         self.send_response(404)
         self.end_headers()
@@ -533,12 +730,15 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         if not self._host_allowed():
             return
+        if not self._post_allowed():
+            return
         path = self.path.split("?")[0]
+        if path in CONTROL_ROUTES:
+            self._control(CONTROL_ROUTES[path])
+            return
         if path == "/api/project/select":
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length) if length else b"{}"
             try:
-                data = json.loads(body)
+                data = self._read_json_body()
             except ValueError:
                 data = {}
             if not isinstance(data, dict):
@@ -1710,10 +1910,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='speckit-agents project dashboard')
     parser.add_argument('--project', type=Path, default=Path.cwd(), help='project directory (default: cwd)')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT, help=f'port to listen on (default: {DEFAULT_PORT})')
+    parser.add_argument('--allow-port', type=int, action='append', default=[], metavar='N',
+                        help='also accept POSTs from pages on this localhost port (repeatable; the UI server)')
     args = parser.parse_args(argv)
     args.project = args.project.resolve()
 
     DashboardHandler.project = DashboardHandler.started_project = args.project
+    DashboardHandler.port = args.port
+    DashboardHandler.allow_ports = tuple(args.allow_port)
     DashboardHandler.html = build_html()
 
     # Security boundary: localhost only, no auth (FR-022). Do not add a --host option.

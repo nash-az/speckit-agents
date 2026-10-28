@@ -19,6 +19,7 @@ import tempfile
 import time
 import unittest
 import urllib.request
+from unittest import mock
 import urllib.error
 from pathlib import Path
 
@@ -379,13 +380,15 @@ class CurrentRunTest(unittest.TestCase):
         (self.wf / "agent-a01.jsonl").write_text("{}\n", encoding="utf-8")
         self.set_age(self.wf / "journal.jsonl", 0)
         self.set_age(self.wf / "agent-a01.jsonl", 0)
-        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature, dash.STATE_BASE)
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature)
         dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
-        dash.STATE_BASE = base / "state"
-        self.status_file = dash.STATE_BASE / dash.slug_for(self.root) / "status.json"
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(base / "state")})
+        self.env.start()
+        self.status_file = dash.logs_dir(self.root) / "status.json"
 
     def tearDown(self):
-        (dash.DashboardHandler.project, dash.DashboardHandler.feature, dash.STATE_BASE) = self.saved
+        self.env.stop()
+        (dash.DashboardHandler.project, dash.DashboardHandler.feature) = self.saved
         self.tmp.cleanup()
 
     @staticmethod
@@ -402,7 +405,11 @@ class CurrentRunTest(unittest.TestCase):
         self.status_file.write_text(json.dumps({"state": state}), encoding="utf-8")
 
     def current(self):
-        return request(self, "GET", "/api/run/current")
+        """The response without `controls`, which is all-false here: status.json has no live pid
+        (the controls table itself is RunControlTest's)."""
+        data = request(self, "GET", "/api/run/current")
+        self.assertEqual(data.pop("controls"), NO_CONTROLS)
+        return data
 
     def test_none_without_run_json(self):
         self.assertEqual(self.current(), {"state": "none", "run_id": None, "workflow_dir": None})
@@ -568,21 +575,39 @@ class TaskLogTest(unittest.TestCase):
             self.assertFalse(data["available"], (run_id, task))
 
 
-def request(test, method, path, body=None, status=200, host="127.0.0.1:8765"):
-    """Run one request through DashboardHandler without a socket; returns the parsed body
-    (JSON when it parses, else text). `host=None` sends no Host header."""
+OWN_ORIGIN = "http://127.0.0.1:8765"  # the dashboard's own origin at DashboardHandler.port (8765)
+
+
+def raw_request(method, path, body=None, host="127.0.0.1:8765", origin=OWN_ORIGIN,
+                content_type="application/json", raw=None):
+    """Run one request through DashboardHandler without a socket; returns (status, headers, body).
+    `host=None`, `origin=None` and `content_type=None` leave that header out. Origin and
+    Content-Type are sent only for POST (Origin also for OPTIONS). `raw` replaces the JSON body."""
     handler = dash.DashboardHandler.__new__(dash.DashboardHandler)
     handler.path, handler.command = path, method
     handler.request_version, handler.requestline = "HTTP/1.1", f"{method} {path} HTTP/1.1"
     handler.wfile = io.BytesIO()
-    raw = json.dumps(body).encode() if body is not None else b""
+    if raw is None:
+        raw = json.dumps(body).encode() if body is not None else b""
     handler.rfile = io.BytesIO(raw)
     handler.headers = {"Content-Length": str(len(raw))}
     if host is not None:
         handler.headers["Host"] = host
-    handler.do_GET() if method == "GET" else handler.do_POST()
+    if method in ("POST", "OPTIONS") and origin is not None:
+        handler.headers["Origin"] = origin
+    if method == "POST" and content_type is not None:
+        handler.headers["Content-Type"] = content_type
+    {"GET": handler.do_GET, "POST": handler.do_POST, "OPTIONS": handler.do_OPTIONS}[method]()
     head, _, out = handler.wfile.getvalue().partition(b"\r\n\r\n")
-    test.assertEqual(head.split(b"\r\n")[0].split()[1], str(status).encode(), head)
+    lines = head.decode().split("\r\n")
+    headers = dict(line.split(": ", 1) for line in lines[1:] if ": " in line)
+    return int(lines[0].split()[1]), headers, out
+
+
+def request(test, method, path, body=None, status=200, host="127.0.0.1:8765", **kw):
+    """raw_request() that asserts the status; returns the parsed body (JSON when it parses, else text)."""
+    code, _, out = raw_request(method, path, body, host=host, **kw)
+    test.assertEqual(code, status, out)
     try:
         return json.loads(out)
     except ValueError:
@@ -1128,17 +1153,334 @@ class FeaturePickerTest(unittest.TestCase):
         self.assertEqual(got["shown"], [["001-a", "002-b"]])
 
 
-class ReadOnlyTest(unittest.TestCase):
-    """data-model.md §4.8 (FR-020): the dashboard's source has no way to write or run anything."""
+NO_CONTROLS = {"stop": False, "resume": False, "hold": False, "release": False,
+               "reason": dash.NO_SUPERVISOR}
 
-    FORBIDDEN = (r"write_text", r"\.unlink\(", r"subprocess", r"os\.remove", r"shutil\.", r"git ",
+
+class RunControlTest(unittest.TestCase):
+    """data-model.md §4.9 and §12.3 (FR-029, FR-030): the `controls` table of `/api/run/current`,
+    the four control routes and `write_control()`."""
+
+    RESETS_AT = 1793000000  # any fixed epoch; the reason shows it as local HH:MM
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.root = base / "project"
+        (self.root / ".sdd").mkdir(parents=True)
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature,
+                      dash.DashboardHandler.port, dash.DashboardHandler.allow_ports,
+                      dash.DashboardHandler.started_project, dash.DashboardHandler.html)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
+        dash.DashboardHandler.port, dash.DashboardHandler.allow_ports = 8765, ()
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(base / "state")})
+        self.env.start()
+        self.logs = dash.logs_dir(self.root)
+        self.hhmm = time.strftime("%H:%M", time.localtime(self.RESETS_AT))
+
+    def tearDown(self):
+        self.env.stop()
+        (dash.DashboardHandler.project, dash.DashboardHandler.feature,
+         dash.DashboardHandler.port, dash.DashboardHandler.allow_ports,
+         dash.DashboardHandler.started_project, dash.DashboardHandler.html) = self.saved
+        self.tmp.cleanup()
+
+    def write_status(self, state, pid=None, **fields):
+        """status.json as the supervisor writes it; `pid` defaults to this (live) process."""
+        data = {"state": state, "pid": os.getpid() if pid is None else pid, **fields}
+        (self.logs / "status.json").write_text(json.dumps(data), encoding="utf-8")
+
+    def current(self):
+        return request(self, "GET", "/api/run/current")
+
+    def control_file(self):
+        return self.logs / "control.json"
+
+    def assert_nothing_written(self):
+        self.assertEqual(sorted(p.name for p in self.logs.iterdir()), ["status.json"])
+
+    # -- the controls table, one test per row ---------------------------------------------------
+
+    def test_running(self):
+        self.write_status("running")
+        self.assertEqual(self.current()["controls"],
+                         {"stop": True, "resume": False, "hold": False, "release": False, "reason": None})
+
+    def test_stopping(self):
+        self.write_status("stopping", mode="after-task")
+        data = self.current()
+        self.assertEqual(data["controls"], {"stop": True, "resume": False, "hold": False, "release": False,
+                                            "reason": "stopping after the current task"})
+        self.assertIs(data["stopping"], True)
+        self.assertNotIn("by", data)
+
+    def test_held(self):
+        self.write_status("held", reason="stopped by operator")
+        data = self.current()
+        self.assertEqual(data["controls"],
+                         {"stop": False, "resume": True, "hold": False, "release": False, "reason": None})
+        self.assertEqual(data["by"], "operator")
+        self.assertNotIn("stopping", data)
+
+    def test_waiting_not_kept_paused(self):
+        self.write_status("waiting", window="five_hour", resets_at=self.RESETS_AT, keep_paused=False)
+        self.assertEqual(self.current()["controls"], {
+            "stop": False, "resume": False, "hold": True, "release": False,
+            "reason": f"waiting for the usage window to reset at {self.hhmm}"})
+
+    def test_waiting_kept_paused(self):
+        self.write_status("waiting", window="five_hour", resets_at=self.RESETS_AT, keep_paused=True)
+        self.assertEqual(self.current()["controls"], {
+            "stop": False, "resume": False, "hold": False, "release": True,
+            "reason": f"will stay paused after the reset at {self.hhmm}"})
+
+    def test_no_status_json(self):
+        data = self.current()
+        self.assertEqual(data["controls"], NO_CONTROLS)
+        self.assertNotIn("by", data)
+        self.assertNotIn("stopping", data)
+
+    def test_supervisor_not_alive(self):
+        for pid in ("123", 0, -5, True, 1.5):  # not a usable pid
+            self.write_status("running", pid=pid)
+            self.assertEqual(self.current()["controls"], NO_CONTROLS, pid)
+        (self.logs / "status.json").write_text(json.dumps({"state": "running"}), encoding="utf-8")
+        self.assertEqual(self.current()["controls"], NO_CONTROLS)
+        self.write_status("running", pid=424242)
+        with mock.patch.object(dash.os, "kill", side_effect=ProcessLookupError) as kill:
+            self.assertEqual(self.current()["controls"], NO_CONTROLS)
+        kill.assert_called_with(424242, 0)
+
+    def test_permission_error_counts_as_alive(self):
+        self.write_status("running", pid=1)
+        with mock.patch.object(dash.os, "kill", side_effect=PermissionError) as kill:
+            self.assertTrue(self.current()["controls"]["stop"])
+        kill.assert_called_with(1, 0)  # signal 0 only
+
+    # -- the control routes ---------------------------------------------------------------------
+
+    def assert_written(self, data, command, mode=None):
+        control = json.loads(self.control_file().read_text(encoding="utf-8"))
+        self.assertEqual(data, {"ok": True, "id": control["id"]})
+        self.assertRegex(control["id"], r"^[0-9a-f]{32}$")
+        expected = {"id": control["id"], "command": command, "requested_at": control["requested_at"]}
+        if mode:
+            expected["mode"] = mode
+        self.assertEqual(control, expected)
+        self.assertLessEqual(abs(control["requested_at"] - time.time()), 5)
+        self.assertFalse((self.logs / "control.json.tmp").exists())
+
+    def test_stop_after_task_is_202(self):
+        self.write_status("running")
+        self.assert_written(request(self, "POST", "/api/run/stop", {}, status=202), "stop", "after-task")
+
+    def test_stop_without_body_defaults_to_after_task(self):
+        self.write_status("running")
+        self.assert_written(request(self, "POST", "/api/run/stop", status=202), "stop", "after-task")
+
+    def test_stop_now_is_202(self):
+        self.write_status("running")
+        self.assert_written(request(self, "POST", "/api/run/stop", {"mode": "now"}, status=202), "stop", "now")
+
+    def test_stopping_allows_only_now(self):
+        self.write_status("stopping", mode="after-task")
+        data = request(self, "POST", "/api/run/stop", {"mode": "after-task"}, status=409)
+        self.assertEqual(data, {"error": "stopping after the current task"})
+        self.assert_nothing_written()
+        self.assert_written(request(self, "POST", "/api/run/stop", {"mode": "now"}, status=202), "stop", "now")
+
+    def test_resume_hold_release_are_202_in_their_state(self):
+        for command, state, fields in (("resume", "held", {}),
+                                       ("hold", "waiting", {"keep_paused": False, "resets_at": self.RESETS_AT}),
+                                       ("release", "waiting", {"keep_paused": True, "resets_at": self.RESETS_AT})):
+            self.write_status(state, **fields)
+            self.assert_written(request(self, "POST", f"/api/run/{command}", {}, status=202), command)
+            self.control_file().unlink()  # the supervisor consumes it
+
+    def test_409_when_not_available_writes_nothing(self):
+        cases = (("running", {}, ("resume", "hold", "release"), None),
+                 ("held", {}, ("stop", "hold", "release"), "not available now"),
+                 ("waiting", {"keep_paused": False, "resets_at": self.RESETS_AT}, ("stop", "resume", "release"),
+                  f"waiting for the usage window to reset at {self.hhmm}"),
+                 ("waiting", {"keep_paused": True, "resets_at": self.RESETS_AT}, ("stop", "resume", "hold"),
+                  f"will stay paused after the reset at {self.hhmm}"),
+                 ("done", {}, ("stop", "resume", "hold", "release"), "not available now"))
+        for state, fields, commands, reason in cases:
+            self.write_status(state, **fields)
+            for command in commands:
+                data = request(self, "POST", f"/api/run/{command}", {}, status=409)
+                self.assertEqual(data, {"error": reason or "not available now"}, (state, command))
+                self.assert_nothing_written()
+
+    def test_409_without_supervisor_writes_nothing(self):
+        for command in ("stop", "resume", "hold", "release"):
+            data = request(self, "POST", f"/api/run/{command}", {}, status=409)
+            self.assertEqual(data, {"error": dash.NO_SUPERVISOR})
+        self.assertEqual(list(self.logs.iterdir()), [])
+
+    def test_409_when_a_request_is_pending(self):
+        self.write_status("running")
+        first = request(self, "POST", "/api/run/stop", {}, status=202)
+        before = self.control_file().read_bytes()
+        data = request(self, "POST", "/api/run/stop", {"mode": "now"}, status=409)
+        self.assertEqual(data, {"error": "a request is already pending"})
+        self.assertEqual(self.control_file().read_bytes(), before)  # never overwritten
+        self.assertEqual(json.loads(before)["id"], first["id"])
+
+    def test_unknown_mode_is_400(self):
+        self.write_status("running")
+        for mode in ("later", "", None, 1):
+            request(self, "POST", "/api/run/stop", {"mode": mode}, status=400)
+        self.assert_nothing_written()
+
+    def test_bad_body_is_400(self):
+        self.write_status("running")
+        request(self, "POST", "/api/run/stop", raw=b"{not json", status=400)
+        request(self, "POST", "/api/run/stop", ["now"], status=400)
+        self.assert_nothing_written()
+
+    def test_write_control_refuses_when_pending(self):
+        first = dash.write_control(self.logs, "hold")
+        self.assertRegex(first, r"^[0-9a-f]{32}$")
+        self.assertIs(dash.write_control(self.logs, "release"), False)
+        self.assertEqual(json.loads(self.control_file().read_text())["command"], "hold")
+
+    # -- §4.9: Origin and Content-Type on every POST, preflight on the control routes ----------
+
+    def test_missing_origin_is_403(self):
+        self.write_status("running")
+        for path, body in (("/api/run/stop", {}), ("/api/project/select", {"feature": "x"})):
+            data = request(self, "POST", path, body, origin=None, status=403)
+            self.assertEqual(data, {"error": "origin not allowed"})
+        self.assert_nothing_written()
+
+    def test_foreign_origin_is_403(self):
+        self.write_status("running")
+        for origin in ("http://evil.example", "http://127.0.0.1:9999", "https://127.0.0.1:8765",
+                       "http://127.0.0.1:8765.evil.example", "null", "http://127.0.0.1"):
+            for path in ("/api/run/stop", "/api/run/resume", "/api/run/hold", "/api/run/release",
+                         "/api/project/select"):
+                request(self, "POST", path, {}, origin=origin, status=403)
+        self.assert_nothing_written()
+
+    def test_wrong_content_type_is_415(self):
+        self.write_status("running")
+        for content_type in (None, "text/plain", "application/x-www-form-urlencoded", "multipart/form-data"):
+            for path in ("/api/run/stop", "/api/project/select"):
+                request(self, "POST", path, {}, content_type=content_type, status=415)
+        self.assert_nothing_written()
+
+    def test_allowed_origins(self):
+        dash.DashboardHandler.allow_ports = (9000,)
+        self.write_status("running")
+        origins = ("http://127.0.0.1:8765", "http://localhost:8765", "http://[::1]:8765",
+                   "http://127.0.0.1:9000", "http://localhost:9000", "http://[::1]:9000")
+        for origin in origins:
+            code, headers, _ = raw_request("POST", "/api/run/stop", {}, origin=origin,
+                                           content_type="application/json; charset=utf-8")
+            self.assertEqual(code, 202, origin)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), origin)
+            self.control_file().unlink()
+        request(self, "POST", "/api/project/select", {}, origin="http://localhost:9000", status=400)  # past the checks
+
+    def test_host_check_comes_first(self):
+        request(self, "POST", "/api/run/stop", {}, host="evil.example", origin=None, status=421)
+
+    def test_preflight(self):
+        dash.DashboardHandler.allow_ports = (9000,)
+        for path in ("/api/run/stop", "/api/run/resume", "/api/run/hold", "/api/run/release"):
+            code, headers, _ = raw_request("OPTIONS", path, origin="http://localhost:9000")
+            self.assertEqual(code, 204, path)
+            self.assertEqual(headers["Access-Control-Allow-Origin"], "http://localhost:9000")
+            self.assertEqual(headers["Access-Control-Allow-Methods"], "POST")
+            self.assertEqual(headers["Access-Control-Allow-Headers"], "Content-Type")
+            for origin in ("http://evil.example", None):
+                code, headers, _ = raw_request("OPTIONS", path, origin=origin)
+                self.assertEqual(code, 403, (path, origin))
+                self.assertNotIn("Access-Control-Allow-Origin", headers)
+        code, headers, _ = raw_request("OPTIONS", "/api/project/select", origin="http://localhost:9000")
+        self.assertEqual(code, 404)
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
+
+    def test_other_routes_send_no_cors_headers(self):
+        self.write_status("running")
+        for path in ("/api/run/current", "/api/status", "/api/projects"):
+            _, headers, _ = raw_request("GET", path)
+            self.assertFalse(any(h.startswith("Access-Control-") for h in headers), path)
+        _, headers, _ = raw_request("POST", "/api/project/select", {})
+        self.assertFalse(any(h.startswith("Access-Control-") for h in headers))
+
+    def test_allow_port_option(self):
+        with mock.patch.object(dash.http.server, "ThreadingHTTPServer") as server, \
+                mock.patch("builtins.print"):
+            server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            dash.main(["--project", str(self.root), "--port", "8800", "--allow-port", "9000",
+                       "--allow-port", "9001"])
+        self.assertEqual(dash.DashboardHandler.port, 8800)
+        self.assertEqual(dash.DashboardHandler.allow_ports, (9000, 9001))
+        server.assert_called_once_with(("127.0.0.1", 8800), dash.DashboardHandler)
+
+
+class ReadOnlyTest(unittest.TestCase):
+    """data-model.md §4.8 (FR-020): the dashboard's source has no way to write or run anything,
+    except `write_control()`, which writes `control.json` in the supervisor's state directory."""
+
+    SOURCE = HERE.parent / "bin" / "sdd-dashboard.py"
+    FORBIDDEN = (r"\.unlink\(", r"subprocess", r"os\.remove", r"shutil\.", r"git ",
                  r"""open\([^)]*,\s*(mode\s*=\s*)?['"][rbt]*[wax+]""",  # a write-mode open(
                  r"""\.open\(\s*(mode\s*=\s*)?['"][rbt]*[wax+]""")  # a write-mode Path.open(
 
+    def function_lines(self, source, name):
+        """The line numbers (1-based) of the body of the top-level function `name`."""
+        import ast
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                return range(node.body[0].lineno, node.end_lineno + 1)
+        self.fail(f"no function {name}")
+
     def test_source_has_no_writes(self):
-        source = (HERE.parent / "bin" / "sdd-dashboard.py").read_text(encoding="utf-8")
+        source = self.SOURCE.read_text(encoding="utf-8")
         for pattern in self.FORBIDDEN:
             self.assertIsNone(re.search(pattern, source), pattern)
+        lines = source.splitlines()
+        writer = self.function_lines(source, "write_control")
+        for pattern in (r"write_text", r"os\.replace"):
+            hits = [n for n, line in enumerate(lines, 1) if re.search(pattern, line)]
+            self.assertTrue(hits, pattern)
+            self.assertEqual([n for n in hits if n not in writer], [], pattern)
+        # The only signal is the liveness probe `os.kill(pid, 0)` in supervisor_alive() (§12.3).
+        alive = self.function_lines(source, "supervisor_alive")
+        kills = [(n, line.strip()) for n, line in enumerate(lines, 1) if re.search(r"os\.kill", line)]
+        self.assertTrue(kills)
+        for n, line in kills:
+            self.assertIn(n, alive, line)
+            self.assertEqual(line, "os.kill(pid, 0)")
+
+    def test_write_control_leaves_the_project_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            project = base / "project"
+            (project / ".sdd" / "runs").mkdir(parents=True)
+            (project / "specs" / "001").mkdir(parents=True)
+            (project / ".sdd" / "config.toml").write_text("[run]\n", encoding="utf-8")
+            (project / ".sdd" / "run.json").write_text('{"run_id": "20261028-1000"}', encoding="utf-8")
+            (project / "specs" / "001" / "tasks.md").write_text("# Tasks\n", encoding="utf-8")
+
+            def snapshot():
+                return {str(p.relative_to(project)): (p.read_bytes() if p.is_file() else None)
+                        for p in sorted(project.rglob("*"))}
+
+            before = snapshot()
+            with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(base / "state")}):
+                logs = dash.logs_dir(project)
+                self.assertTrue(dash.write_control(logs, "stop", "now"))
+            self.assertEqual(snapshot(), before)
+            target = logs / "control.json"
+            self.assertTrue(target.is_file())
+            slug = re.sub(r"[^A-Za-z0-9]+", "-", str(project)).strip("-")
+            self.assertEqual(target.parent, base / "state" / "speckit-agents" / slug)
+            self.assertNotIn(project, target.parents)
+            self.assertEqual(json.loads(target.read_text())["command"], "stop")
 
 
 def wait_for(url, timeout=10):
