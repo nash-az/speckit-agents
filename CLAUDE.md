@@ -57,6 +57,8 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
     **Phase 5 (T028–T031) is implemented** (run `20261027-2149`, 4 task commits, no blocks; Python tests pass).
     **Phase 6 (T032–T035) is implemented** (run `20261028-0914`, 4 task commits, no blocks; 188 Python and 20 node tests pass).
     Profiles and role models are only tested against stubs and the fake `claude`; a real cheaper-model run is quickstart §4 (T042).
+    **Phase 7 (T036–T037) is implemented** (run `20261028-0925`, 2 task commits, no blocks; 188 Python and 24 node tests pass;
+    `tests/guard.test.ts` not run by me). The `.sdd/scratch` guard carve-out (T036) now exists.
   - **Run launch that pauses at the usage limit and does not resume at the refresh:**
     `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5-5 python3 bin/sdd-supervise.py --project <repo> --run-args "--no-converge --phases N" --max-wait-hours 0 --max-cycles 1`
     (run in the background with output to a file). The tree must be clean first, so commit doc edits before launching and make none during the run.
