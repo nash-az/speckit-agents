@@ -30,13 +30,62 @@ For development, run `claude --plugin-dir ~/private/speckit-agents` instead.
 
 | Command | What it does |
 |---|---|
-| `/sdd-init` | Once per project. Writes `.sdd/config.toml` (the project checks and limits), adds the agent-tags section to the tasks template (`.specify/templates/overrides/`), and merges the safety settings into `.claude/settings.json`. |
+| `/sdd-init` | Once per project. Writes `.sdd/config.toml` (the project checks and limits), adds the agent-tags section to the tasks template (`.specify/templates/overrides/`), merges the safety settings into `.claude/settings.json`, and adds the plugin's runtime files to `.gitignore` (below). |
 | `/sdd-tag` | Adds agent tags to the open tasks of an existing `tasks.md`. |
-| `/sdd-run [--phases 7,8] [--max-tasks N] [--yes]` | Preflight (clean tree, checks pass), one confirmation, then the unattended run. |
-| `/sdd-status` | Lists open, held, blocked and runnable tasks, plus the active run and the last report. |
-| `/sdd-unblock` | Goes through `BLOCKED.md` with you. It records your answers, ticks tasks you did by hand and lifts holds. |
+| `/sdd-run [--phases 7,8] [--no-converge] [--max-tasks N] [--profile NAME] [--yes]` | Preflight (`.gitignore` lines, clean tree, valid config, checks pass), one confirmation, then the unattended run. |
+| `/sdd-status` | Lists open, held, blocked and runnable tasks, plus the active run (or a stale one) and the last report. |
+| `/sdd-unblock` | Goes through `BLOCKED.md` with you. It records your answers, ticks tasks you did by hand, and marks entries `resolved`, `wontfix` or `moved`. |
 
 When a feature is new, the order is: `/speckit-specify` → `/speckit-plan` → `/speckit-tasks` (which now writes the tags) → `/speckit-analyze` → `/sdd-run` → `/sdd-unblock` → `/sdd-run` …
+
+### Blocked tasks and your answers
+
+Each entry in `BLOCKED.md` has a `status:` line, and it decides what the next `/sdd-run` does with the task:
+
+| Status | Meaning |
+|---|---|
+| `open` | Waiting on you. The task is held. |
+| `resolved` | You answered the question under `- answer:`. The task runs again on the next `/sdd-run`, and the implementer gets the question and your answer in its prompt. If it fails again, a new `open` entry is added. |
+| `wontfix` | Dropped. The task is held for good. |
+| `moved` | The work left this project (for example, it became product or admin work). The task is held for good. |
+
+A task you did by hand is ticked in `tasks.md` instead. A task whose line says `superseded-by Tnnn` (or `replaced-by Tnnn`), and every open task in a phase before the newest Convergence phase, is held as `superseded`; that hold never holds the tasks that depend on it.
+
+### Git-ignored runtime files
+
+`/sdd-init` adds these four lines to `.gitignore`, and `/sdd-run` refuses to start until they are there. Commit `.gitignore` after `/sdd-init`.
+
+```
+.sdd/run.json
+.sdd/scratch/
+.sdd/runs/*/
+.sdd/plugin-feedback.jsonl
+```
+
+`.sdd/config.toml`, the run reports (`.sdd/runs/<run id>.md`) and `.sdd/learnings.md` stay tracked.
+
+### Models and run profiles
+
+Each of the four agent roles can have its own model in `.sdd/config.toml`. A role without a setting uses the run's model:
+
+```toml
+[agents]
+implementer = "haiku"   # an alias (haiku, sonnet, opus), "inherit" or a model id
+verifier = "opus"
+```
+
+A **run profile** names the model the whole run starts with, and optionally non-secret environment settings such as a gateway URL:
+
+```toml
+[profiles.local]
+model = "claude-sonnet-5-5"
+env = { ANTHROPIC_BASE_URL = "http://localhost:4000" }
+```
+
+Profiles take effect only in headless runs: `bin/sdd-supervise.py --profile local` starts `claude` with `--model` and the profile's `env`. An interactive `/sdd-run --profile NAME` cannot switch model or provider; it only checks that the profile exists and records it in the report. The report lists the configured model per role.
+The run refuses to start when the config names an unknown role or profile, an empty model, or an env name containing `KEY`, `TOKEN`, `SECRET` or `PASSWORD`. Secrets never go in the config; set them in your environment.
+
+**Local and non-Claude models:** a profile that points at a gateway for a non-Claude or local model is best-effort and unsupported by Anthropic. Such models often lack the tool calling the agents need, so expect more rejected and blocked tasks.
 
 ### Running it unattended
 
@@ -69,12 +118,39 @@ A run that reaches the claude.ai usage limit is **interrupted**, not failed: the
 To run unattended across several limit windows, let the supervisor start and restart the run:
 
 ```
-python3 <plugin>/bin/sdd-supervise.py --project . [--run-args "--phases 15"] [--threshold five_hour=0.95,seven_day=0.99]
+python3 <plugin>/bin/sdd-supervise.py --project . [--run-args "--phases 15"] [--threshold five_hour=0.95,seven_day=0.99] [--profile NAME]
 ```
 
-It starts `/sdd-run` headless and reads the usage that Claude Code reports in its stream (`rate_limit_event`: the five-hour and seven-day windows, from 90 % up). When a window reaches its threshold (by default 95 % for the five-hour window and 99 % for the seven-day one; one number sets every window), it waits for the next agent to finish, stops the run there, sleeps until the window resets, and starts `/sdd-run` again, which resumes. If the limit is hit before such a safe point (or at `--hard-stop`, 99 %, and at least one point above that window's threshold), it stops at once, and only the step in flight is redone. It ends when a run finishes, when a reset is more than `--max-wait-hours` away (12 h; the seven-day window), or after `--max-cycles`. Its progress lines go to stdout, its logs and `status.json` to `~/.local/state/speckit-agents/<project>/`.
+It starts `/sdd-run` headless and reads the usage that Claude Code reports in its stream (`rate_limit_event`: the five-hour and seven-day windows, from 90 % up). When a window reaches its threshold (by default 95 % for the five-hour window and 99 % for the seven-day one; one number sets every window), it waits for the next agent to finish, stops the run there, sleeps until the window resets, and starts `/sdd-run` again, which resumes. If the limit is hit before such a safe point, or a window reaches its hard stop (by default its threshold plus one point, at most 100 %: 96 % and 100 %; `--hard-stop` sets one value for every window), it stops at once, and only the step in flight is redone. It ends when a run finishes, when a reset is more than `--max-wait-hours` away (12 h; the seven-day window), or after `--max-cycles`. Its progress lines go to stdout, its logs and `status.json` to `~/.local/state/speckit-agents/<project>/`.
 
 The simple alternative, for runs that hit the limit at most twice: start `/sdd-run` in an **interactive** session (for example in `tmux`). There, Claude Code itself pauses a workflow at the limit and continues it after the reset (claude.ai subscription, Claude Code 2.1.271 or later, `autoContinueAtUsageLimit` on). It waits at most twice per run, the session must stay open, and after a long sleep of the computer it may need an Enter. Under `claude -p` there is no such wait; that is what the supervisor is for.
+
+A resume refuses to start when a task's description, tags, dependencies or named files changed in `tasks.md` since the run began, and lists those task ids. Ticking boxes or reformatting does not count.
+
+### Learnings and plugin feedback
+
+At the end of every run, interrupted or not, the main session writes down two kinds of notes:
+- **Project lessons**, facts about this codebase that change how the next run goes (a check that needs a flag, a path the sandbox refuses, a flaky test), as bullets under `## <run id> (<date>)` in `.sdd/learnings.md`. The file is committed with the run report.
+- **Plugin feedback**, problems with speckit-agents itself (a command its own prompt told an agent to run that the guard refused, a schema error, a crash), as JSON lines in `.sdd/plugin-feedback.jsonl`. That file is git-ignored and never committed in the project.
+
+The report says how many of each were written. To bring the plugin feedback into this repo, run from the plugin repo:
+
+```
+python3 bin/sdd-harvest.py <project dir> [--log logs/<file>.md]
+```
+
+It appends the entries it has not seen before to `logs/<date>-<project>-feedback.md` (or `--log`), under `## Harvested <date>`, and remembers their ids in `logs/.harvested.json`, so a second run adds nothing. Bad lines are skipped.
+
+## Dashboard
+
+```
+python3 <plugin>/bin/sdd-dashboard.py [--project DIR] [--port 8765]
+```
+
+A read-only view of one project, the one it was started with (the current directory by default); it never scans for others. It works without any AI model.
+- **Documents** of the active feature (`run.feature` in the config, else `.specify/feature.json`, else the only folder under `specs/`; with several and neither set, it asks): spec, plan, research, data model, quickstart, tasks, `BLOCKED.md` and `decisions.md`, plus the constitution, `.sdd/learnings.md`, `.sdd/config.toml` and the run reports. Markdown is rendered with tables, highlighted code and a table of contents for long documents. It serves only these fixed files, never an arbitrary path. The renderers load from jsDelivr; offline, it falls back to plain text.
+- **Tasks and phases** with one status vocabulary (icon, color and label), a "Waiting on you" list of held and blocked tasks with their questions, the runs and their events (read from the run's own workflow journal), a running task's live agent output, and a red banner for a stale `.sdd/run.json`.
+- **Localhost only.** It binds to `127.0.0.1`, has no authentication, and answers 421 to any request whose `Host` is not `127.0.0.1`, `localhost` or `[::1]` (against DNS rebinding). There is deliberately no option to listen on another address.
 
 ## Agent tags
 
@@ -88,6 +164,7 @@ Agent tags are written after `[P]` and `[USn]`, as in `- [ ] T057 [US1] [manual]
 | `[download]` | Needs a large model or dataset. Held unless `[allow] downloads = true`. |
 | `[eval]` | A measurement. The evaluator implements it, runs it on the real data and records the numbers. |
 | `[ui]` | Verified by build and tests, and listed for you to look at. |
+| `[dep:ok]` / `[download:ok]` | Added by you next to `[dep]` / `[download]` to approve that one task when the run does not allow it. Its implementer is told it is allowed. |
 
 Held tasks do not count against their phase. A later phase that depends on it still runs. A task that was attempted and failed does count: phases that depend on its phase are skipped.
 
@@ -103,7 +180,7 @@ There are three layers, and each holds without the others:
    - pushes, including `git -C x push`, which permission rules miss;
    - branch switches, history rewrites and `--no-verify`;
    - commits on a protected branch;
-   - edits to protected paths: the constitution, `spec.md`, the settings and `.sdd/`.
+   - edits to protected paths: the constitution, `spec.md`, the settings and `.sdd/`, except `.sdd/scratch/` (a task's throw-away files go in `.sdd/scratch/<run id>/<task id>/`).
    The guard fails closed: if the guard itself errors, the call is refused.
 3. **The workflow's own rules**:
    - implementers never commit;
@@ -118,10 +195,13 @@ There are three layers, and each holds without the others:
 agents/           sdd-implementer, sdd-verifier, sdd-evaluator, sdd-bookkeeper
 skills/           sdd-init, sdd-tag, sdd-run, sdd-status, sdd-unblock
 workflows/        sdd-run.js (the Workflow script /sdd-run starts)
-bin/              sdd-tasks.py: parse / plan / tick / block / config / checkpoint;
-                  sdd-supervise.py: pause before the usage limit, resume after (stdlib only)
+bin/              sdd-tasks.py: parse / plan / tick / block / config / checkpoint / snapshot / changed / events;
+                  sdd-supervise.py: pause before the usage limit, resume after; run profiles;
+                  sdd-dashboard.py: the read-only dashboard;
+                  sdd-harvest.py: copy plugin feedback into logs/ (all stdlib only)
 hooks/            run guard (register.ts, rules.ts)
 templates/        sdd-config.toml, settings.json, agent-tags.md
+logs/             run logs and harvested plugin feedback
 tests/            python3 -m unittest discover -s tests; node --test tests/workflow.test.mjs;
                   claude plugin test .
 ```
@@ -129,6 +209,6 @@ tests/            python3 -m unittest discover -s tests; node --test tests/workf
 ## Limits
 
 - **The phase order comes from the main session.** It reads the dependencies from `tasks.md` prose. When that prose is vague, a phase depends only on Setup and Foundational.
-- **Parallel tasks share one working tree.** Their files are disjoint by construction, but the verifier's test runs can see a sibling task that is half written. Worktree isolation is planned on the Workflow's native per-agent isolation.
+- **Parallel tasks share one working tree.** Their files are disjoint by construction, but the verifier's test runs can see a sibling task that is half written. There is no worktree isolation (a config that still sets `isolation = "worktree"` is refused); it is to be rebuilt later on the Workflow's native per-agent isolation.
 - **The checks have to be fast enough** to run after every group.
 - **`[ui]` work is not checked in a browser** during a run.
