@@ -127,6 +127,15 @@ The simple alternative, for runs that hit the limit at most twice: start `/sdd-r
 
 A resume refuses to start when a task's description, tags, dependencies or named files changed in `tasks.md` since the run began, and lists those task ids. Ticking boxes or reformatting does not count.
 
+### Stop and resume
+
+You can stop a run and continue it later from the dashboard, without a terminal. This works for **supervised runs only**: start the run with `python3 <plugin>/bin/sdd-supervise.py --project .` (as above), then start the dashboard on the same project. For a run started with `/sdd-run` in a session, the buttons are disabled and show the supervisor command instead; they are also disabled when the supervisor that wrote `status.json` is no longer alive.
+- **Stopping**: you clicked "Stop after current task". The running agent finishes first, so nothing is lost, and the run stops at that safe point. "Stop now" (with a confirm) stops at once; only the step in flight is redone on resume.
+- **Held** ("Stopped by you"): the supervisor waits for Resume, at most `--max-wait-hours`, and then ends. Resume starts `/sdd-run` again, which reads the journal and continues; that cycle counts toward `--max-cycles`.
+- **Waiting** for a usage window to reset: Stop and Resume are disabled. "Keep paused" makes the supervisor go to held at the reset instead of restarting the run; "Let it resume" cancels that before the reset.
+
+The dashboard never starts, signals or kills a process. Each button writes only one file, `control.json`, in the supervisor's state directory (`~/.local/state/speckit-agents/<project>/`, outside the project); the supervisor reads it, acts on it and deletes it. These routes refuse requests from another origin or without a JSON body.
+
 ### Learnings and plugin feedback
 
 At the end of every run, interrupted or not, the main session writes down two kinds of notes:
@@ -147,7 +156,7 @@ It appends the entries it has not seen before to `logs/<date>-<project>-feedback
 python3 <plugin>/bin/sdd-dashboard.py [--project DIR] [--port 8765]
 ```
 
-A read-only view of one project, the one it was started with (the current directory by default); it never scans for others. It works without any AI model.
+A read-only view of one project, the one it was started with (the current directory by default); it never scans for others. It works without any AI model. Its only write is the run control file of a supervised run (see [Stop and resume](#stop-and-resume)), never in the project.
 - **Documents** of the active feature (`run.feature` in the config, else `.specify/feature.json`, else the only folder under `specs/`; with several and neither set, it asks): spec, plan, research, data model, quickstart, tasks, `BLOCKED.md` and `decisions.md`, plus the constitution, `.sdd/learnings.md`, `.sdd/config.toml` and the run reports. Markdown is rendered with tables, highlighted code and a table of contents for long documents. It serves only these fixed files, never an arbitrary path. The renderers load from jsDelivr; offline, it falls back to plain text.
 - **Tasks and phases** with one status vocabulary (icon, color and label), a "Waiting on you" list of held and blocked tasks with their questions, the runs and their events (read from the run's own workflow journal), a running task's live agent output, and a red banner for a stale `.sdd/run.json`.
 - **Localhost only.** It binds to `127.0.0.1`, has no authentication, and answers 421 to any request whose `Host` is not `127.0.0.1`, `localhost` or `[::1]` (against DNS rebinding). There is deliberately no option to listen on another address.
