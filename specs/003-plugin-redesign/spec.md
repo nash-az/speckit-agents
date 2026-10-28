@@ -8,6 +8,12 @@ see `research.md`).
 
 ## Clarifications
 
+### Session 2026-10-28
+- Q: The dashboard has API and node-function tests but no test that loads the page. Is browser
+  testing a new feature, or verification of what this spec already requires? → A: Verification of
+  FR-001 to FR-005, FR-029 and SC-002, as tasks in a Convergence phase. Only the test harness rules
+  (FR-031) and the missing-CDN fallback (FR-032) are new requirements.
+
 ### Session 2026-10-25
 - Q: Should the unified task terminal-state model (FR-007) cover only parked/waiting-on-a-person
   states, or also transient run states (running, retrying, paused-by-usage-limit)? → A: Parked
@@ -278,6 +284,17 @@ The person watching a supervised run wants to stop it, and later continue it, wi
   whose `Content-Type` is not `application/json` (`415`), so a web page on another origin cannot
   drive them (FR-022 covers DNS rebinding; this covers cross-site requests).
 
+- **FR-031**: The dashboard's views MUST be verified by tests that load the page in a real browser
+  (Chromium through Playwright for Python) against a temporary toy project, and fail on any console
+  error, uncaught exception or failed same-origin request. These tests MUST skip, not fail, when
+  Playwright or its Chromium is missing (`SDD_UI_TESTS=1` turns the skip into a failure), MUST serve
+  the CDN scripts from pinned local copies so a run is offline, MUST save a screenshot and the page
+  HTML under `.sdd/scratch/ui/` when one fails, and MUST NOT be part of the default
+  `checks.commands`.
+- **FR-032**: When `marked`, `highlight.js` or `DOMPurify` cannot be loaded, the Documents view MUST
+  show the document's raw text with a one-line notice instead of an empty pane, and every other view
+  MUST keep working.
+
 ### Key Entities
 - **Run control request**: one command (`stop` with a mode, `resume`, `hold` or `release`), an id and a time, written by
   the dashboard and consumed and deleted by the supervisor.
@@ -308,6 +325,8 @@ The person watching a supervised run wants to stop it, and later continue it, wi
   completes a task; its report lists the configured model per role.
 - **SC-006**: After two runs and one harvest, the project's `.sdd/learnings.md` has entries from
   both runs, and the plugin's `logs/` has each plugin feedback entry exactly once.
+- **SC-007**: Removing the rendering code of any one dashboard view (for example the status badge on
+  the task card) makes at least one browser test fail and name the view.
 
 ## Out of Scope
 - Chat window for free-form questions, spec authoring and amendments (backlog item 40): the next
