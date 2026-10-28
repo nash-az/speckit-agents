@@ -28,7 +28,7 @@ fails, stop and report `blocked` with the failing output rather than rewriting t
 ## Phase 1: Setup
 
 - [ ] T001 Confirm the baseline: run the three test commands above on the unchanged tree and record the results (pass/fail counts) in `specs/003-plugin-redesign/research.md` under a new heading `## Baseline test run`. Do not fix failures here; list them.
-- [ ] T002 [P] Check whether anything uses `package.json` / `package-lock.json` (both added in commit `a8de64b`; `package.json` is `{}`): search the repo for `require(`, `import ` of non-relative modules in `workflows/`, `hooks/`, `tests/*.mjs`, `tests/*.ts`. If nothing needs an npm package, delete both files; otherwise leave them and write which file needs them into `research.md` under `## package.json`.
+- [x] T002 [P] Check whether anything uses `package.json` / `package-lock.json` (both added in commit `a8de64b`; `package.json` is `{}`): search the repo for `require(`, `import ` of non-relative modules in `workflows/`, `hooks/`, `tests/*.mjs`, `tests/*.ts`. If nothing needs an npm package, delete both files; otherwise leave them and write which file needs them into `research.md` under `## package.json`.
 
 ---
 
