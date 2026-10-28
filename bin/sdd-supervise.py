@@ -279,14 +279,14 @@ def thresholds(text: str) -> dict[str, float]:
     return out
 
 
-def main(argv: list[str]) -> int:
+def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--threshold", type=thresholds, default=DEFAULT_THRESHOLDS,
                         help="pause when a window reaches this share (0–1): one for all, or per window, "
                              f"e.g. {DEFAULT_THRESHOLDS}")
-    parser.add_argument("--hard-stop", type=float, default=0.99,
-                        help="stop at once at this share, safe point or not (at least 1 point above the window's threshold)")
+    parser.add_argument("--hard-stop", type=float, default=None,
+                        help="stop at once at this utilization (default: each window's threshold + 0.01)")
     parser.add_argument("--run-args", default="", help='extra /sdd-run arguments, e.g. "--phases 15"')
     parser.add_argument("--max-wait-hours", type=float, default=12.0)
     parser.add_argument("--max-cycles", type=int, default=20)
@@ -298,7 +298,14 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--pause-after", type=int, default=0, help=argparse.SUPPRESS)  # e2e tests
     args = parser.parse_args(argv)
     args.project = args.project.resolve()
-    args.hard_stops = {name: min(1.0, max(args.hard_stop, round(t + 0.01, 2))) for name, t in args.threshold.items()}
+    # Per window (data-model §10): an explicit --hard-stop for all, else each window's threshold + 1 point.
+    args.hard_stops = {name: min(1.0, args.hard_stop if args.hard_stop is not None else round(t + 0.01, 2))
+                       for name, t in args.threshold.items()}
+    return args
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
     if not (args.project / ".sdd" / "config.toml").exists():
         say(f"{args.project} has no .sdd/config.toml: run /sdd-init there first")
         return 2

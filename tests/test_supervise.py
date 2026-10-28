@@ -45,6 +45,30 @@ class SleepUntilTest(unittest.TestCase):
         self.assertLess(time.time(), t0 + 2)
 
 
+class HardStopTest(unittest.TestCase):
+    """The hard stop is per window (FR-028, data-model §10)."""
+
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("sup", SCRIPT)
+        self.sup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.sup)
+
+    def test_defaults_are_each_windows_threshold_plus_one_point(self):
+        stops = self.sup.parse_args([]).hard_stops
+        self.assertEqual(stops["five_hour"], 0.96)
+        self.assertEqual(stops["seven_day"], 1.0)
+
+    def test_explicit_hard_stop_applies_to_every_window(self):
+        stops = self.sup.parse_args(["--hard-stop", "0.97"]).hard_stops
+        self.assertEqual(stops["five_hour"], 0.97)
+        self.assertEqual(stops["seven_day"], 0.97)
+
+    def test_hard_stop_is_capped_at_one(self):
+        stops = self.sup.parse_args(["--hard-stop", "1.5"]).hard_stops
+        self.assertEqual(set(stops.values()), {1.0})
+
+
 class SuperviseTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -72,7 +96,8 @@ class SuperviseTest(unittest.TestCase):
         self.assertIn("/sdd-run --yes", calls[0])
 
     def test_pauses_after_the_next_agent_finishes_and_resumes(self):
-        cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.96), {"sleep": 0.5},
+        # 95 %: at the five-hour threshold, below its hard stop (threshold + 1 point).
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.95), {"sleep": 0.5},
                   finished("a"), started("b", "verify:T1"), {"sleep": 30}, *DONE]
         out, calls, took = self.supervise([cycle1, [{"transcript": True}, *DONE]])
         self.assertEqual(out.returncode, 0, out.stdout)
@@ -82,7 +107,7 @@ class SuperviseTest(unittest.TestCase):
         self.assertIn("safe point", out.stdout)
 
     def test_does_not_stop_mid_agent_below_the_hard_stop(self):
-        cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.96), {"sleep": 1.0}, *DONE]
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.95), {"sleep": 1.0}, *DONE]
         out, calls, _ = self.supervise([cycle1])
         self.assertEqual(len(calls), 1, "no safe point came, so the run was allowed to finish")
         self.assertEqual(out.returncode, 0, out.stdout)
@@ -122,7 +147,7 @@ class SuperviseTest(unittest.TestCase):
     def test_follows_a_relaunched_workflow_to_its_safe_point(self):
         # The first workflow is left with an agent that never finishes; the second one carries on.
         cycle1 = [{"transcript": True}, started("a", "verify:T1"), {"transcript": "wf2"}, started("b", "impl:T2"),
-                  rate(utilization=0.96), {"sleep": 0.5}, finished("b"), started("c", "verify:T2"), {"sleep": 30}, *DONE]
+                  rate(utilization=0.95), {"sleep": 0.5}, finished("b"), started("c", "verify:T2"), {"sleep": 30}, *DONE]
         out, calls, took = self.supervise([cycle1, [*DONE]])
         self.assertEqual(len(calls), 2, out.stdout)
         self.assertLess(took, 25)

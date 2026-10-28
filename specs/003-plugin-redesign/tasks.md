@@ -151,7 +151,7 @@ All tasks edit `bin/sdd-dashboard.py` (and `tests/test_sdd_dashboard.py`), so th
 
 ## Phase 9: Polish & cross-cutting
 
-- [ ] T040 [P] In `bin/sdd-supervise.py` make the hard stop per window (FR-028, data-model.md §10): `--hard-stop` default `None`, `args.hard_stops = {name: min(1.0, args.hard_stop if args.hard_stop is not None else round(t + 0.01, 2)) for name, t in args.threshold.items()}`, help text as in §10. Tests in `tests/test_supervise.py`: defaults give five_hour 0.96 and seven_day 1.0; `--hard-stop 0.97` gives 0.97 for both.
+- [x] T040 [P] In `bin/sdd-supervise.py` make the hard stop per window (FR-028, data-model.md §10): `--hard-stop` default `None`, `args.hard_stops = {name: min(1.0, args.hard_stop if args.hard_stop is not None else round(t + 0.01, 2)) for name, t in args.threshold.items()}`, help text as in §10. Tests in `tests/test_supervise.py`: defaults give five_hour 0.96 and seven_day 1.0; `--hard-stop 0.97` gives 0.97 for both.
 - [ ] T041 Update `README.md`: run profiles and role models (with the local-model caveat), what `resolved`/`wontfix`/`moved` mean, the four `.gitignore` lines, learnings and `bin/sdd-harvest.py`, the dashboard's documents and localhost-only rule. Keep the existing structure and style; remove any statement the tasks above made false.
 - [ ] T042 Run the full validation in `specs/003-plugin-redesign/quickstart.md` (§1–§8) and record each section's result (pass/fail and one line of evidence) at the end of `quickstart.md` under `## Validation run`. Any failure is reported, not patched in this task.
 
