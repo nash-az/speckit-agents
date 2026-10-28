@@ -27,7 +27,7 @@ function argsFor(ids, resume) {
 async function run(ids, script = {}, resume, asArgs = a => a, budget = { total: null, spent: () => 0, remaining: () => Infinity }) {
   const calls = []
   const agent = async (prompt, opts) => {
-    calls.push({ label: opts.label, prompt })
+    calls.push({ label: opts.label, prompt, opts })
     const answer = script[opts.label]
     if (typeof answer === 'function') return answer(prompt)
     if (answer !== undefined) return answer
@@ -152,6 +152,44 @@ test('the workflow uses nothing the engine refuses: no import(), require(), cloc
   for (const banned of ['import(', 'require(', 'Date.now(', 'Math.random(', 'new Date()']) {
     assert.ok(!raw.includes(banned), `workflows/sdd-run.js contains ${banned}`)
   }
+})
+
+// Role models (data-model.md §5.4, FR-011).
+const withModels = agentModels => a => Object.assign(a, { agentModels })
+
+test('agentModels.implementer sets model on the implementer calls only', async () => {
+  const { calls } = await run(['T1'], {}, undefined, withModels({ implementer: 'haiku' }))
+  for (const c of calls) {
+    if (c.label.startsWith('impl:')) assert.equal(c.opts.model, 'haiku', c.label)
+    else assert.ok(!('model' in c.opts), `${c.label} has a model key`)
+  }
+  assert.ok(calls.some(c => c.label === 'impl:T1'))
+})
+
+test("agentModels 'inherit' or no entry passes no model key", async () => {
+  for (const models of [{ implementer: 'inherit', verifier: 'inherit' }, {}, undefined]) {
+    const { calls } = await run(['T1'], {}, undefined, withModels(models))
+    for (const c of calls) assert.ok(!('model' in c.opts), `${c.label} has a model key with ${JSON.stringify(models)}`)
+  }
+})
+
+test('agentModels per role: evaluator for eval tasks, verifier, bookkeeper, implementer for repair', async () => {
+  const models = { implementer: 'm-impl', evaluator: 'm-eval', verifier: 'm-ver', bookkeeper: 'm-book' }
+  const evalT1 = a => { a.plan.phases[0].tasks.T1.tags = ['eval']; return withModels(models)(a) }
+  const { calls } = await run(['T1'], {}, undefined, evalT1)
+  const byLabel = Object.fromEntries(calls.map(c => [c.label, c.opts.model]))
+  assert.deepEqual(byLabel, { 'eval:T1': 'm-eval', 'verify:T1': 'm-ver', 'commit:T1': 'm-book' })
+
+  let commits = 0
+  const failing = { checks_ran: true, checks_passed: false, failing_output: 'boom', commits: [], blocked_recorded: [] }
+  const passing = { checks_ran: true, checks_passed: true, failing_output: '', commits: ['c1'], blocked_recorded: [] }
+  const r = await run(['T1'], {
+    'commit:T1': () => (commits++ === 0 ? failing : passing),
+    'repair:T1': { status: 'done', summary: 'fixed', files_changed: ['x.py'] },
+  }, undefined, withModels(models))
+  const repair = r.calls.find(c => c.label === 'repair:T1')
+  assert.ok(repair, `no repair call in ${r.labels}`)
+  assert.equal(repair.opts.model, 'm-impl')
 })
 
 test('credit-aware pause skips starting a new agent when remaining budget is below RESERVE', async () => {

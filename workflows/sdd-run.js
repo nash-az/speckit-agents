@@ -16,6 +16,7 @@ export const meta = {
 //   checks: ["<shell command>", ...], max_retries, allow, commit_trailer,
 //   resume,                                                // optional: `sdd-tasks.py checkpoint` of an interrupted run
 //   taskAllow,                                             // { "<task id>": { dependencies, downloads } } per-task overrides
+//   agentModels,                                           // optional: { implementer, verifier, evaluator, bookkeeper } → model or 'inherit'
 // }
 // An agent that comes back null was cut off (usage limit, crash, stop), so its task is
 // `interrupted`, never `failed`: the run stops without recording anything, and the next run
@@ -28,6 +29,9 @@ const MAX_RETRIES = A.max_retries ?? 2
 const RESERVE = 150_000
 const RESUME = A.resume?.tasks ?? {}
 const TASK_ALLOW = A.taskAllow ?? {}
+// Model per role (data-model.md §5.4, FR-011): no entry or 'inherit' leaves the session's model.
+const AGENT_MODELS = A.agentModels ?? {}
+const modelOpt = role => (AGENT_MODELS[role] && AGENT_MODELS[role] !== 'inherit') ? { model: AGENT_MODELS[role] } : {}
 // No event feed here: workflow scripts have no file system and no clock. The run's events are
 // derived from the engine's journal by `sdd-tasks.py events` (data-model.md §3.9).
 
@@ -113,6 +117,7 @@ async function implement(task, feedback, attempt, continuing) {
     phase: 'Build',
     agentType: evalTask ? 'speckit-agents:sdd-evaluator' : 'speckit-agents:sdd-implementer',
     schema: IMPLEMENT_SCHEMA,
+    ...modelOpt(evalTask ? 'evaluator' : 'implementer'),
   })
 }
 
@@ -132,6 +137,7 @@ async function verify(task, result) {
     phase: 'Build',
     agentType: 'speckit-agents:sdd-verifier',
     schema: VERIFY_SCHEMA,
+    ...modelOpt('verifier'),
   })
 }
 
@@ -210,7 +216,7 @@ async function bookkeep(outcomes, mode, failing, note) {
     `Blocked tasks to record (JSON): ${JSON.stringify(blocked.map(o => ({ id: o.id, tag: o.tag ?? 'failed', reason: o.reason, question: o.question ?? '', files: o.files ?? [], stash: !!o.stash })))}`,
     note ? `\n${note}` : '',
   ].join('\n')
-  return agent(prompt, { label: `commit:${outcomes.map(o => o.id).join(',')}`, phase: 'Commit', agentType: 'speckit-agents:sdd-bookkeeper', schema: BOOKKEEP_SCHEMA, effort: 'low' })
+  return agent(prompt, { label: `commit:${outcomes.map(o => o.id).join(',')}`, phase: 'Commit', agentType: 'speckit-agents:sdd-bookkeeper', schema: BOOKKEEP_SCHEMA, effort: 'low', ...modelOpt('bookkeeper') })
 }
 
 async function repair(outcomes, failing) {
@@ -223,7 +229,7 @@ async function repair(outcomes, failing) {
     '',
     'Fix the cause without dropping any task\'s behaviour. Do not weaken or skip tests.',
   ].join('\n')
-  return agent(prompt, { label: `repair:${ids.join(',')}`, phase: 'Build', agentType: 'speckit-agents:sdd-implementer', schema: IMPLEMENT_SCHEMA })
+  return agent(prompt, { label: `repair:${ids.join(',')}`, phase: 'Build', agentType: 'speckit-agents:sdd-implementer', schema: IMPLEMENT_SCHEMA, ...modelOpt('implementer') })
 }
 
 // ---- main loop ----
