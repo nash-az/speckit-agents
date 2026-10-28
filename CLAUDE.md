@@ -62,9 +62,17 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
     **Phase 8 (T038–T039) is implemented** (run `20261028-0947`, 2 task commits, no blocks; 193 Python and 24 node tests pass).
     T038 is skill text, only exercised by a real run (quickstart §5, T042). Phase 9 is next: T040–T041 first (`--phases 9 --max-tasks 2`),
     T042 (full validation) only after Phase 10 (stop/resume, T045–T048) is built.
+    **Phase 9 T040–T041 are implemented** (run `20261028-0957`, 2 task commits, no blocks; 196 Python and 24 node tests pass).
+    Remaining: Phase 10 (T045–T048), then T042 (full validation), and T002.
+  - **Branch:** every run since Phase 4 continued on `auto/20261027-2024` (the skill stays on a current `auto/` branch), so
+    Phases 4–9 and the doc commits since `a575a64` are NOT on `main` yet. Merging is the user's call; nothing is pushed.
+    A leftover branch `worktree-agent-a8daf0fca12087451` is checked out in some worktree; not created by these runs, left alone.
   - **Run launch that pauses at the usage limit and does not resume at the refresh:**
-    `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5-5 python3 bin/sdd-supervise.py --project <repo> --run-args "--no-converge --phases N" --max-wait-hours 0 --max-cycles 1`
+    `ANTHROPIC_MODEL=claude-opus-5-5 CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5-5 python3 bin/sdd-supervise.py --project <repo> --run-args "--no-converge --phases N" --max-wait-hours 0 --max-cycles 1`
     (run in the background with output to a file). The tree must be clean first, so commit doc edits before launching and make none during the run.
+    `ANTHROPIC_MODEL` puts the orchestrating `claude -p` on Opus; without it that session runs on the default (Sonnet 5.5), and
+    one such run stopped at step 6.2 on a permission denial. "the run finished" from the supervisor only means the process exited:
+    check `tasks.md` ticks and `git log` before calling it done.
     Watch it with a Monitor that polls `pgrep -f "sdd-supervise.py.*--phases N"` and exits when the process is gone; never `tail -f`,
     which keeps the watch armed until its timeout (see memory `feedback-monitor-must-end`).
   - **Was paused before Phase 4 (user):** design research for the finished dashboard is done and awaiting review:
