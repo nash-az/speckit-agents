@@ -1523,7 +1523,8 @@ class DecisionsTest(unittest.TestCase):
     def test_the_page_has_a_decisions_view_with_a_save_button(self):
         html = dash.build_html()
         for needle in ('id="section-decisions"', "function loadDecisions", "/api/decisions/answer",
-                       "decision-submit", "Show decisions.md"):
+                       "decision-submit", "Show decisions.md", "function decisionTextHtml",
+                       "decision-choices"):
             self.assertIn(needle, html)
 
 

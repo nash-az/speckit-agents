@@ -1083,6 +1083,15 @@ def build_html():
   .event-payload { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; padding-left: 0.75rem; }
 
   /* Buttons */
+  .decision-text { font-size: 0.95rem; line-height: 1.55; color: var(--text); margin-bottom: 0.5rem; }
+  .decision-text p { margin: 0 0 0.6rem; }
+  .decision-text code { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; padding: 0.1rem 0.3rem; border-radius: 4px; background: var(--bg); border: 1px solid var(--border); }
+  .decision-choices { list-style: none; margin: 0 0 0.6rem; padding: 0; display: grid; gap: 0.4rem; }
+  .decision-choices li { padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+  .decision-choices li.recommended { border-color: var(--accent); }
+  .choice-key { font-family: 'JetBrains Mono', monospace; font-weight: 700; margin-right: 0.35rem; }
+  .choice-rec { margin-left: 0.4rem; font-size: 0.75rem; font-weight: 600; color: var(--accent); }
+  .decision-after { color: var(--text-muted); font-size: 0.85rem; }
   .decision-answer { width: 100%; margin: 0.5rem 0; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; font-size: 0.875rem; box-sizing: border-box; }
   .decision-options { margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
   .decision-saved { margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted, inherit); }
@@ -1855,6 +1864,31 @@ def build_html():
       return out;
     }
 
+    // A decision task's text is one paragraph: "<question> Options: (a) …; (b) …; (c) …. Recommend (b). <what to record>".
+    // Show it as the question, a list of options (the recommended one marked) and the rest, with `code` styled.
+    function inlineCode(text) {
+      return escapeHtml(text).replace(/`([^`]+)`/g, '<code>$1</code>');
+    }
+
+    function decisionTextHtml(text) {
+      text = String(text || '');
+      var m = text.match(/^([\\s\\S]*?)\\s*Options?:\\s*([\\s\\S]*)$/);
+      if (!m) return '<div class="decision-text">' + inlineCode(text) + '</div>';
+      var question = m[1], rest = m[2], after = '', rec = null;
+      var r = rest.match(/^([\\s\\S]*?)\\s*Recommend(?:ed)?:?\\s*\\(([a-z])\\)[^.]*\\.?\\s*([\\s\\S]*)$/);
+      if (r) { rest = r[1]; rec = r[2]; after = r[3]; }
+      var parts = rest.split(/(?:^|[;.]?\\s+)\\(([a-z])\\)\\s+/).filter(function(x) { return x !== ''; });
+      var items = [];
+      for (var i = 0; i + 1 < parts.length; i += 2) items.push({ key: parts[i], text: parts[i + 1].replace(/[;.\\s]+$/, '') });
+      if (!items.length) return '<div class="decision-text">' + inlineCode(text) + '</div>';
+      return '<div class="decision-text"><p>' + inlineCode(question) + '</p>' +
+        '<ul class="decision-choices">' + items.map(function(o) {
+          return '<li' + (o.key === rec ? ' class="recommended"' : '') + '><span class="choice-key">(' + escapeHtml(o.key) + ')</span> ' +
+            inlineCode(o.text) + (o.key === rec ? ' <span class="choice-rec">recommended</span>' : '') + '</li>';
+        }).join('') + '</ul>' +
+        (after ? '<p class="decision-after">' + inlineCode(after) + '</p>' : '') + '</div>';
+    }
+
     function decisionHtml(d) {
       var opts = decisionOptions(d.text).map(function(o) {
         return '<button class="btn decision-option" data-task="' + escapeHtml(d.id) + '" data-option="' + escapeHtml(o) + '">Choose (' + escapeHtml(o) + ')</button>';
@@ -1865,7 +1899,7 @@ def build_html():
         : '';
       return '<div class="blocked-item decision-item" data-task="' + escapeHtml(d.id) + '">' +
         '<div class="blocked-header"><div class="blocked-id">' + escapeHtml(d.id) + '</div>' + statusBadge('held', { tag: 'decision' }) + '</div>' +
-        '<div class="blocked-reason">' + escapeHtml(d.text) + '</div>' +
+        decisionTextHtml(d.text) +
         (opts ? '<div class="decision-options">' + opts + '</div>' : '') +
         '<textarea class="decision-answer" id="answer-' + escapeHtml(d.id) + '" rows="3" placeholder="Your decision, and why"></textarea>' +
         '<button class="btn decision-submit" data-task="' + escapeHtml(d.id) + '">Save decision</button>' + pending + '</div>';
