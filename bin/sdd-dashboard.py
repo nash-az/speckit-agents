@@ -31,11 +31,12 @@ Endpoints:
     POST /api/run/hold            -- while waiting for a usage window: stay paused after the reset
     POST /api/run/release         -- undo hold
     GET /api/decisions            -- open [decision] tasks, with answers already given (FR-033)
-    POST /api/decisions/answer    -- { "task", "answer" } record a decision answer for /sdd-unblock
+    POST /api/decisions/answer    -- { "task", "answer" } save a decision answer and apply it (sdd-decide.py)
+    POST /api/decisions/apply     -- { "task" } try again to apply a saved answer
 Every POST needs an allowed Origin and `Content-Type: application/json` (data-model.md §4.9).
 The control routes write one request to `control.json`, and the answer route one file per answer in
-`answers/` of the supervisor's state directory, both outside the project; nothing else is ever
-written (§4.8, FR-033).
+`answers/` of the supervisor's state directory, both outside the project. Applying an answer calls
+`sdd-decide.py`, which commits the decision files (FR-033); nothing else is ever written (§4.8).
 """
 
 from __future__ import annotations
@@ -56,6 +57,8 @@ from pathlib import Path
 # (data-model.md §4.1). The hyphen in the file name prevents a plain import.
 _spec = importlib.util.spec_from_file_location("sdd_tasks", Path(__file__).with_name("sdd-tasks.py"))
 sdd_tasks = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_tasks)
+_spec = importlib.util.spec_from_file_location("sdd_decide", Path(__file__).with_name("sdd-decide.py"))
+sdd_decide = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_decide)
 
 # The supervisor's state directory comes from the supervisor itself, so both use the same one
 # (data-model.md §12.3).
@@ -347,6 +350,18 @@ def write_answer(project: Path, task_id: str, answer: str) -> None:
         tmp = target_dir / f"{task_id}.json.tmp"
         tmp.write_text(json.dumps(record) + "\n", encoding="utf-8")
         os.replace(tmp, target_dir / f"{task_id}.json")
+
+
+def try_apply(project: Path, feature: Path, task_id: str, answer: str) -> dict:
+    """Apply a saved answer with `sdd-decide.py` (FR-033). On success the answer file is removed and the
+    result carries the commit; when it is refused (a run is active, other changes in the tree, not a
+    repository) the answer stays saved and the result says why, so the person can retry."""
+    try:
+        result = sdd_decide.apply(project, feature, task_id, answer,
+                                  remove_after=answers_dir(project) / f"{task_id}.json")
+    except sdd_decide.Refused as e:
+        return {"applied": False, "reason": str(e)}
+    return {"applied": True, "commit": result["commit"], "files": result["files"]}
 
 
 # A run whose journal or agent transcripts changed within this many seconds is `running` (§4.5).
@@ -697,7 +712,31 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_json({"error": "not an open decision"}, 404, cors)
             return
         write_answer(proj, task_id, answer.strip())
-        self._send_json({"ok": True}, 202, cors)
+        outcome = try_apply(proj, feature, task_id, answer.strip())
+        self._send_json({"ok": True, **outcome}, 200 if outcome["applied"] else 202, cors)
+
+    def _apply_saved(self):
+        """`POST /api/decisions/apply` `{"task": "T062"}`: try again to apply the answer saved for that task."""
+        cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
+        try:
+            data = self._read_json_body()
+        except ValueError:
+            data = None
+        task_id = data.get("task") if isinstance(data, dict) else None
+        if not isinstance(task_id, str) or not TASK_ID_RE.match(task_id):
+            self._send_json({"error": "task must be a task id such as T062"}, 400, cors)
+            return
+        proj = DashboardHandler.project
+        feature = self._feature_dir()
+        if feature is None:
+            self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409, cors)
+            return
+        saved = read_answers(proj).get(task_id)
+        if not saved:
+            self._send_json({"error": "no saved answer for that task"}, 404, cors)
+            return
+        outcome = try_apply(proj, feature, task_id, saved["answer"])
+        self._send_json({"ok": True, **outcome}, 200 if outcome["applied"] else 202, cors)
 
     def _feature_dir(self):
         """The person's in-memory choice if one was made, else active_feature()."""
@@ -839,6 +878,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/api/decisions/answer":
             self._answer()
+            return
+        if path == "/api/decisions/apply":
+            self._apply_saved()
             return
         if path == "/api/project/select":
             try:
@@ -1895,7 +1937,8 @@ def build_html():
       }).join(' ');
       var pending = d.pending
         ? '<div class="decision-saved">Your answer is saved: <em>' + escapeHtml(d.pending.answer) + '</em>. ' +
-          'Apply it with <code>/sdd-unblock</code> in your Claude session; you can change it until then.</div>'
+          'It is not applied yet. <button class="btn decision-apply" data-task="' + escapeHtml(d.id) + '">Apply now</button> ' +
+          'You can change the answer until it is applied.</div>'
         : '';
       return '<div class="blocked-item decision-item" data-task="' + escapeHtml(d.id) + '">' +
         '<div class="blocked-header"><div class="blocked-id">' + escapeHtml(d.id) + '</div>' + statusBadge('held', { tag: 'decision' }) + '</div>' +
@@ -1924,6 +1967,18 @@ def build_html():
       }).catch(function(e) { console.error('loadDecisions error', e); });
     }
 
+    function applyDecision(task) {
+      fetch('/api/decisions/apply', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: task })
+      }).then(function(res) {
+        return res.json().then(function(d) { return { ok: res.ok, status: res.status, body: d || {} }; });
+      }).then(function(r) {
+        if (!r.ok) { toast('Could not apply the decision (' + r.status + ')'); return; }
+        toast(r.body.applied ? 'Decision applied and committed (' + r.body.commit + ')' : 'Not applied: ' + r.body.reason);
+        loadDecisions();
+      }).catch(function(e) { console.error('applyDecision error', e); toast('Could not apply the decision'); });
+    }
+
     function saveDecision(task) {
       var box = document.getElementById('answer-' + task);
       var answer = box ? box.value.trim() : '';
@@ -1932,8 +1987,12 @@ def build_html():
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task: task, answer: answer })
       }).then(function(res) {
-        toast(res.ok ? 'Saved. Run /sdd-unblock to apply it.' : 'Could not save the decision (' + res.status + ')');
-        if (res.ok) { if (box) box.blur(); loadDecisions(); }
+        return res.json().then(function(d) { return { ok: res.ok, status: res.status, body: d || {} }; });
+      }).then(function(r) {
+        if (!r.ok) { toast('Could not save the decision (' + r.status + ')'); return; }
+        toast(r.body.applied ? 'Decision applied and committed (' + r.body.commit + ')' : 'Saved, not applied: ' + r.body.reason);
+        if (box) box.blur();
+        loadDecisions();
       }).catch(function(e) { console.error('saveDecision error', e); toast('Could not save the decision'); });
     }
 
@@ -1941,6 +2000,7 @@ def build_html():
       var t = ev.target;
       if (!t || !t.classList) return;
       if (t.classList.contains('decision-submit')) saveDecision(t.getAttribute('data-task'));
+      if (t.classList.contains('decision-apply')) applyDecision(t.getAttribute('data-task'));
       if (t.classList.contains('decision-option')) {
         var box = document.getElementById('answer-' + t.getAttribute('data-task'));
         if (box) { box.value = '(' + t.getAttribute('data-option') + ') ' + box.value.replace(/^\\([a-z]\\)\\s*/, ''); box.focus(); }

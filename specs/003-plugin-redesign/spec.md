@@ -13,9 +13,9 @@ see `research.md`).
   testing a new feature, or verification of what this spec already requires? → A: Verification of
   FR-001 to FR-005, FR-029 and SC-002, as tasks in a Convergence phase. Only the test harness rules
   (FR-031) and the missing-CDN fallback (FR-032) are new requirements.
-- Q: Should the dashboard let the person make decisions, not just see them? → A: Yes (FR-033), but the
-  answer is saved in the state directory and applied by `/sdd-unblock`, so the dashboard still
-  writes nothing in the project (FR-020).
+- Q: Should the dashboard let the person make decisions, not just see them? → A: Yes (FR-033), with a button that
+  applies the decision and commits it (user choice, 2026-10-29), so no terminal step is needed. This
+  is the one exception to FR-020 besides the control file.
 
 ### Session 2026-10-25
 - Q: Should the unified task terminal-state model (FR-007) cover only parked/waiting-on-a-person
@@ -249,8 +249,8 @@ The person watching a supervised run wants to stop it, and later continue it, wi
 - **FR-020**: The dashboard server MUST NOT write, delete or modify project files or git history
   itself. Any future action (creating a spec, amending a task) MUST be delegated to a Claude Code
   session that performs it under the run guard. This feature documents that action channel's shape
-  and ships no action routes. The only exceptions are FR-029 and FR-033: one control request file and
-  one answer file per decision in the supervisor's state directory, which is outside the project.
+  and ships no other action routes. The only exceptions are FR-029 (one control request file in the
+  supervisor's state directory, outside the project) and FR-033 (saving and applying a decision).
 - **FR-021**: A running task's dashboard view MUST show its live agent output (a tail of its
   transcript), or a clear "not available yet" state — never an error.
 - **FR-022**: The dashboard server MUST bind only to localhost, and MUST reject requests whose Host
@@ -297,12 +297,17 @@ The person watching a supervised run wants to stop it, and later continue it, wi
 - **FR-032**: When `marked`, `highlight.js` or `DOMPurify` cannot be loaded, the Documents view MUST
   show the document's raw text with a one-line notice instead of an empty pane, and every other view
   MUST keep working.
-- **FR-033**: The dashboard MUST let a person answer an open `[decision]` task: a Decisions view lists
-  every open decision task with its text and a box for the answer, `POST /api/decisions/answer`
-  (with the FR-030 checks) saves the answer as `answers/<task id>.json` in the supervisor's state
-  directory, and nothing in the project changes (FR-020). `/sdd-unblock` reads those files, applies
-  the answers as it does for a decision given in chat, and deletes them. The view shows an answer
-  saved but not yet applied, and lets the person change it until it is applied.
+- **FR-033**: The dashboard MUST let a person settle an open `[decision]` task without a terminal. A
+  Decisions view lists every open decision task, formatted as its question, its options and what to
+  record, with a box for the answer. `POST /api/decisions/answer` (with the FR-030 checks) saves the
+  answer as `answers/<task id>.json` in the supervisor's state directory and then applies it through
+  `bin/sdd-decide.py`, the one place the dashboard changes the project: it appends the decision to the
+  feature's `decisions.md`, adds it under the heading the task names in `research.md`, ticks the task,
+  and commits exactly those files. It MUST refuse, and change nothing, when a run is active
+  (`.sdd/run.json`), when the working tree has any other change, when the project is not a git
+  repository, or when the task is not an open decision; the saved answer then stays and the view shows
+  the reason and an "Apply now" button. If the commit fails the files are restored. `/sdd-unblock`
+  applies any answer file still waiting.
 
 ### Key Entities
 - **Run control request**: one command (`stop` with a mode, `resume`, `hold` or `release`), an id and a time, written by

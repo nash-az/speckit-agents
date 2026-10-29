@@ -1520,11 +1520,45 @@ class DecisionsTest(unittest.TestCase):
         request(self, "POST", "/api/decisions/answer", body, content_type="text/plain", status=415)
         self.assertFalse(self.answers.exists())
 
+    def init_git(self):
+        import subprocess
+        for args in (("init", "-q"), ("config", "user.email", "t@example.com"), ("config", "user.name", "T"),
+                     ("add", "."), ("commit", "-q", "-m", "init")):
+            subprocess.run(["git", *args], cwd=self.root, capture_output=True, check=True)
+
+    def test_saving_applies_and_commits_when_the_tree_is_clean(self):
+        self.init_git()
+        data = request(self, "POST", "/api/decisions/answer", {"task": "T001", "answer": "(b)"}, status=200)
+        self.assertTrue(data["applied"])
+        self.assertRegex(data["commit"], r"^[0-9a-f]{7,}$")
+        self.assertIn("- [x] T001", (self.root / "specs" / "001-a" / "tasks.md").read_text())
+        self.assertIn("T001", (self.root / "specs" / "001-a" / "decisions.md").read_text())
+        self.assertFalse((self.answers / "T001.json").exists())
+        self.assertEqual(request(self, "GET", "/api/decisions")["open"], [])
+
+    def test_a_refused_apply_keeps_the_answer_and_apply_can_be_retried(self):
+        self.init_git()
+        (self.root / "stray.txt").write_text("mine")
+        data = request(self, "POST", "/api/decisions/answer", {"task": "T001", "answer": "(b)"}, status=202)
+        self.assertFalse(data["applied"])
+        self.assertIn("other changes", data["reason"])
+        self.assertTrue((self.answers / "T001.json").exists())
+        self.assertIn("- [ ] T001", (self.root / "specs" / "001-a" / "tasks.md").read_text())
+        (self.root / "stray.txt").unlink()
+        data = request(self, "POST", "/api/decisions/apply", {"task": "T001"}, status=200)
+        self.assertTrue(data["applied"])
+        self.assertFalse((self.answers / "T001.json").exists())
+
+    def test_apply_needs_a_saved_answer_and_the_origin_checks(self):
+        request(self, "POST", "/api/decisions/apply", {"task": "T001"}, status=404)
+        request(self, "POST", "/api/decisions/apply", {"task": "x"}, status=400)
+        request(self, "POST", "/api/decisions/apply", {"task": "T001"}, origin="http://evil.example", status=403)
+
     def test_the_page_has_a_decisions_view_with_a_save_button(self):
         html = dash.build_html()
         for needle in ('id="section-decisions"', "function loadDecisions", "/api/decisions/answer",
                        "decision-submit", "Show decisions.md", "function decisionTextHtml",
-                       "decision-choices"):
+                       "decision-choices", "/api/decisions/apply", "Apply now"):
             self.assertIn(needle, html)
 
 
