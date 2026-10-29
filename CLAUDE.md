@@ -89,6 +89,19 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
     `/speckit-agents:ui`, removing the project picker, inbox, traceability, doc links), then run Phase 4.
   - Known gap: the implementer prompt says `.sdd/scratch/<run>/<task>/` is allowed by the guard, but that carve-out is
     T036 (Phase 7); the guard refused one scratch write in run 1431.
+- **State (end of 2026-10-29):** 003 Phases 2–10 are on `main` (merged 2026-10-28, `e351492`); since then, on `main`:
+  FR-031/032 (browser tests, CDN fallback), FR-033 (answer and apply decisions in the dashboard, `bin/sdd-decide.py`) and
+  FR-034 (start a supervised run from the Runs view, `bin/sdd-launch.py`), with spec text and tasks T068–T071.
+  Phase 11 (Convergence, T049–T071) is the open work: run `20261029-1003` (started from the dashboard with a 1-task cap)
+  did T051 (UI test harness) on branch `auto/20261029-1003`, **not merged**. T049/T050 (Playwright, CDN files) were done by hand.
+  T062 (roll-up) is answered (b); T063 applies it. T052–T061, T063–T066, T069, T071 are runnable; T067 is yours.
+  - **Dashboard improvements planned for the next session:** logs/timeline/task list force-scroll on every 3 s refresh
+    (follow only when at the bottom, never scroll the newest-first timeline, redraw only on change); make task logs readable
+    (message text and tool calls, not raw JSON); `/api/run/current` says `paused` while the supervisor runs (spec §4.5 rule 3);
+    "Waiting on you" counts tasks held only behind a dependency; sidebar title clipped at the left edge.
+  - **Browser tests:** Playwright is installed for the system `python3` (via Artifactory, see `.sdd/learnings.md`); use
+    `channel="chrome"`. `tests/ui/vendor/` holds the CDN copies. The dashboard check that works today is a throwaway Node
+    script using the language app's Playwright (see learnings).
 - **`.claude/settings.local.json.bu` and `.claude/settings.provider.example.json`:** the user's own files. Keep them untracked; never commit them.
 - **Installed** at user scope as `speckit-agents@speckit-agents` from the marketplace `~/private/speckit-agents` (cache at
   commit `2f4f544`; the frozen copy in `/tmp` is no longer used). Claude Code runs the plugin from a cache pinned to a
