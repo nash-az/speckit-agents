@@ -1396,6 +1396,11 @@ def build_html():
       });
     }
 
+    // `code` spans in task and decision text.
+    function inlineCode(text) {
+      return escapeHtml(text).replace(/`([^`]+)`/g, '<code>$1</code>');
+    }
+
     // Status system (data-model.md §1). Keys match ROLLUP_ORDER in the Python code byte for byte.
     // Inline SVGs only: no icon font, no CDN.
     var SVG_OPEN = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
@@ -1563,7 +1568,7 @@ def build_html():
     function taskCardHtml(t) {
       return '<div class="task-card' + (taskStatusKey(t) === 'done' ? ' task-done' : '') + '">' +
         '<div class="task-head"><span class="task-id">' + escapeHtml(t.id) + '</span>' + taskBadge(t) + '</div>' +
-        '<div class="task-text">' + escapeHtml(t.text) + '</div>' +
+        '<div class="task-text">' + inlineCode(t.text) + '</div>' +
         '<div class="task-tags">' + tagsHtml(t.tags) + '</div>' +
         (taskStatusKey(t) === 'running' ? liveOutputHtml(t, liveLogs[t.id]) : '') + '</div>';
     }
@@ -1578,7 +1583,7 @@ def build_html():
       return '<div class="blocked-item">' +
         '<div class="blocked-header"><div class="blocked-id">' + escapeHtml(t.id) + '</div>' + taskBadge(t) + '</div>' +
         (phaseTitle ? '<div class="blocked-phase">' + escapeHtml(phaseTitle) + '</div>' : '') +
-        '<div class="task-text">' + escapeHtml(t.text) + '</div>' +
+        '<div class="task-text">' + inlineCode(t.text) + '</div>' +
         (t.status_reason ? '<div class="blocked-reason">' + escapeHtml(t.status_reason) + '</div>' : '') +
         (ask ? '<div class="blocked-question">' + escapeHtml(ask) + '</div>' : '') +
         '</div>';
@@ -1848,6 +1853,9 @@ def build_html():
         document.getElementById('stat-held').textContent = c.waiting;
         document.getElementById('stat-blocked').textContent = c.blocked;
       }).catch(function(e) { console.error('loadTasksData error', e); });
+      fetchJSON('/api/decisions', 'GET').then(function(d) {
+        document.getElementById('stat-decisions').textContent = d ? (d.open || []).length : '-';
+      });
     }
 
     // The run whose events give the transient states: the run picked in the Runs view, else the
@@ -1908,10 +1916,6 @@ def build_html():
 
     // A decision task's text is one paragraph: "<question> Options: (a) …; (b) …; (c) …. Recommend (b). <what to record>".
     // Show it as the question, a list of options (the recommended one marked) and the rest, with `code` styled.
-    function inlineCode(text) {
-      return escapeHtml(text).replace(/`([^`]+)`/g, '<code>$1</code>');
-    }
-
     function decisionTextHtml(text) {
       text = String(text || '');
       var m = text.match(/^([\\s\\S]*?)\\s*Options?:\\s*([\\s\\S]*)$/);

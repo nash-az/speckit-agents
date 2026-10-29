@@ -1558,7 +1558,8 @@ class DecisionsTest(unittest.TestCase):
         html = dash.build_html()
         for needle in ('id="section-decisions"', "function loadDecisions", "/api/decisions/answer",
                        "decision-submit", "Show decisions.md", "function decisionTextHtml",
-                       "decision-choices", "/api/decisions/apply", "Apply now"):
+                       "decision-choices", "/api/decisions/apply", "Apply now",
+                       "inlineCode(t.text)"):
             self.assertIn(needle, html)
 
 
