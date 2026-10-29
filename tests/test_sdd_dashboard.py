@@ -1443,6 +1443,16 @@ class RunControlTest(unittest.TestCase):
         self.assertEqual(dash.DashboardHandler.allow_ports, (9000, 9001))
         server.assert_called_once_with(("127.0.0.1", 8800), dash.DashboardHandler)
 
+    def test_port_zero_reports_the_chosen_port(self):
+        """`--port 0`: the first output line and the allowed Origins use the OS-chosen port (UI tests)."""
+        with mock.patch.object(dash.http.server, "ThreadingHTTPServer") as server, \
+                mock.patch("builtins.print") as out:
+            server.return_value.server_address = ("127.0.0.1", 54321)
+            server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            dash.main(["--project", str(self.root), "--port", "0"])
+        self.assertEqual(dash.DashboardHandler.port, 54321)
+        self.assertIn("http://127.0.0.1:54321 ", out.call_args_list[0].args[0])
+
 
 class DecisionsTest(unittest.TestCase):
     """FR-033: open [decision] tasks, and answers saved outside the project for /sdd-unblock."""

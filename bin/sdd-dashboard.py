@@ -2443,13 +2443,14 @@ def main(argv=None):
     args.project = args.project.resolve()
 
     DashboardHandler.project = DashboardHandler.started_project = args.project
-    DashboardHandler.port = args.port
     DashboardHandler.allow_ports = tuple(args.allow_port)
     DashboardHandler.html = build_html()
 
     # Security boundary: localhost only, no auth (FR-022). Do not add a --host option.
     server = http.server.ThreadingHTTPServer(('127.0.0.1', args.port), DashboardHandler)
-    print('speckit-agents dashboard on http://127.0.0.1:%s (project: %s)' % (args.port, args.project), flush=True)
+    # `--port 0` lets the OS pick a free port; the first output line names the real one (the UI tests read it).
+    DashboardHandler.port = args.port or server.server_address[1]
+    print('speckit-agents dashboard on http://127.0.0.1:%s (project: %s)' % (DashboardHandler.port, args.project), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
