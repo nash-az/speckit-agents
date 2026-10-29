@@ -1185,6 +1185,7 @@ def build_html():
   .start-phase, .start-option { display: block; margin: 0.35rem 0; font-size: 0.9rem; }
   .start-count { color: var(--text-muted); font-size: 0.8rem; margin-left: 0.4rem; }
   #start-run-btn { margin-top: 0.5rem; }
+  #start-max-tasks { padding: 0.25rem 0.4rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; }
   .decision-answer { width: 100%; margin: 0.5rem 0; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; font-size: 0.875rem; box-sizing: border-box; }
   .decision-options { margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
   .decision-saved { margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted, inherit); }
