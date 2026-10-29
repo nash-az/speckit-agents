@@ -186,3 +186,7 @@ cannot write to the plugin directory (sandbox), which is why harvesting is a sep
 | 38 | Learnings in the project | In 003 (FR-024) |
 | 39 | Review of 002-redesign | Done (superseded by 003) |
 | 40 | Chat window | Next feature, on D9's action channel |
+
+## Phase roll-up
+
+Decision (2026-10-29): (b)
