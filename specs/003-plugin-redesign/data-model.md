@@ -299,7 +299,8 @@ name descending (run ids are timestamps), not by mtime. A run whose `missing` is
 - no `.sdd/run.json` → `none`;
 - `.sdd/runs/<id>.md` exists for its `run_id` → `paused` (an interrupted run waiting to resume — its
   report is written and committed, the skill keeps `run.json`);
-- supervisor `status.json` exists and its `state` is not `"stopped"` → `paused`;
+- supervisor `status.json` exists and its `state` is not `"stopped"` → `paused`, except that a live
+  supervisor (§12.3) whose `state` is `running` or `stopping` → `running` (it is working, not paused);
 - `run.json`'s `workflow_dir` passes `valid_workflow_dir()` (§3.9) and its `journal.jsonl` or any
   `agent-*.jsonl` in it was modified less than 30 minutes ago → `running`;
 - otherwise → `stale`.
@@ -315,7 +316,10 @@ Start `/sdd-run` to resume or clean it up." `/sdd-status` applies the same rules
    last directory. Its `agent_id` names the transcript (the journal maps labels to agent ids,
    research.md D7). No such event → not available.
 3. The file is `<workflow_dir>/agent-<agent_id>.jsonl`.
-4. Return `{"available": true, "label": ..., "lines": [last 200 lines, each truncated to 2000 chars]}`;
+4. Return `{"available": true, "label": ..., "lines": [last 200 readable lines, each truncated to 2000 chars]}`.
+   A transcript record becomes text: `text` blocks as written, `tool_use` as `> Tool: description|command|path`,
+   `tool_result` as `< output` (`< error: ...` when it failed); request, attachment and empty-thinking records
+   are dropped; a line that is not a known record is kept as it is;
    anything not found → `{"available": false, "reason": "..."}` with status 200, never 404/500.
 Transient status for the Tasks view comes from the same event feed: newest event per task id —
 `task.started → running(Implementing)`, `task.implemented → running(Verifying)`,
@@ -341,10 +345,20 @@ source and fails if it contains `.unlink(`, `subprocess`, `os.remove`, `shutil.`
 file lands under the state directory and that the project tree is byte-for-byte unchanged. (The
 `subprocess` import exists today and is unused; delete it.)
 
+### 4.8a Editing a spec or the constitution (FR-035)
+Like decisions (FR-033), the dashboard source only calls `bin/sdd-edit.py` (`state`, `save`, `commit`); the
+helper does the file and git work, so §4.8's test still holds. `GET /api/features` returns
+`{features, active}`. `GET /api/doc/state?name=` (spec or constitution, else 404) returns
+`{path, exists, hash, dirty, locked}`; `hash` is the SHA-256 of the file's text. `POST /api/doc/save`
+`{name, text, base}` and `POST /api/doc/commit` `{name, message}` answer `200 {ok, ...state}`, `400` for a
+bad body or a name that is not editable, or `409 {error}` when the helper refuses. `save` writes a temp
+file next to the target and moves it into place, ends the text with one newline and stores `\n` line
+endings; `commit` runs `git add` and `git commit -- <file>`, so other changes in the tree stay as they are.
+
 ---
 
 ### 4.9 State-changing routes (FR-030)
-Applies to every `POST` route (`/api/project/select`, `/api/run/stop`, `/api/run/resume`), after the
+Applies to every `POST` route (`/api/project/select`, `/api/run/stop`, `/api/run/resume`, `/api/doc/save`, `/api/doc/commit`), after the
 Host check of §4.7 and before any work:
 - `Origin` header missing, or not in the allowed set → `403 {"error": "origin not allowed"}`. The
   allowed set is `http://127.0.0.1:<port>`, `http://localhost:<port>` and `http://[::1]:<port>` for

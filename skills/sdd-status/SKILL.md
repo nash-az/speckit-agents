@@ -16,7 +16,7 @@ description: Show where the current Spec Kit feature stands for unattended runs 
 4. Give the run state, using the same rules as the dashboard's `GET /api/run/current` (data-model §4.5, FR-017). The first rule that matches wins:
    1. no `.sdd/run.json` → `none` (no run; skip the rest of this step);
    2. `.sdd/runs/<run_id>.md` exists for `run.json`'s `run_id` → `paused` (an interrupted run waiting to resume; its report is written and `run.json` is kept);
-   3. the supervisor's `status.json` (path below) exists and its `state` is not `"stopped"` → `paused`;
+   3. the supervisor's `status.json` (path below) exists and its `state` is not `"stopped"` → `paused`, except that a live supervisor whose `state` is `running` or `stopping` → `running`;
    4. `run.json`'s `workflow_dir` is absolute, its name matches `^wf_[A-Za-z0-9_-]+$`, it is a directory containing `journal.jsonl`, and that `journal.jsonl` or any `agent-*.jsonl` in it was modified less than 30 minutes ago → `running`;
    5. otherwise → `stale`. Report it as the dashboard's banner does: "Run <id> left `.sdd/run.json` behind and is not running. Start `/sdd-run` to resume or clean it up."
 

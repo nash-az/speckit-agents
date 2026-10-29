@@ -272,8 +272,8 @@ pause, answer a decision or resume.
   itself. Any future action (creating a spec, amending a task) MUST be delegated to a Claude Code
   session that performs it under the run guard. This feature documents that action channel's shape
   and ships no other action routes. The only exceptions are FR-029 (one control request file in the
-  supervisor's state directory, outside the project), FR-033 (saving and applying a decision) and
-  FR-034 (starting a supervised run).
+  supervisor's state directory, outside the project), FR-033 (saving and applying a decision),
+  FR-034 (starting a supervised run) and FR-035 (editing and committing a spec or the constitution).
 - **FR-021**: A running task's dashboard view MUST show its live agent output (a tail of its
   transcript), or a clear "not available yet" state — never an error.
 - **FR-022**: The dashboard server MUST bind only to localhost, and MUST reject requests whose Host
@@ -342,6 +342,21 @@ pause, answer a decision or resume.
   orchestrating session's model as the documented run launch does, and writes its output to
   `launch.log` in the supervisor's state directory. The dashboard source itself contains no process
   spawning; the helper does it.
+- **FR-035**: The dashboard MUST let a person edit a feature's `spec.md` and the project constitution, and
+  commit the edit, without a terminal. The Docs view groups the design documents as tabs (Spec, Plan,
+  Research, Data model, Quickstart, Constitution, Learnings); the Spec tab has a picker for the feature, so
+  each spec is edited on its own. `GET /api/doc/state?name=spec|constitution` returns the file's hash,
+  whether it has uncommitted edits and why editing is off; `POST /api/doc/save` `{name, text, base}` (with
+  the FR-030 checks) replaces the file through `bin/sdd-edit.py`; `POST /api/doc/commit` `{name, message}`
+  commits just that file with the message as typed (no model rewrites it). No other document is editable.
+  The helper MUST refuse, and change nothing, while a run is active (`.sdd/run.json`), when `base` is not
+  the hash of the file's current text (it changed since the person opened it), when the text or the commit
+  message is empty, when the file has no uncommitted change (commit), or when the project is not a git
+  repository (commit); the view shows the reason and keeps the person's text. Adding and removing specs
+  is NOT part of this requirement: it is done by an AI session in the chat window feature (the next
+  feature, `contracts/action-channel.md`), which creates and deletes feature folders under the run guard.
+  Links inside a document MUST work: a `#heading` link scrolls, a link to another document's file opens
+  that document, and the section in the URL (`#spec`) survives a refresh.
 
 ### Key Entities
 - **Run control request**: one command (`stop` with a mode, `resume`, `hold` or `release`), an id and a time, written by

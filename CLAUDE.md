@@ -102,6 +102,15 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   - **Browser tests:** Playwright is installed for the system `python3` (via Artifactory, see `.sdd/learnings.md`); use
     `channel="chrome"`. `tests/ui/vendor/` holds the CDN copies. The dashboard check that works today is a throwaway Node
     script using the language app's Playwright (see learnings).
+- **State (2026-10-29, later session):** `auto/20261029-1003` is merged into `main`. The planned dashboard improvements are done:
+  `/api/run/current` says `running` for a live supervisor that is running or stopping (§4.5), "Waiting on you" skips tasks held only
+  behind a dependency, task logs are readable text (§4.6), the 3 s refresh redraws only on change and keeps scroll, the sidebar
+  title is fixed. Also new: the section is in the URL (`#tasks`), no project picker, design documents grouped as tabs under **Docs**
+  (Spec, Plan, Research, Data model, Quickstart, Constitution, Learnings), a summary **Overview**, done tasks folded per phase with
+  finished phases last, links inside documents work, and **FR-035** (edit and commit a spec or the constitution, `bin/sdd-edit.py`).
+  Adding and removing specs is the chat window feature, not a button. 287 Python, 24 node and 17 plugin tests pass; the editor and
+  views were checked in a browser with throwaway scripts, not committed UI tests. Not done: the Tasks view rethink (status-first list
+  with filter chips and one-line rows was proposed, awaiting the user's go-ahead); Phase 11 tasks T052-T061, T063-T066, T069, T071.
 - **`.claude/settings.local.json.bu` and `.claude/settings.provider.example.json`:** the user's own files. Keep them untracked; never commit them.
 - **Installed** at user scope as `speckit-agents@speckit-agents` from the marketplace `~/private/speckit-agents` (cache at
   commit `2f4f544`; the frozen copy in `/tmp` is no longer used). Claude Code runs the plugin from a cache pinned to a

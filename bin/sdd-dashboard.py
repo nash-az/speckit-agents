@@ -35,6 +35,10 @@ Endpoints:
     POST /api/decisions/apply     -- { "task" } try again to apply a saved answer
     GET /api/run/plan             -- what a run would do and whether it can start now (FR-034)
     POST /api/run/start           -- { "phases"?, "no_converge"?, "max_tasks"? } start a supervised run
+    GET /api/features             -- the feature folders under specs/ and the active one
+    GET /api/doc/state?name=      -- spec | constitution: its hash, whether it has uncommitted edits, why editing is off
+    POST /api/doc/save            -- { "name", "text", "base" } replace spec.md or the constitution (sdd-edit.py, FR-035)
+    POST /api/doc/commit          -- { "name", "message" } commit just that file
 Every POST needs an allowed Origin and `Content-Type: application/json` (data-model.md §4.9).
 The control routes write one request to `control.json`, and the answer route one file per answer in
 `answers/` of the supervisor's state directory, both outside the project. Applying an answer calls
@@ -64,6 +68,8 @@ _spec = importlib.util.spec_from_file_location("sdd_decide", Path(__file__).with
 sdd_decide = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_decide)
 _spec = importlib.util.spec_from_file_location("sdd_launch", Path(__file__).with_name("sdd-launch.py"))
 sdd_launch = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_launch)
+_spec = importlib.util.spec_from_file_location("sdd_edit", Path(__file__).with_name("sdd-edit.py"))
+sdd_edit = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_edit)
 
 # The supervisor's state directory comes from the supervisor itself, so both use the same one
 # (data-model.md §12.3).
@@ -387,8 +393,8 @@ def _recently_modified(workflow_dir: Path, now: float) -> bool:
 def current_run(project, now=None):
     """`GET /api/run/current` (data-model.md §4.5, FR-017): the first rule that matches wins.
     1. no `.sdd/run.json` -> none; 2. `.sdd/runs/<run_id>.md` exists -> paused (interrupted, waiting
-    to resume); 3. supervisor `status.json` with a `state` other than "stopped" -> paused;
-    4. a valid `workflow_dir` whose journal or an agent file changed in the last 30 minutes ->
+    to resume); 3. supervisor `status.json` with a `state` other than "stopped" -> paused, unless a
+    live supervisor is `running` or `stopping` -> running; 4. a valid `workflow_dir` whose journal or an agent file changed in the last 30 minutes ->
     running; 5. otherwise stale."""
     now = time.time() if now is None else now
     run_file = project / ".sdd" / "run.json"
@@ -404,7 +410,8 @@ def current_run(project, now=None):
         return {"state": "paused", **result}
     status = get_status(project)
     if isinstance(status, dict) and status.get("state") != "stopped":
-        return {"state": "paused", **result}
+        working = status.get("state") in ("running", "stopping") and supervisor_alive(status)
+        return {"state": "running" if working else "paused", **result}
     if (workflow_dir and sdd_tasks.valid_workflow_dir(workflow_dir)
             and _recently_modified(Path(workflow_dir), now)):
         return {"state": "running", **result}
@@ -453,8 +460,56 @@ def task_log(project, run_id, task_id):
             lines = [line.rstrip("\n") for line in f]
     except OSError:
         return _unavailable("transcript not found")
+    shown = [t for t in (_readable_line(line) for line in lines) if t is not None]
     return {"available": True, "label": event.get("label"),
-            "lines": [line[:LOG_MAX_LINE_CHARS] for line in lines[-LOG_MAX_LINES:]]}
+            "lines": [t[:LOG_MAX_LINE_CHARS] for t in shown[-LOG_MAX_LINES:]]}
+
+
+# Transcript record types that carry no reading material (request bodies, attachments, hashes).
+TRANSCRIPT_NOISE = ("api-request", "api-request-shape", "api-request-blob", "attachment")
+TOOL_ARG_KEYS = ("description", "command", "file_path", "path", "pattern", "url", "query", "prompt")
+
+
+def _block_text(block):
+    """One content block as a line, or None to skip it (empty thinking, unknown block types)."""
+    kind = block.get("type")
+    if kind == "text":
+        return str(block.get("text") or "").strip() or None
+    if kind == "tool_use":
+        args = block.get("input") if isinstance(block.get("input"), dict) else {}
+        arg = next((str(args[k]) for k in TOOL_ARG_KEYS if args.get(k)), "")
+        return f"> {block.get('name') or 'tool'}" + (f": {arg}" if arg else "")
+    if kind == "tool_result":
+        content = block.get("content")
+        if isinstance(content, list):
+            content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+        text = str(content or "").strip()
+        return ("< error: " if block.get("is_error") else "< ") + (text or "(no output)")
+    return None
+
+
+def _readable_line(line):
+    """One transcript line as readable text. A line that is not a JSON record with a `type`, or
+    has a type this does not know, is kept as it is; noise records give None."""
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return line
+    if not isinstance(rec, dict) or not isinstance(rec.get("type"), str):
+        return line
+    kind = rec["type"]
+    if kind in TRANSCRIPT_NOISE:
+        return None
+    if kind not in ("user", "assistant"):
+        return line
+    message = rec.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return f"{kind}: {content.strip()}" if content.strip() else None
+    if not isinstance(content, list):
+        return line
+    parts = [t for t in (_block_text(b) for b in content if isinstance(b, dict)) if t]
+    return "\n".join(parts) if parts else None
 
 
 # Phase rollup (data-model.md §1, FR-004): most urgent first. A phase's status is the first key
@@ -774,6 +829,36 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self._send_json({"ok": True, "pid": result["pid"], "run_args": result["run_args"],
                          "resumes": result["resumes"]}, 202, cors)
 
+    def _doc_edit(self, action):
+        """`POST /api/doc/save` `{name, text, base}` and `POST /api/doc/commit` `{name, message}` (FR-035), after
+        the §4.9 checks: 400 for a bad body, 409 when the edit is refused (the reason is in `error`; nothing
+        changed), else `200` with the file's new state. The helper `sdd-edit.py` does the writing."""
+        cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
+        try:
+            data = self._read_json_body()
+        except ValueError:
+            data = None
+        if not isinstance(data, dict) or data.get("name") not in sdd_edit.EDITABLE:
+            self._send_json({"error": "body must be a JSON object naming spec or constitution"}, 400, cors)
+            return
+        name, proj, feature = data["name"], DashboardHandler.project, self._feature_dir()
+        try:
+            if action == "save":
+                if not isinstance(data.get("text"), str) or not isinstance(data.get("base"), str):
+                    self._send_json({"error": "text and base must be strings"}, 400, cors)
+                    return
+                result = sdd_edit.save(proj, feature, name, data["text"], data["base"])
+            else:
+                if not isinstance(data.get("message"), str):
+                    self._send_json({"error": "message must be a string"}, 400, cors)
+                    return
+                sdd_edit.commit(proj, feature, name, data["message"])
+                result = sdd_edit.state(proj, feature, name)
+        except sdd_edit.Refused as e:
+            self._send_json({"error": str(e)}, 409, cors)
+            return
+        self._send_json({"ok": True, **result}, 200, cors)
+
     def _feature_dir(self):
         """The person's in-memory choice if one was made, else active_feature()."""
         proj = DashboardHandler.project
@@ -845,6 +930,21 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         if path in DOC_ALIASES:
             self._send_doc(DOC_ALIASES[path])
+            return
+        if path == "/api/features":
+            feature = self._feature_dir()
+            self._send_json({"features": feature_names(DashboardHandler.project),
+                             "active": feature.name if feature else None})
+            return
+        if path == "/api/doc/state":
+            names = urllib.parse.parse_qs(query).get("name", [])
+            if len(names) != 1 or names[0] not in sdd_edit.EDITABLE:
+                self._send_json({"error": "not found"}, 404)
+                return
+            try:
+                self._send_json(sdd_edit.state(DashboardHandler.project, self._feature_dir(), names[0]))
+            except sdd_edit.Refused as e:
+                self._send_json({"error": str(e)}, 409)
             return
         proj = DashboardHandler.project
         if path in PER_FEATURE_ROUTES:
@@ -924,6 +1024,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/api/decisions/apply":
             self._apply_saved()
+            return
+        if path in ("/api/doc/save", "/api/doc/commit"):
+            self._doc_edit(path.rsplit("/", 1)[1])
             return
         if path == "/api/run/start":
             self._start_run()
@@ -1007,18 +1110,31 @@ def build_html():
 
   /* Layout */
   .app { display: flex; height: 100vh; }
-  .sidebar { width: 260px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; z-index: 10; }
+  .sidebar { width: 260px; min-width: 0; overflow: hidden; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; z-index: 10; }
   .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .header { height: 56px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 1.25rem; flex-shrink: 0; }
   .brand { font-weight: 700; font-size: 1.125rem; color: var(--text); display: flex; align-items: center; gap: 0.5rem; }
+  .sidebar .brand { height: 56px; padding: 0 1.25rem; border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .brand-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+  .doc-tabs { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-bottom: 1rem; }
+  .doc-tabs:empty { display: none; }
+  .doc-tab { padding: 0.375rem 0.875rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); font-size: 0.875rem; cursor: pointer; }
+  .doc-tab:hover { color: var(--text); }
+  .doc-tab.active { background: rgba(59,130,246,0.1); border-color: var(--accent); color: var(--text); }
+  .doc-edit-bar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
+  .doc-edit-bar:empty { display: none; }
+  .doc-edit-bar select, .doc-edit-bar input[type=text] { padding: 0.375rem 0.625rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.875rem; }
+  .doc-edit-bar input[type=text] { flex: 1; min-width: 14rem; }
+  .doc-edit-note { color: var(--text-muted); font-size: 0.8125rem; flex-basis: 100%; }
+  .doc-edit-error { color: var(--danger); font-size: 0.8125rem; flex-basis: 100%; }
+  .doc-editor { width: 100%; min-height: 60vh; resize: vertical; padding: 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: 'JetBrains Mono', 'SF Mono', Monaco, monospace; font-size: 0.8125rem; line-height: 1.5; }
+  .doc-editor:focus { outline: none; border-color: var(--accent); }
   .content { flex: 1; overflow-y: auto; padding: 1.5rem; background: var(--bg); }
 
-  /* Project switcher */
-  .project-bar { padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; display: flex; gap: 0.5rem; align-items: center; }
-  .project-select { flex: 1; padding: 0.5rem 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.9375rem; }
-  .project-select:focus { outline: none; border-color: var(--accent); }
+  /* The project this dashboard was started in */
+  .project-bar { padding: 0.625rem 1.25rem; border-bottom: 1px solid var(--border); flex-shrink: 0; min-width: 0; }
+  .project-name { display: block; font-size: 0.875rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* Nav */
   .nav { flex: 1; overflow-y: auto; padding: 1rem 0; }
@@ -1037,13 +1153,37 @@ def build_html():
   .card-title .badge { font-size: 0.75rem; padding: 0.1875rem 0.5rem; border-radius: 4px; background: var(--border); color: var(--text-muted); font-weight: 500; }
 
   /* Grid */
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
-  @media (max-width: 1024px) { .grid-3 { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 768px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } .app { flex-direction: column; } .sidebar { width: 100%; height: auto; } .main { height: 100vh; } }
+  .grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+  @media (max-width: 1024px) { .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 768px) { .grid-2, .grid-3 { grid-template-columns: minmax(0, 1fr); } .app { flex-direction: column; } .sidebar { width: 100%; height: auto; } .main { height: 100vh; } }
 
   /* Stat */
   .stat { display: flex; flex-direction: column; gap: 0.25rem; }
+  /* Overview */
+  .ov-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+  .ov-feature { font-size: 0.8125rem; color: var(--text-muted); }
+  .ov-big { font-size: 2.25rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; line-height: 1.1; }
+  .ov-big small { font-size: 1rem; color: var(--text-muted); font-weight: 500; }
+  .ov-run { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; border: 1px solid var(--border); border-radius: 999px; font-size: 0.8125rem; color: var(--text-muted); background: var(--bg); }
+  .ov-run .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-queued); }
+  .ov-run.running .dot { background: var(--st-running); animation: pulse 2s infinite; }
+  .ov-run.paused .dot { background: var(--st-held); }
+  .ov-run.stale .dot { background: var(--st-blocked); }
+  .ov-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--bg); margin: 1rem 0 0.625rem; }
+  .ov-bar > span { display: block; height: 100%; }
+  .ov-legend { display: flex; flex-wrap: wrap; gap: 0.375rem 1.25rem; font-size: 0.8125rem; color: var(--text-muted); }
+  .ov-legend b { color: var(--text); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+  .ov-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 0.375rem; }
+  .ov-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.625rem; border-radius: 6px; cursor: pointer; font-size: 0.875rem; }
+  .ov-row:hover { background: var(--surface-hover); }
+  .ov-row .id { font-family: 'JetBrains Mono', monospace; color: var(--text-muted); font-size: 0.8125rem; flex-shrink: 0; min-width: 3.25rem; }
+  .ov-row .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ov-row .meta { color: var(--text-muted); font-size: 0.8125rem; flex-shrink: 0; }
+  .ov-mini { width: 120px; height: 6px; border-radius: 3px; background: var(--bg); overflow: hidden; flex-shrink: 0; }
+  .ov-mini > span { display: block; height: 100%; background: var(--st-done); }
+  .ov-ok { color: var(--text-muted); font-size: 0.875rem; padding: 0.5rem 0.625rem; }
+  .ov-more { color: var(--text-muted); font-size: 0.8125rem; padding: 0.375rem 0.625rem; }
   .stat-value { font-size: 1.875rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--text); }
   .stat-label { font-size: 0.8125rem; color: var(--text-muted); }
 
@@ -1126,8 +1266,13 @@ def build_html():
   .tag-download { background: rgba(88,28,135,0.15); color: #e9d5ff; }
   .tag-eval { background: rgba(6,182,212,0.15); color: var(--info); }
   .tag-ui { background: rgba(139,92,246,0.15); color: #c4b5fd; }
-  .task-done { opacity: 0.6; }
-  .task-done .task-text { text-decoration: line-through; }
+  .task-done { opacity: 0.75; }
+  .done-fold > summary { cursor: pointer; list-style: none; padding: 0.375rem 0.625rem; border-radius: 6px; color: var(--text-muted); font-size: 0.8125rem; user-select: none; }
+  .done-fold > summary::-webkit-details-marker { display: none; }
+  .done-fold > summary::before { content: '▸'; display: inline-block; width: 1rem; transition: transform 0.15s; }
+  .done-fold[open] > summary::before { transform: rotate(90deg); }
+  .done-fold > summary:hover { background: var(--surface-hover); color: var(--text); }
+  .done-fold > .done-list { display: grid; gap: 0.5rem; margin-top: 0.5rem; }
   .task-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
   .task-head .task-id { margin-bottom: 0; }
   .phase-heading { display: flex; align-items: center; gap: 0.75rem; font-size: 0.8125rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.5rem; }
@@ -1232,21 +1377,14 @@ def build_html():
       speckit-agents
     </div>
     <div class="project-bar">
-      <select id="project-select" class="project-select"></select>
-      <button id="btn-load-project" class="btn btn-primary">Load Project</button>
+      <span id="project-name" class="project-name"></span>
     </div>
     <div class="nav">
       <div class="nav-item active" data-section="overview"><span class="icon">📊</span>Overview</div>
-      <div class="nav-item" data-section="spec"><span class="icon">📄</span>Spec</div>
-      <div class="nav-item" data-section="plan"><span class="icon">🗺️</span>Plan</div>
-      <div class="nav-item" data-section="research"><span class="icon">🔎</span>Research</div>
-      <div class="nav-item" data-section="data-model"><span class="icon">🧩</span>Data model</div>
-      <div class="nav-item" data-section="quickstart"><span class="icon">🚀</span>Quickstart</div>
+      <div class="nav-item" data-section="docs"><span class="icon">📚</span>Docs</div>
       <div class="nav-item" data-section="tasks"><span class="icon">✅</span>Tasks</div>
       <div class="nav-item" data-section="blocked"><span class="icon">🚫</span>Blocked</div>
       <div class="nav-item" data-section="decisions"><span class="icon">⚖️</span>Decisions</div>
-      <div class="nav-item" data-section="constitution"><span class="icon">📜</span>Constitution</div>
-      <div class="nav-item" data-section="learnings"><span class="icon">💡</span>Learnings</div>
       <div class="nav-item" data-section="config"><span class="icon">⚙️</span>Config</div>
       <div class="nav-item" data-section="runs"><span class="icon">🔄</span>Runs</div>
       <div class="nav-item" data-section="status"><span class="icon">⚡</span>Status</div>
@@ -1274,66 +1412,22 @@ def build_html():
 
       <!-- Overview -->
       <section id="section-overview" class="section">
-        <div class="grid-3">
-          <div class="card">
-            <div class="stat">
-              <div class="stat-value" id="stat-tasks">-</div>
-              <div class="stat-label">Tasks</div>
-            </div>
-          </div>
-          <div class="card">
-            <div class="stat">
-              <div class="stat-value" id="stat-done">-</div>
-              <div class="stat-label">Done</div>
-            </div>
-          </div>
-          <div class="card">
-            <div class="stat">
-              <div class="stat-value" id="stat-held">-</div>
-              <div class="stat-label">Waiting on you</div>
-            </div>
-          </div>
-          <div class="card">
-            <div class="stat">
-              <div class="stat-value" id="stat-runs">-</div>
-              <div class="stat-label">Runs</div>
-            </div>
-          </div>
-          <div class="card">
-            <div class="stat">
-              <div class="stat-value" id="stat-blocked">-</div>
-              <div class="stat-label">Blocked</div>
-            </div>
-          </div>
-          <div class="card">
-            <div class="stat">
-              <div class="stat-value" id="stat-decisions">-</div>
-              <div class="stat-label">Decisions</div>
-            </div>
-          </div>
+        <div class="card" id="ov-progress"></div>
+        <div class="grid-2">
+          <div class="card"><div class="card-title">Needs you <span class="badge" id="ov-needs-count">0</span></div><div id="ov-needs"></div></div>
+          <div class="card"><div class="card-title">Next up</div><div id="ov-next"></div></div>
         </div>
-        <div class="card">
-          <div class="card-title">Project Files</div>
-          <div style="display: grid; gap: 0.5rem;">
-            <a href="#" data-file="spec" class="btn">View spec.md</a>
-            <a href="#" data-file="plan" class="btn">View plan.md</a>
-            <a href="#" data-file="research" class="btn">View research.md</a>
-            <a href="#" data-file="data-model" class="btn">View data-model.md</a>
-            <a href="#" data-file="quickstart" class="btn">View quickstart.md</a>
-            <a href="#" data-file="tasks" class="btn">View tasks.md</a>
-            <a href="#" data-file="blocked" class="btn">View BLOCKED.md</a>
-            <a href="#" data-file="decisions" class="btn">View decisions.md</a>
-            <a href="#" data-file="constitution" class="btn">View constitution.md</a>
-            <a href="#" data-file="learnings" class="btn">View .sdd/learnings.md</a>
-            <a href="#" data-file="config" class="btn">View .sdd/config.toml</a>
-          </div>
-        </div>
+        <div class="card"><div class="card-title">Phases</div><div id="ov-phases"></div></div>
+        <div class="card"><div class="card-title">Recent runs</div><div id="ov-runs"></div></div>
       </section>
 
       <!-- Document viewer, shared by every /api/doc name except tasks and blocked -->
       <section id="section-doc" class="section" style="display:none;">
         <div class="card">
+          <div id="doc-tabs" class="doc-tabs"></div>
           <div class="card-title" id="doc-title">Document</div>
+          <div id="doc-edit-bar" class="doc-edit-bar"></div>
+          <textarea id="doc-editor" class="doc-editor" spellcheck="false" style="display:none;"></textarea>
           <div id="doc-content" class="markdown"></div>
         </div>
       </section>
@@ -1412,9 +1506,15 @@ def build_html():
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <script>
   (function() {
-    var currentProject = null;
     var selectedRunId = null;
     var selectedSection = 'overview';
+    var sectionShown = false;
+    // The design documents share one sidebar entry, "Docs", with a tab per document.
+    var DOC_GROUP = ['spec', 'plan', 'research', 'data-model', 'quickstart', 'constitution', 'learnings'];
+    var lastDoc = 'spec';
+    // File names a document link may point at, for links such as [spec.md](./spec.md).
+    var DOC_BY_FILE = { spec: 'spec', plan: 'plan', research: 'research', 'data-model': 'data-model', quickstart: 'quickstart',
+      tasks: 'tasks', blocked: 'blocked', decisions: 'decisions', constitution: 'constitution', learnings: 'learnings' };
 
     function toast(msg) {
       try {
@@ -1425,6 +1525,19 @@ def build_html():
         c.appendChild(t);
         setTimeout(function() { t.remove(); }, 3000);
       } catch(e) { console.error('toast error', e); }
+    }
+
+    // Replace an element's content only when it changed, and keep the page's scroll position and the
+    // element's own: the 3 s refresh must not move what the person is reading.
+    function setHtml(el, html) {
+      if (el._html === html) return false;
+      var content = document.querySelector('.content');
+      var top = content ? content.scrollTop : 0, own = el.scrollTop;
+      el.innerHTML = html;
+      el._html = html;
+      if (content) content.scrollTop = top;
+      el.scrollTop = own;
+      return true;
     }
 
     function fetchJSON(url, method, body) {
@@ -1587,10 +1700,11 @@ def build_html():
         '<div class="live-output-body" data-live-task="' + escapeHtml(t.id) + '">' + liveOutputBodyHtml(log) + '</div></div>';
     }
 
-    // Everything waiting on a person, held and blocked together (FR-005).
+    // Everything waiting on a person, held and blocked together (FR-005). A task held only because
+    // a dependency is held waits on that task, not on the person, so it is not counted here.
     function isWaiting(t) {
       var key = taskStatusKey(t);
-      return key === 'held' || key === 'blocked';
+      return (key === 'held' && t.status_tag !== 'dependency') || key === 'blocked';
     }
 
     // BLOCKED.md entry badges (data-model.md §1).
@@ -1777,36 +1891,17 @@ def build_html():
       }).join('');
     }
 
-    function loadProjects() {
+    // The dashboard serves the project it was started in; show its name.
+    function loadProject() {
       fetchJSON('/api/projects', 'GET').then(function(projects) {
-        projects = projects || [];
-        var sel = document.getElementById('project-select');
-        sel.innerHTML = '<option value="">Select a project...</option>';
-        projects.forEach(function(p) {
-          var o = document.createElement('option');
-          o.value = p.path;
-          o.textContent = p.name + ' (' + p.path + ')';
-          sel.appendChild(o);
-        });
-        if (projects.length === 1) {
-          sel.value = projects[0].path;
-          selectProjectPath(projects[0].path);
-        }
-      }).catch(function(e) { console.error('loadProjects error', e); toast('Failed to load projects'); });
-    }
-
-    function selectProjectPath(path) {
-      fetchJSON('/api/project/select', 'POST', { path: path }).then(function(result) {
-        if (!result || !result.ok) {
-          toast(result && result.error ? result.error : 'Failed to select project');
-          return;
-        }
-        currentProject = path;
-        hideFeaturePicker();
-        document.getElementById('page-title').textContent = path.split('/').pop();
-        toast('Project loaded: ' + path.split('/').pop());
+        var p = (projects || [])[0];
+        if (!p) return;
+        var el = document.getElementById('project-name');
+        el.textContent = p.name;
+        el.title = p.path;
+        document.title = p.name + ' - speckit-agents';
         refreshAll();
-      }).catch(function(e) { console.error('selectProjectPath error', e); toast('Error selecting project'); });
+      }).catch(function(e) { console.error('loadProject error', e); });
     }
 
     // Show the picker with these feature names. The 3 s refresh calls this again on every 409,
@@ -1854,10 +1949,26 @@ def build_html():
       try { document.getElementById('refresh-time').textContent = new Date().toLocaleTimeString(); } catch(e) {}
     }
 
+    // The section is kept in the URL (#tasks), so a refresh or a shared link opens the same view.
+    function sectionFromHash() {
+      var name = decodeURIComponent(location.hash.replace(/^#\\/?/, ''));
+      if (name === 'docs') return lastDoc;
+      var known = DOC_GROUP.indexOf(name) >= 0 || (/^[a-z-]+$/.test(name) && document.querySelector('.nav-item[data-section="' + name + '"]'));
+      return known ? name : 'overview';
+    }
+
     function showSection(name) {
       try {
+        if (editorChanged() && name !== docShown && !confirm('Discard your unsaved edit?')) {
+          history.replaceState(null, '', '#' + docShown);
+          return;
+        }
+        if (decodeURIComponent(location.hash.replace(/^#\\/?/, '')) !== name) {
+          history[sectionShown ? 'pushState' : 'replaceState'](null, '', '#' + name);
+        }
+        sectionShown = true;
         document.querySelectorAll('.nav-item').forEach(function(el) { el.classList.remove('active'); });
-        var target = document.querySelector('.nav-item[data-section="' + name + '"]');
+        var target = document.querySelector('.nav-item[data-section="' + (DOC_GROUP.indexOf(name) >= 0 ? 'docs' : name) + '"]');
         if (target) target.classList.add('active');
         document.querySelectorAll('section').forEach(function(el) { el.style.display = 'none'; });
         var isDoc = DOC_TITLES[name] && !RAW_DOCS[name];
@@ -1875,8 +1986,127 @@ def build_html():
       } catch(e) { console.error('showSection error', e); }
     }
 
+    // Editing (FR-035): only the spec of the chosen feature and the constitution. The editor saves through
+    // /api/doc/save with the hash of the text it opened, and a Commit button commits just that file.
+    var EDITABLE_DOCS = ['spec', 'constitution'];
+    var editing = false, editBase = null, docShown = null, editNote = '', editError = '';
+
+    function editorChanged() {
+      var ed = document.getElementById('doc-editor');
+      return editing && ed.value !== ed.getAttribute('data-original');
+    }
+
+    function leaveEditor() {
+      editing = false;
+      editBase = null;
+      document.getElementById('doc-editor').style.display = 'none';
+      document.getElementById('doc-content').style.display = '';
+    }
+
+    function defaultCommitMessage(name, feature) {
+      return name === 'spec' ? 'docs(spec): update ' + (feature || 'feature') + ' spec' : 'docs(constitution): update constitution';
+    }
+
+    // The bar above an editable document: feature picker (spec), Edit, and the Commit row while the file has edits.
+    function renderEditBar(name) {
+      var bar = document.getElementById('doc-edit-bar');
+      if (EDITABLE_DOCS.indexOf(name) < 0) { bar.innerHTML = ''; return Promise.resolve(); }
+      return Promise.all([fetchJSON('/api/doc/state?name=' + name, 'GET'), name === 'spec' ? fetchJSON('/api/features', 'GET') : Promise.resolve(null)]).then(function(r) {
+        if (docShown !== name) return;
+        var st = r[0], feats = r[1], html = '';
+        if (!st || st.error) { bar.innerHTML = ''; return; }
+        if (editing) {
+          html = '<button type="button" class="btn btn-primary" data-edit="save">Save</button>' +
+            '<button type="button" class="btn" data-edit="cancel">Cancel</button>' +
+            '<span class="doc-edit-note">Editing ' + escapeHtml(st.path) + '</span>';
+        } else {
+          if (feats && feats.features.length) {
+            html += '<select id="spec-feature" title="Which spec to show">' + feats.features.map(function(f) {
+              return '<option value="' + escapeHtml(f) + '"' + (f === feats.active ? ' selected' : '') + '>' + escapeHtml(f) + '</option>';
+            }).join('') + '</select>';
+          }
+          html += '<button type="button" class="btn" data-edit="open"' + (st.locked ? ' disabled title="' + escapeHtml(st.locked) + '"' : '') + '>Edit</button>';
+          if (st.locked) html += '<span class="doc-edit-note">' + escapeHtml(st.locked) + '</span>';
+          if (st.dirty) {
+            html += '<input type="text" id="commit-message" maxlength="200" value="' + escapeHtml(defaultCommitMessage(name, feats && feats.active)) + '" aria-label="Commit message">' +
+              '<button type="button" class="btn btn-primary" data-edit="commit"' + (st.locked ? ' disabled' : '') + '>Commit</button>' +
+              '<span class="doc-edit-note">' + escapeHtml(st.path) + ' has uncommitted edits.' +
+              (name === 'spec' ? ' The plan and tasks may need regenerating.' : '') + '</span>';
+          }
+        }
+        if (editNote) html += '<span class="doc-edit-note">' + escapeHtml(editNote) + '</span>';
+        if (editError) html += '<span class="doc-edit-error">' + escapeHtml(editError) + '</span>';
+        bar.innerHTML = html;
+        bar.querySelectorAll('[data-edit]').forEach(function(b) {
+          b.addEventListener('click', function() { editAction(name, b.getAttribute('data-edit'), st); });
+        });
+        var sel = document.getElementById('spec-feature');
+        if (sel) sel.addEventListener('change', function() {
+          fetchJSON('/api/project/select', 'POST', { feature: sel.value }).then(function() { editNote = ''; editError = ''; reloadViews(); });
+        });
+      });
+    }
+
+    // POST JSON and return the body whatever the status, so a refusal's `error` reaches the person.
+    function postEdit(url, body) {
+      return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function(res) { return res.json().catch(function() { return { error: 'HTTP ' + res.status }; }); })
+        .catch(function(e) { return { error: String(e) }; });
+    }
+
+    function editAction(name, action, st) {
+      var ed = document.getElementById('doc-editor');
+      editNote = ''; editError = '';
+      if (action === 'open') {
+        fetchDoc(docUrl(name)).then(function(d) {
+          if (d.text == null && !d.missing) { editError = 'Could not load the document: ' + (d.error || 'unknown error'); renderEditBar(name); return; }
+          ed.value = d.text || '';
+          ed.setAttribute('data-original', ed.value);
+          editBase = st.hash;
+          editing = true;
+          ed.style.display = 'block';
+          document.getElementById('doc-content').style.display = 'none';
+          renderEditBar(name).then(function() { ed.focus(); });
+        });
+      } else if (action === 'cancel') {
+        if (editorChanged() && !confirm('Discard your unsaved edit?')) return;
+        leaveEditor();
+        renderEditBar(name);
+      } else if (action === 'save') {
+        postEdit('/api/doc/save', { name: name, text: ed.value, base: editBase }).then(function(res) {
+          if (!res || res.error) { editError = (res && res.error) || 'Save failed'; renderEditBar(name); return; }
+          leaveEditor();
+          editNote = 'Saved. Commit it when you are happy with it.';
+          showDoc(document.getElementById('doc-content'), docUrl(name), docKind(name));
+          renderEditBar(name);
+        });
+      } else if (action === 'commit') {
+        var msg = document.getElementById('commit-message').value;
+        postEdit('/api/doc/commit', { name: name, message: msg }).then(function(res) {
+          if (!res || res.error) { editError = (res && res.error) || 'Commit failed'; }
+          else { editNote = 'Committed.'; toast('Committed ' + st.path); }
+          renderEditBar(name);
+        });
+      }
+    }
+
     function loadDoc(name) {
+      if (docShown !== name) { leaveEditor(); editNote = ''; editError = ''; }
+      docShown = name;
+      renderEditBar(name);
       document.getElementById('doc-title').textContent = DOC_TITLES[name];
+      var tabs = document.getElementById('doc-tabs');
+      if (DOC_GROUP.indexOf(name) >= 0) {
+        lastDoc = name;
+        tabs.innerHTML = DOC_GROUP.map(function(d) {
+          return '<button type="button" class="doc-tab' + (d === name ? ' active' : '') + '" data-doc="' + d + '">' + escapeHtml(DOC_TITLES[d]) + '</button>';
+        }).join('');
+        tabs.querySelectorAll('.doc-tab').forEach(function(b) {
+          b.addEventListener('click', function() { showSection(b.getAttribute('data-doc')); });
+        });
+      } else {
+        tabs.innerHTML = '';
+      }
       var el = document.getElementById('doc-content');
       if (el.getAttribute('data-want') !== docUrl(name)) el.innerHTML = '';
       showDoc(el, docUrl(name), docKind(name));
@@ -1892,61 +2122,206 @@ def build_html():
       if (open) showDoc(el, docUrl(name), 'markdown');
     }
 
-    function loadOverview() {
-      loadTasksData();
-      fetchJSON('/api/runs', 'GET').then(function(runs) {
-        runs = runs || [];
-        document.getElementById('stat-runs').textContent = runs.length;
-      });
+    // Overview: where the work stands, what needs the person, what comes next, and how the last runs went.
+    var OV_BAR = [['done', 'Done'], ['running', 'Running'], ['held', 'Held'], ['blocked', 'Blocked'], ['queued', 'To do']];
+
+    function shortText(text, n) {
+      text = String(text || '').replace(/`/g, '');
+      return text.length > n ? text.slice(0, n - 1).trimEnd() + '…' : text;
     }
 
-    function loadTasksData() {
-      fetchJSON('/api/project/tasks', 'GET').then(function(data) {
-        data = data || {};
-        var c = countTasks(data.phases);
-        document.getElementById('stat-tasks').textContent = c.total;
-        document.getElementById('stat-done').textContent = c.done;
-        document.getElementById('stat-held').textContent = c.waiting;
-        document.getElementById('stat-blocked').textContent = c.blocked;
-      }).catch(function(e) { console.error('loadTasksData error', e); });
-      fetchJSON('/api/decisions', 'GET').then(function(d) {
-        document.getElementById('stat-decisions').textContent = d ? (d.open || []).length : '-';
+    function overviewCounts(phases) {
+      var c = { total: 0, done: 0, running: 0, held: 0, blocked: 0, queued: 0 };
+      (phases || []).forEach(function(p) {
+        (p.tasks || []).forEach(function(t) {
+          var key = taskStatusKey(t);
+          c.total++;
+          if (key === 'done') c.done++;
+          else if (key === 'running' || key === 'retrying') c.running++;
+          else if (key === 'held' || key === 'paused') c.held++;
+          else if (key === 'blocked') c.blocked++;
+          else c.queued++;  // queued, plus wontfix, moved and superseded, which are not work left
+        });
       });
+      return c;
     }
 
-    // The run whose events give the transient states: the run picked in the Runs view, else the
-    // run in .sdd/run.json. `paused` (§4.5) applies only when that run is the current one.
-    function loadTasks() {
-      Promise.all([fetchJSON('/api/project/tasks', 'GET'), fetchJSON('/api/run/current', 'GET')]).then(function(r) {
+    function runPillHtml(run) {
+      var state = (run && run.state) || 'none';
+      var label = { running: 'Run ' + (run && run.run_id) + ' is running', paused: 'Run ' + (run && run.run_id) + ' is paused',
+                    stale: 'Run ' + (run && run.run_id) + ' was left behind', none: 'No run in progress' }[state] || 'No run in progress';
+      return '<span class="ov-run ' + escapeHtml(state) + '"><span class="dot"></span>' + escapeHtml(label) + '</span>';
+    }
+
+    function overviewProgressHtml(c, run, feature) {
+      var pct = c.total ? Math.round(c.done * 100 / c.total) : 0;
+      var bar = OV_BAR.map(function(b) {
+        var n = c[b[0]];
+        return n ? '<span style="width:' + (n * 100 / c.total) + '%;background:var(--st-' + b[0] + ')" title="' + b[1] + ': ' + n + '"></span>' : '';
+      }).join('');
+      var legend = OV_BAR.map(function(b) {
+        return '<span><i style="background:var(--st-' + b[0] + ')"></i>' + b[1] + ' <b>' + c[b[0]] + '</b></span>';
+      }).join('');
+      return '<div class="ov-head"><div><div class="ov-big">' + c.done + '<small> / ' + c.total + ' tasks done · ' + pct + '%</small></div>' +
+        (feature ? '<div class="ov-feature">' + escapeHtml(feature) + '</div>' : '') + '</div>' + runPillHtml(run) + '</div>' +
+        '<div class="ov-bar">' + bar + '</div><div class="ov-legend">' + legend + '</div>';
+    }
+
+    // Open decisions, blocked tasks and tasks held for a person, most pressing first; each row opens its view.
+    function overviewNeedsHtml(phases, decisions) {
+      var rows = [];
+      (decisions || []).forEach(function(d) {
+        rows.push({ go: 'decisions', icon: '⚖️', id: d.id, text: d.question || d.text, meta: 'decision' });
+      });
+      (phases || []).forEach(function(p) {
+        (p.tasks || []).forEach(function(t) {
+          if (!isWaiting(t) || (t.status_tag === 'decision' && (decisions || []).some(function(d) { return d.id === t.id; }))) return;
+          rows.push({ go: taskStatusKey(t) === 'blocked' ? 'blocked' : 'tasks', icon: taskStatusKey(t) === 'blocked' ? '🚫' : '⏳',
+                      id: t.id, text: t.question || t.text, meta: taskStatusKey(t) === 'blocked' ? 'blocked' : (t.status_tag || 'held') });
+        });
+      });
+      var html = rows.slice(0, 6).map(function(r) {
+        return '<div class="ov-row" data-go="' + r.go + '"><span>' + r.icon + '</span><span class="id">' + escapeHtml(r.id) + '</span>' +
+          '<span class="txt">' + escapeHtml(shortText(r.text, 110)) + '</span><span class="meta">' + escapeHtml(r.meta) + '</span></div>';
+      }).join('');
+      if (rows.length > 6) html += '<div class="ov-more">and ' + (rows.length - 6) + ' more</div>';
+      return { count: rows.length, html: html || '<div class="ov-ok">✓ Nothing is waiting on you.</div>' };
+    }
+
+    // The first open tasks nothing is holding, in file order.
+    function overviewNextHtml(phases) {
+      var next = [];
+      (phases || []).forEach(function(p) {
+        (p.tasks || []).forEach(function(t) { if (taskStatusKey(t) === 'queued' && !t.status) next.push({ t: t, phase: p.title }); });
+      });
+      if (!next.length) return '<div class="ov-ok">Nothing left to run.</div>';
+      return next.slice(0, 5).map(function(n) {
+        return '<div class="ov-row" data-go="tasks"><span class="id">' + escapeHtml(n.t.id) + '</span><span class="txt">' +
+          escapeHtml(shortText(n.t.text, 110)) + '</span></div>';
+      }).join('') + (next.length > 5 ? '<div class="ov-more">and ' + (next.length - 5) + ' more</div>' : '');
+    }
+
+    // Unfinished phases with their own bar; finished ones fold into one line.
+    function overviewPhasesHtml(phases) {
+      var open = [], complete = 0;
+      (phases || []).forEach(function(p) {
+        var tasks = p.tasks || [], done = tasks.filter(function(t) { return taskStatusKey(t) === 'done'; }).length;
+        if (tasks.length && done === tasks.length) { complete++; return; }
+        open.push('<div class="ov-row" data-go="tasks"><span class="txt">' + escapeHtml(shortText(p.title, 70)) + '</span>' +
+          (['blocked', 'retrying', 'running', 'held', 'paused'].indexOf(p.status) >= 0 ? statusBadge(p.status) : '') +
+          '<span class="ov-mini"><span style="width:' + (tasks.length ? done * 100 / tasks.length : 0) + '%"></span></span>' +
+          '<span class="meta">' + done + '/' + tasks.length + '</span></div>');
+      });
+      if (complete) open.push('<div class="ov-more">✓ ' + complete + ' complete phase' + (complete === 1 ? '' : 's') + '</div>');
+      return open.join('') || '<div class="ov-ok">No phases.</div>';
+    }
+
+    function overviewRunsHtml(runs) {
+      if (!runs.length) return '<div class="ov-ok">No runs yet.</div>';
+      return runs.slice(0, 5).map(function(r) {
+        var state = r.finished ? (r.stopped ? 'stopped' : 'done') : (r.interrupted > 0 ? 'paused' : 'running');
+        return '<div class="ov-row" data-run="' + escapeHtml(r.id) + '"><span class="id">#' + escapeHtml(r.id) + '</span>' +
+          '<span class="txt">' + r.approved + ' approved · ' + r.blocked + ' blocked' + (r.interrupted ? ' · ' + r.interrupted + ' interrupted' : '') + '</span>' +
+          '<span class="meta">' + state + '</span></div>';
+      }).join('') + (runs.length > 5 ? '<div class="ov-more">' + (runs.length - 5) + ' older in Runs</div>' : '');
+    }
+
+    // The tasks with the selected run's transient states merged in (as the Tasks view shows them).
+    function loadMergedTasks() {
+      return Promise.all([fetchJSON('/api/project/tasks', 'GET'), fetchJSON('/api/run/current', 'GET')]).then(function(r) {
         var data = r[0] || {}, run = r[1] || {};
         var runId = selectedRunId || (run.state && run.state !== 'none' ? run.run_id : null);
         var feed = runId ? fetchJSON('/api/runs/' + encodeURIComponent(runId) + '/events', 'GET') : Promise.resolve(null);
         return feed.then(function(f) {
           var states = transientStates(f && f.events, data.max_retries, runId === run.run_id ? run.state : null);
-          renderTasks(mergeTransient(data.phases, states), runId);
+          return { phases: mergeTransient(data.phases, states), run: run, runId: runId };
         });
-      }).catch(function(e) { console.error('loadTasks error', e); });
+      });
+    }
+
+    function loadOverview() {
+      Promise.all([loadMergedTasks(), fetchJSON('/api/decisions', 'GET'), fetchJSON('/api/runs', 'GET'), fetchJSON('/api/features', 'GET')]).then(function(r) {
+        var m = r[0], decisions = (r[1] && r[1].open) || [], runs = r[2] || [];
+        setHtml(document.getElementById('ov-progress'), overviewProgressHtml(overviewCounts(m.phases), m.run, r[3] && r[3].active));
+        var needs = overviewNeedsHtml(m.phases, decisions);
+        document.getElementById('ov-needs-count').textContent = needs.count;
+        setHtml(document.getElementById('ov-needs'), needs.html);
+        setHtml(document.getElementById('ov-next'), overviewNextHtml(m.phases));
+        setHtml(document.getElementById('ov-phases'), overviewPhasesHtml(m.phases));
+        setHtml(document.getElementById('ov-runs'), overviewRunsHtml(runs));
+      }).catch(function(e) { console.error('loadOverview error', e); });
+    }
+
+    // The run whose events give the transient states: the run picked in the Runs view, else the
+    // run in .sdd/run.json. `paused` (§4.5) applies only when that run is the current one.
+    function loadTasks() {
+      loadMergedTasks().then(function(m) { renderTasks(m.phases, m.runId); })
+        .catch(function(e) { console.error('loadTasks error', e); });
+    }
+
+    // Finished tasks fold into one line per phase (closed unless the person opened it; remembered across refreshes).
+    var openDone = {};
+
+    function phaseTasksHtml(p) {
+      var tasks = p.tasks || [], done = [], rest = [];
+      tasks.forEach(function(t) { (taskStatusKey(t) === 'done' ? done : rest).push(t); });
+      var html = '';
+      if (done.length) {
+        html += '<details class="done-fold" data-phase="' + escapeHtml(p.title) + '"' + (openDone[p.title] ? ' open' : '') + '><summary>✓ ' +
+          (rest.length ? done.length + ' done' : 'All ' + done.length + ' done') + '</summary><div class="done-list">' +
+          done.map(taskCardHtml).join('') + '</div></details>';
+      }
+      return rest.map(taskCardHtml).join('') + html;
+    }
+
+    // Phases with work left first, finished phases last; each keeps its file order.
+    function phasesOpenFirst(phases) {
+      function finished(p) {
+        var tasks = p.tasks || [];
+        return tasks.length > 0 && tasks.every(function(t) { return taskStatusKey(t) === 'done'; });
+      }
+      return phases.filter(function(p) { return !finished(p); }).concat(phases.filter(finished));
     }
 
     function renderTasks(phases, runId) {
       var waiting = '', count = 0, list = '', running = [];
-      phases.forEach(function(p) {
+      phasesOpenFirst(phases).forEach(function(p) {
         (p.tasks || []).forEach(function(t) {
           if (isWaiting(t)) { waiting += waitingItemHtml(t, p.title); count++; }
           if (taskStatusKey(t) === 'running') running.push(t.id);
         });
-        list += phaseHeadingHtml(p) + '<div class="phase-tasks">' + (p.tasks || []).map(function(t) { return taskCardHtml(t); }).join('') + '</div>';
+        list += phaseHeadingHtml(p) + '<div class="phase-tasks">' + phaseTasksHtml(p) + '</div>';
       });
       document.getElementById('waiting-count').textContent = count;
-      document.getElementById('waiting-list').innerHTML = waiting ||
-        '<div class="empty"><div>Nothing is waiting on you.</div></div>';
-      document.getElementById('tasks-list').innerHTML = list ||
-        '<div class="empty"><div>No tasks.</div></div>';
+      setHtml(document.getElementById('waiting-list'), waiting ||
+        '<div class="empty"><div>Nothing is waiting on you.</div></div>');
+      var tasksEl = document.getElementById('tasks-list');
+      var live = {};
+      tasksEl.querySelectorAll('.live-output-body').forEach(function(b) { live[b.getAttribute('data-live-task')] = liveScrollState(b); });
+      if (setHtml(tasksEl, list || '<div class="empty"><div>No tasks.</div></div>')) {
+        tasksEl.querySelectorAll('.live-output-body').forEach(function(b) {
+          var id = b.getAttribute('data-live-task');
+          b._html = liveOutputBodyHtml(liveLogs[id]);
+          if (live[id]) restoreLiveScroll(b, live[id]);
+        });
+      }
       pollLiveOutputs(runId, running);
     }
 
     // Fetch the live output of each running task; loadTasks runs every 3 s (refreshAll), so this
     // polls /api/runs/<id>/tasks/<task>/log every 3 s while the Tasks view is open.
+    // A live panel follows the newest line only while it is scrolled to the bottom; scrolled up, it stays put.
+    function liveScrollState(el) {
+      var pre = el.querySelector('pre');
+      if (!pre) return { follow: true, top: 0 };
+      return { follow: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8, top: pre.scrollTop };
+    }
+
+    function restoreLiveScroll(el, state) {
+      var pre = el.querySelector('pre');
+      if (pre) pre.scrollTop = state.follow ? pre.scrollHeight : state.top;
+    }
+
     function pollLiveOutputs(runId, ids) {
       Object.keys(liveLogs).forEach(function(id) { if (ids.indexOf(id) < 0) delete liveLogs[id]; });
       if (!runId) return;
@@ -1955,9 +2330,12 @@ def build_html():
           liveLogs[id] = log || { available: false, reason: 'request failed' };
           var el = document.querySelector('.live-output-body[data-live-task="' + id + '"]');
           if (!el) return;
-          el.innerHTML = liveOutputBodyHtml(liveLogs[id]);
-          var pre = el.querySelector('pre');
-          if (pre) pre.scrollTop = pre.scrollHeight;
+          var html = liveOutputBodyHtml(liveLogs[id]);
+          if (el._html === html) return;
+          var state = liveScrollState(el);
+          el.innerHTML = html;
+          el._html = html;
+          restoreLiveScroll(el, state);
         });
       });
     }
@@ -2133,6 +2511,10 @@ def build_html():
       fetchJSON('/api/runs', 'GET').then(function(runs) {
         runs = runs || [];
         var el = document.getElementById('runs-list');
+        var signature = JSON.stringify([runs, selectedRunId]);
+        if (el._signature === signature) return;
+        el._signature = signature;
+        var top = el.scrollTop;
         el.innerHTML = '';
         if (runs.length === 0) {
           el.innerHTML = '<div class="empty"><div class="empty-icon">🔄</div><div>No runs found.</div></div>';
@@ -2158,36 +2540,34 @@ def build_html():
           }
           el.appendChild(div);
         });
-        document.getElementById('stat-runs').textContent = runs.length;
+        el.scrollTop = top;
       }).catch(function(e) { console.error('loadRuns error', e); });
     }
 
     function loadEvents() {
       if (!selectedRunId) {
-        document.getElementById('events-view').innerHTML = '<div class="empty"><div class="empty-icon">📋</div><div>Select a run to see its events.</div></div>';
+        setHtml(document.getElementById('events-view'), '<div class="empty"><div class="empty-icon">📋</div><div>Select a run to see its events.</div></div>');
         return;
       }
       fetchJSON('/api/runs/' + encodeURIComponent(selectedRunId) + '/events', 'GET').then(function(data) {
         var events = (data && data.events) || [];
         var el = document.getElementById('events-view');
-        el.innerHTML = '';
         if (data && data.notice) {
-          el.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="transcript-gone">' + escapeHtml(data.notice) + '</div></div>';
+          setHtml(el, '<div class="empty"><div class="empty-icon">📭</div><div class="transcript-gone">' + escapeHtml(data.notice) + '</div></div>');
           return;
         }
         if (events.length === 0) {
-          el.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div>No events.</div></div>';
+          setHtml(el, '<div class="empty"><div class="empty-icon">📭</div><div>No events.</div></div>');
           return;
         }
-        events.slice().reverse().forEach(function(ev) {
-          var row = document.createElement('div');
-          row.className = 'event-row';
+        // Newest first, so the latest event is at the top and a refresh never has to scroll.
+        setHtml(el, events.slice().reverse().map(function(ev) {
           var ts = ev.ts ? new Date(ev.ts).toLocaleTimeString() : '-';
-          var payloadShort = JSON.stringify(ev).slice(0, 120) + (JSON.stringify(ev).length > 120 ? '…' : '');
-          row.innerHTML = '<div class="event-ts">[' + ts + ']</div><div class="event-kind">' + escapeHtml(ev.kind) + '</div><div class="event-payload" title="' + escapeHtml(payloadShort) + '">' + escapeHtml(payloadShort) + '</div>';
-          el.appendChild(row);
-        });
-        el.scrollTop = el.scrollHeight;
+          var json = JSON.stringify(ev);
+          var payloadShort = json.slice(0, 120) + (json.length > 120 ? '…' : '');
+          return '<div class="event-row"><div class="event-ts">[' + ts + ']</div><div class="event-kind">' + escapeHtml(ev.kind) +
+            '</div><div class="event-payload" title="' + escapeHtml(payloadShort) + '">' + escapeHtml(payloadShort) + '</div></div>';
+        }).join(''));
       }).catch(function(e) { console.error('loadEvents error', e); });
     }
 
@@ -2393,26 +2773,49 @@ def build_html():
     }
 
     document.addEventListener('DOMContentLoaded', function() {
-      var btn = document.getElementById('btn-load-project');
-      if (btn) btn.addEventListener('click', function() {
-        var sel = document.getElementById('project-select');
-        if (!sel.value) { toast('Please select a project from the dropdown'); return; }
-        selectProjectPath(sel.value);
-      });
-
       document.querySelectorAll('.nav-item').forEach(function(item) {
         item.addEventListener('click', function() {
           var section = item.getAttribute('data-section');
-          if (section) showSection(section);
+          if (section) showSection(section === 'docs' ? lastDoc : section);
         });
       });
 
-      document.querySelectorAll('a[data-file]').forEach(function(link) {
-        link.addEventListener('click', function(ev) {
+      // `toggle` does not bubble, so listen in the capture phase to remember which done folds are open.
+      document.addEventListener('toggle', function(ev) {
+        var d = ev.target;
+        if (d && d.classList && d.classList.contains('done-fold')) openDone[d.getAttribute('data-phase')] = d.open;
+      }, true);
+
+      window.addEventListener('beforeunload', function(ev) { if (editorChanged()) { ev.preventDefault(); ev.returnValue = ''; } });
+
+      // Links inside a rendered document: `#heading` scrolls, a link to another document's file opens that
+      // document here, an http(s) link opens in a new tab. Nothing else may change the URL's section.
+      document.addEventListener('click', function(ev) {
+        var a = ev.target.closest ? ev.target.closest('.markdown a') : null;
+        if (!a) return;
+        var href = a.getAttribute('href') || '';
+        if (href.charAt(0) === '#') {
           ev.preventDefault();
-          var kind = link.getAttribute('data-file');
-          viewFile(kind);
-        });
+          var target = document.getElementById(decodeURIComponent(href.slice(1)));
+          if (target) target.scrollIntoView();
+        } else if (href.indexOf('http://') === 0 || href.indexOf('https://') === 0) {
+          a.target = '_blank';
+          a.rel = 'noopener';
+        } else {
+          ev.preventDefault();
+          var file = href.split('#')[0].split('/').pop();
+          var doc = file.slice(-3).toLowerCase() === '.md' ? DOC_BY_FILE[file.slice(0, -3).toLowerCase()] : null;
+          if (doc) showSection(doc);
+        }
+      });
+
+      // Overview rows: `data-go` opens a view, `data-run` opens that run in Runs.
+      document.addEventListener('click', function(ev) {
+        var row = ev.target.closest ? ev.target.closest('[data-go], [data-run]') : null;
+        if (!row) return;
+        if (row.hasAttribute('data-run')) selectedRunId = row.getAttribute('data-run');
+        showSection(row.hasAttribute('data-run') ? 'runs' : row.getAttribute('data-go'));
+        if (row.hasAttribute('data-run')) { loadRuns(); loadEvents(); }
       });
 
       document.querySelectorAll('button[data-raw]').forEach(function(btn) {
@@ -2423,7 +2826,9 @@ def build_html():
         });
       });
 
-      loadProjects();
+      showSection(sectionFromHash());
+      window.addEventListener('popstate', function() { showSection(sectionFromHash()); });
+      loadProject();
       loadRunState();
       setInterval(refreshAll, 3000);
     });

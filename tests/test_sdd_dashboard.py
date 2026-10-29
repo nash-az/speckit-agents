@@ -435,6 +435,15 @@ class CurrentRunTest(unittest.TestCase):
             self.write_status(state)
             self.assertEqual(self.current()["state"], "paused", state)
 
+    def test_live_supervisor_running_is_running(self):
+        self.write_run_json()
+        self.set_age(self.wf / "journal.jsonl", 120)
+        self.set_age(self.wf / "agent-a01.jsonl", 120)
+        for state, want in (("running", "running"), ("stopping", "running"), ("held", "paused"), ("waiting", "paused")):
+            self.status_file.write_text(json.dumps({"state": state, "pid": os.getpid()}), encoding="utf-8")
+            data = request(self, "GET", "/api/run/current")
+            self.assertEqual(data["state"], want, state)
+
     def test_stopped_supervisor_does_not_pause(self):
         self.write_run_json()
         self.write_status("stopped")
@@ -564,6 +573,24 @@ class TaskLogTest(unittest.TestCase):
     def test_long_lines_truncated(self):
         (self.wf / "agent-a02.jsonl").write_text("x" * 5000 + "\n", encoding="utf-8")
         self.assertEqual(self.log()["lines"], ["x" * 2000])
+
+    def test_transcript_records_are_readable(self):
+        records = [
+            {"type": "api-request-blob", "message": {"role": "user", "content": [{"type": "text", "text": "noise"}]}},
+            {"type": "attachment", "attachment": {"type": "sandbox_instructions"}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": ""}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Running the tests."}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "pytest -q", "description": "Run pytest"}}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": "72 passed", "is_error": False}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": [{"type": "text", "text": "boom"}], "is_error": True}]}},
+        ]
+        (self.wf / "agent-a02.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in records) + "not json\n", encoding="utf-8")
+        self.assertEqual(self.log()["lines"], [
+            "Running the tests.", "> Bash: Run pytest", "< 72 passed", "< error: boom", "not json"])
 
     def test_older_workflow_directory_is_ignored(self):
         write_run(self.root, self.RUN_ID, [self.wf, self.old])  # the last directory is now wf_old
@@ -828,6 +855,74 @@ class HostAndDiscoveryTest(unittest.TestCase):
         self.assertEqual(len(request(self, "GET", "/api/projects")), 1)
 
 
+class DocEditRouteTest(unittest.TestCase):
+    """`/api/doc/state`, `/api/doc/save`, `/api/doc/commit` and `/api/features` (FR-035) through the handler."""
+
+    def setUp(self):
+        import subprocess
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        write_project(self.root / "specs" / "001-only", STATUS_TASKS, STATUS_BLOCKED)
+        (self.root / "specs" / "001-only" / "spec.md").write_text("# Spec\n", encoding="utf-8")
+        for args in (("init", "-q"), ("config", "user.email", "t@example.com"), ("config", "user.name", "T"),
+                     ("add", "."), ("commit", "-q", "-m", "init")):
+            subprocess.run(["git", *args], cwd=self.root, capture_output=True, check=True)
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
+
+    def tearDown(self):
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.saved
+        self.tmp.cleanup()
+
+    def test_features_and_state(self):
+        self.assertEqual(request(self, "GET", "/api/features"), {"features": ["001-only"], "active": "001-only"})
+        st = request(self, "GET", "/api/doc/state?name=spec")
+        self.assertEqual((st["path"], st["dirty"], st["locked"]), ("specs/001-only/spec.md", False, None))
+        request(self, "GET", "/api/doc/state?name=plan", status=404)
+
+    def test_save_then_commit(self):
+        base = request(self, "GET", "/api/doc/state?name=spec")["hash"]
+        saved = request(self, "POST", "/api/doc/save", {"name": "spec", "text": "# Spec\n\nMore.\n", "base": base})
+        self.assertTrue(saved["ok"] and saved["dirty"])
+        self.assertIn("More.", request(self, "GET", "/api/doc?name=spec"))
+        done = request(self, "POST", "/api/doc/commit", {"name": "spec", "message": "docs(spec): more"})
+        self.assertTrue(done["ok"])
+        self.assertFalse(done["dirty"])
+
+    def test_refusals_carry_the_reason(self):
+        got = request(self, "POST", "/api/doc/save", {"name": "spec", "text": "# X\n", "base": "stale"}, status=409)
+        self.assertIn("changed since you opened it", got["error"])
+        request(self, "POST", "/api/doc/save", {"name": "plan", "text": "# X\n", "base": "x"}, status=400)
+        request(self, "POST", "/api/doc/commit", {"name": "spec"}, status=400)
+        got = request(self, "POST", "/api/doc/commit", {"name": "spec", "message": "docs: x"}, status=409)
+        self.assertIn("no uncommitted change", got["error"])
+
+
+class NavigationTest(unittest.TestCase):
+    """The section lives in the URL hash, and there is no project picker: the dashboard serves the
+    project it was started in. Behaviour is checked in a browser (tests/ui)."""
+
+    def setUp(self):
+        self.html = dash.build_html()
+
+    def test_section_is_kept_in_the_url(self):
+        self.assertIn("function sectionFromHash()", self.html)
+        self.assertIn("history[sectionShown ? 'pushState' : 'replaceState']", self.html)
+        self.assertIn("showSection(sectionFromHash());", self.html)
+        self.assertIn("addEventListener('popstate'", self.html)
+
+    def test_overview_is_a_summary_not_a_file_list(self):
+        self.assertNotIn("Project Files", self.html)
+        self.assertNotIn("data-file=", self.html)
+        for part in ("ov-progress", "ov-needs", "ov-next", "ov-phases", "ov-runs"):
+            self.assertIn('id="%s"' % part, self.html)
+
+    def test_no_project_picker(self):
+        for gone in ("Load Project", "btn-load-project", "project-select", "selectProjectPath"):
+            self.assertNotIn(gone, self.html)
+        self.assertIn('id="project-name"', self.html)
+
+
 class StatusSystemTest(unittest.TestCase):
     """data-model.md §1 (FR-003, SC-002): CSS colors, GLYPHS, STATUS and statusBadge() in build_html()."""
 
@@ -842,7 +937,7 @@ class StatusSystemTest(unittest.TestCase):
     def setUpClass(cls):
         cls.html = dash.build_html()
         start = cls.html.index("function escapeHtml(")
-        cls.js = cls.html[start:cls.html.index("function loadProjects(")]
+        cls.js = cls.html[start:cls.html.index("function loadProject(")]
 
     def test_css_variable_per_key(self):
         self.assertEqual(set(self.COLORS), set(dash.ROLLUP_ORDER))
@@ -931,7 +1026,9 @@ class TasksViewTest(unittest.TestCase):
                  " status_reason: 'stuck', question: 'Which port?'},"
                  " {id: 'T3', text: 'c', tags: [], status: 'wontfix'},"
                  " {id: 'T4', text: 'd', tags: [], status: null, done: false},"
-                 " {id: 'T5', text: 'e', tags: [], status: 'done', done: true}]")
+                 " {id: 'T5', text: 'e', tags: [], status: 'done', done: true},"
+                 " {id: 'T6', text: 'f', tags: [], status: 'held', status_tag: 'dependency',"
+                 " status_reason: 'depends on T1, which is held (manual)'}]")
         got = self.run_js("(function(ts) { return {waiting: ts.filter(isWaiting).map(function(t) { return t.id; }),"
                           " held: waitingItemHtml(ts[0], 'Phase 1'), blocked: waitingItemHtml(ts[1], 'Phase 1'),"
                           " counts: countTasks([{tasks: ts}])}; })(" + tasks + ")")
@@ -939,7 +1036,7 @@ class TasksViewTest(unittest.TestCase):
         self.assertIn("needs a person", got["held"])
         self.assertIn("Which port?", got["blocked"])
         self.assertIn('title="Blocked"', got["blocked"])
-        self.assertEqual(got["counts"], {"total": 5, "done": 1, "waiting": 2, "blocked": 1})
+        self.assertEqual(got["counts"], {"total": 6, "done": 1, "waiting": 2, "blocked": 1})
 
     def test_entry_badges(self):
         got = self.run_js("[entryBadge({status: 'open'}), entryBadge({status: 'resolved'}), entryBadge({status: 'wontfix'}),"
@@ -1075,8 +1172,12 @@ class DocumentsViewTest(unittest.TestCase):
         for name in dash.DOC_NAMES:
             if name in ("tasks", "blocked"):
                 self.assertIn('data-raw="%s"' % name, self.html)
+            elif name in ("spec", "plan", "research", "data-model", "quickstart", "constitution", "learnings"):
+                self.assertNotIn('class="nav-item" data-section="%s"' % name, self.html)  # a tab under Docs
             else:
                 self.assertIn('class="nav-item" data-section="%s"' % name, self.html)
+        self.assertIn('class="nav-item" data-section="docs"', self.html)
+        self.assertIn("var DOC_GROUP = ['spec', 'plan', 'research', 'data-model', 'quickstart', 'constitution', 'learnings'];", self.html)
         self.assertIn("Raw document", self.html)
         self.assertIn("'Not written yet'", self.html)
 
