@@ -16,6 +16,9 @@ see `research.md`).
 - Q: Should the dashboard let the person make decisions, not just see them? → A: Yes (FR-033), with a button that
   applies the decision and commits it (user choice, 2026-10-29), so no terminal step is needed. This
   is the one exception to FR-020 besides the control file.
+- Q: Can a person start a run from the dashboard, not only stop and resume one? → A: Yes (FR-034, user
+  request 2026-10-29). The dashboard starts a supervised run through `bin/sdd-launch.py`, so the Stop,
+  Resume and Keep paused controls then work on it. This is a further exception to FR-020.
 
 ### Session 2026-10-25
 - Q: Should the unified task terminal-state model (FR-007) cover only parked/waiting-on-a-person
@@ -177,6 +180,25 @@ The person watching a supervised run wants to stop it, and later continue it, wi
 5. Given a request to a control route from another website (a browser tab on a different origin) or
    without a JSON body, it is rejected and the run is unaffected.
 
+### User Story 8 - Start a run from the dashboard (P2)
+
+A person looks at what is runnable and held, picks the phases and clicks Start. The run starts under the
+supervisor, and the Stop, Resume and Keep paused buttons control it. No terminal is needed to start,
+pause, answer a decision or resume.
+
+**Acceptance**:
+1. Given a clean tree and runnable tasks, the Runs view shows a Start run panel with each runnable phase
+   and its task count, a "skip converge" option (on by default), an optional task cap and the number of
+   held tasks.
+2. Clicking Start asks for confirmation (phases and task count), then starts one supervised run and shows
+   the run banner within 5 seconds.
+3. Given a supervisor already running, a dirty working tree (no interrupted run to resume), a project
+   that is not a git repository, or nothing runnable, the panel says why and Start does nothing.
+4. Given an interrupted run (`.sdd/run.json`, no live supervisor), the panel says which run it resumes,
+   and starting it does not require a clean tree.
+5. The run the dashboard starts is the same as one started from a terminal with `bin/sdd-supervise.py`:
+   it uses the session's model settings, commits only on its `auto/` branch and never pushes.
+
 ### Edge Cases
 - A Stop is requested while the supervisor is in the usage-limit wait, or a Resume while a run is
   going: the route answers `409` with the reason and writes nothing.
@@ -250,7 +272,8 @@ The person watching a supervised run wants to stop it, and later continue it, wi
   itself. Any future action (creating a spec, amending a task) MUST be delegated to a Claude Code
   session that performs it under the run guard. This feature documents that action channel's shape
   and ships no other action routes. The only exceptions are FR-029 (one control request file in the
-  supervisor's state directory, outside the project) and FR-033 (saving and applying a decision).
+  supervisor's state directory, outside the project), FR-033 (saving and applying a decision) and
+  FR-034 (starting a supervised run).
 - **FR-021**: A running task's dashboard view MUST show its live agent output (a tail of its
   transcript), or a clear "not available yet" state — never an error.
 - **FR-022**: The dashboard server MUST bind only to localhost, and MUST reject requests whose Host
@@ -308,6 +331,17 @@ The person watching a supervised run wants to stop it, and later continue it, wi
   repository, or when the task is not an open decision; the saved answer then stays and the view shows
   the reason and an "Apply now" button. If the commit fails the files are restored. `/sdd-unblock`
   applies any answer file still waiting.
+- **FR-034**: The dashboard MUST let a person start a supervised run. `GET /api/run/plan` returns what a
+  run would do (runnable phases with their task counts, the number of held tasks, whether it can start
+  and why not, and the run it would resume); `POST /api/run/start` (with the FR-030 checks) with
+  `{phases?, no_converge?, max_tasks?}` starts `bin/sdd-supervise.py` detached through
+  `bin/sdd-launch.py` and answers `202 {pid}`, or `409 {error}` when it cannot start. The launcher MUST
+  refuse, and start nothing, when a supervisor is already running, when the working tree has changes
+  and no interrupted run is being resumed, when the project is not a git repository, or when no task is
+  runnable; it MUST reject a phase with no runnable task and a task cap outside 1 to 500. It sets the
+  orchestrating session's model as the documented run launch does, and writes its output to
+  `launch.log` in the supervisor's state directory. The dashboard source itself contains no process
+  spawning; the helper does it.
 
 ### Key Entities
 - **Run control request**: one command (`stop` with a mode, `resume`, `hold` or `release`), an id and a time, written by
@@ -341,6 +375,8 @@ The person watching a supervised run wants to stop it, and later continue it, wi
   both runs, and the plugin's `logs/` has each plugin feedback entry exactly once.
 - **SC-007**: Removing the rendering code of any one dashboard view (for example the status badge on
   the task card) makes at least one browser test fail and name the view.
+- **SC-008**: From a clean tree with runnable tasks, a person starts a run, answers a decision, stops it
+  and resumes it using only the dashboard, and the run's commits appear on its `auto/` branch.
 
 ## Out of Scope
 - Chat window for free-form questions, spec authoring and amendments (backlog item 40): the next

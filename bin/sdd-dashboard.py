@@ -33,10 +33,13 @@ Endpoints:
     GET /api/decisions            -- open [decision] tasks, with answers already given (FR-033)
     POST /api/decisions/answer    -- { "task", "answer" } save a decision answer and apply it (sdd-decide.py)
     POST /api/decisions/apply     -- { "task" } try again to apply a saved answer
+    GET /api/run/plan             -- what a run would do and whether it can start now (FR-034)
+    POST /api/run/start           -- { "phases"?, "no_converge"?, "max_tasks"? } start a supervised run
 Every POST needs an allowed Origin and `Content-Type: application/json` (data-model.md §4.9).
 The control routes write one request to `control.json`, and the answer route one file per answer in
 `answers/` of the supervisor's state directory, both outside the project. Applying an answer calls
-`sdd-decide.py`, which commits the decision files (FR-033); nothing else is ever written (§4.8).
+`sdd-decide.py`, which commits the decision files (FR-033), and starting a run calls `sdd-launch.py`
+(FR-034); nothing else is ever written (§4.8).
 """
 
 from __future__ import annotations
@@ -59,6 +62,8 @@ _spec = importlib.util.spec_from_file_location("sdd_tasks", Path(__file__).with_
 sdd_tasks = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_tasks)
 _spec = importlib.util.spec_from_file_location("sdd_decide", Path(__file__).with_name("sdd-decide.py"))
 sdd_decide = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_decide)
+_spec = importlib.util.spec_from_file_location("sdd_launch", Path(__file__).with_name("sdd-launch.py"))
+sdd_launch = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_launch)
 
 # The supervisor's state directory comes from the supervisor itself, so both use the same one
 # (data-model.md §12.3).
@@ -738,6 +743,37 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         outcome = try_apply(proj, feature, task_id, saved["answer"])
         self._send_json({"ok": True, **outcome}, 200 if outcome["applied"] else 202, cors)
 
+    def _start_run(self):
+        """`POST /api/run/start` (FR-034), after the §4.9 checks: 400 for a bad body, 409 when the run
+        cannot start (the reason is in `error`), else a detached supervised run and `202 {pid, run_args}`."""
+        cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
+        try:
+            data = self._read_json_body()
+        except ValueError:
+            self._send_json({"error": "body must be JSON"}, 400, cors)
+            return
+        if not isinstance(data, dict):
+            self._send_json({"error": "body must be a JSON object"}, 400, cors)
+            return
+        phases, no_converge, max_tasks = data.get("phases", []), data.get("no_converge", True), data.get("max_tasks")
+        if (not isinstance(phases, list) or not all(isinstance(p, (str, int)) and not isinstance(p, bool) for p in phases)
+                or not isinstance(no_converge, bool)
+                or (max_tasks is not None and (not isinstance(max_tasks, int) or isinstance(max_tasks, bool)))):
+            self._send_json({"error": "phases must be a list, no_converge a boolean, max_tasks a whole number"}, 400, cors)
+            return
+        proj = DashboardHandler.project
+        feature = self._feature_dir()
+        if feature is None:
+            self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409, cors)
+            return
+        try:
+            result = sdd_launch.launch(proj, feature, [str(p) for p in phases], no_converge, max_tasks)
+        except sdd_launch.Refused as e:
+            self._send_json({"error": str(e)}, 409, cors)
+            return
+        self._send_json({"ok": True, "pid": result["pid"], "run_args": result["run_args"],
+                         "resumes": result["resumes"]}, 202, cors)
+
     def _feature_dir(self):
         """The person's in-memory choice if one was made, else active_feature()."""
         proj = DashboardHandler.project
@@ -864,6 +900,13 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/run/current":
             self._send_json(run_state(proj))
             return
+        if path == "/api/run/plan":
+            feature = self._feature_dir()
+            if feature is None:
+                self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409)
+                return
+            self._send_json(sdd_launch.preview(proj, feature))
+            return
         self.send_response(404)
         self.end_headers()
 
@@ -881,6 +924,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/api/decisions/apply":
             self._apply_saved()
+            return
+        if path == "/api/run/start":
+            self._start_run()
             return
         if path == "/api/project/select":
             try:
@@ -1134,6 +1180,11 @@ def build_html():
   .choice-key { font-family: 'JetBrains Mono', monospace; font-weight: 700; margin-right: 0.35rem; }
   .choice-rec { margin-left: 0.4rem; font-size: 0.75rem; font-weight: 600; color: var(--accent); }
   .decision-after { color: var(--text-muted); font-size: 0.85rem; }
+  .start-summary { margin-bottom: 0.5rem; color: var(--text-muted); font-size: 0.875rem; }
+  .start-reason { padding: 0.5rem 0.75rem; border-left: 3px solid var(--st-held, orange); background: var(--bg); border-radius: 4px; font-size: 0.875rem; }
+  .start-phase, .start-option { display: block; margin: 0.35rem 0; font-size: 0.9rem; }
+  .start-count { color: var(--text-muted); font-size: 0.8rem; margin-left: 0.4rem; }
+  #start-run-btn { margin-top: 0.5rem; }
   .decision-answer { width: 100%; margin: 0.5rem 0; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; font-size: 0.875rem; box-sizing: border-box; }
   .decision-options { margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
   .decision-saved { margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted, inherit); }
@@ -1324,6 +1375,10 @@ def build_html():
 
       <!-- Runs -->
       <section id="section-runs" class="section" style="display:none;">
+        <div class="card" id="start-run-card">
+          <div class="card-title">Start a run</div>
+          <div id="start-run-body"></div>
+        </div>
         <div class="card-title">Run History</div>
         <div id="runs-list"></div>
         <div class="card" style="margin-top:1rem;">
@@ -1813,7 +1868,7 @@ def build_html():
         if (name === 'tasks') loadTasks();
         if (name === 'blocked') loadBlocked();
         if (name === 'decisions') loadDecisions();
-        if (name === 'runs') loadRuns();
+        if (name === 'runs') { loadRuns(); loadStartRun(); }
         if (name === 'status') loadStatus();
         if (isDoc) loadDoc(name);
       } catch(e) { console.error('showSection error', e); }
@@ -1971,6 +2026,48 @@ def build_html():
       }).catch(function(e) { console.error('loadDecisions error', e); });
     }
 
+    // Start run (FR-034): what a run would do, and a button that starts one under the supervisor.
+    function startRunHtml(plan) {
+      if (!plan) return '<div class="empty"><div>Could not read the run plan.</div></div>';
+      var phases = (plan.phases || []).map(function(p) {
+        return '<label class="start-phase"><input type="checkbox" class="start-phase-box" value="' + escapeHtml(p.id) + '" checked> ' +
+          'Phase ' + escapeHtml(p.id) + ': ' + escapeHtml(p.title) + ' <span class="start-count">' + p.runnable + ' task' + (p.runnable === 1 ? '' : 's') + '</span></label>';
+      }).join('');
+      var head = '<div class="start-summary">' + plan.runnable + ' runnable, ' + plan.held + ' held.' +
+        (plan.resumes ? ' An interrupted run (' + escapeHtml(plan.resumes) + ') will be resumed.' : '') + '</div>';
+      if (!plan.can_start) return head + '<div class="start-reason">Cannot start: ' + escapeHtml(plan.reason) + '</div>';
+      return head + (phases || '<div class="start-reason">Nothing new to run; the interrupted run will be resumed.</div>') +
+        '<label class="start-option"><input type="checkbox" id="start-no-converge" checked> Skip converge</label>' +
+        '<label class="start-option">Task cap <input type="number" id="start-max-tasks" min="1" max="500" placeholder="none" style="width:5rem"></label>' +
+        '<div><button class="btn" id="start-run-btn">Start run</button></div>';
+    }
+
+    function loadStartRun() {
+      var el = document.getElementById('start-run-body');
+      if (!el || (el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT')) return;
+      fetchJSON('/api/run/plan', 'GET').then(function(plan) { el.innerHTML = startRunHtml(plan); });
+    }
+
+    function startRun() {
+      var phases = [].slice.call(document.querySelectorAll('.start-phase-box')).filter(function(b) { return b.checked; })
+        .map(function(b) { return b.value; });
+      var cap = document.getElementById('start-max-tasks').value;
+      var body = { phases: phases, no_converge: document.getElementById('start-no-converge').checked };
+      if (cap) body.max_tasks = parseInt(cap, 10);
+      var count = 0;
+      document.querySelectorAll('.start-phase-box').forEach(function(b) {
+        if (b.checked) count += parseInt(b.parentNode.querySelector('.start-count').textContent, 10) || 0;
+      });
+      if (!window.confirm('Start an unattended run of ' + (phases.length ? 'phase ' + phases.join(', ') : 'the open phases') +
+          ' (' + count + ' tasks)? It makes commits on its own auto/ branch and uses your usage.')) return;
+      fetch('/api/run/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function(res) { return res.json().then(function(d) { return { ok: res.ok, body: d || {} }; }); })
+        .then(function(r) {
+          toast(r.ok ? 'Run started' : 'Could not start: ' + (r.body.error || 'unknown error'));
+          loadStartRun(); loadRunState();
+        }).catch(function(e) { console.error('startRun error', e); toast('Could not start the run'); });
+    }
+
     function applyDecision(task) {
       fetch('/api/decisions/apply', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: task })
@@ -2005,6 +2102,7 @@ def build_html():
       if (!t || !t.classList) return;
       if (t.classList.contains('decision-submit')) saveDecision(t.getAttribute('data-task'));
       if (t.classList.contains('decision-apply')) applyDecision(t.getAttribute('data-task'));
+      if (t.id === 'start-run-btn') startRun();
       if (t.classList.contains('decision-option')) {
         var box = document.getElementById('answer-' + t.getAttribute('data-task'));
         if (box) { box.value = '(' + t.getAttribute('data-option') + ') ' + box.value.replace(/^\\([a-z]\\)\\s*/, ''); box.focus(); }
@@ -2288,7 +2386,7 @@ def build_html():
       if (selectedSection === 'tasks') loadTasks();
       if (selectedSection === 'blocked') loadBlocked();
       if (selectedSection === 'decisions') loadDecisions();
-      if (selectedSection === 'runs') { loadRuns(); loadEvents(); }
+      if (selectedSection === 'runs') { loadRuns(); loadEvents(); loadStartRun(); }
       if (selectedSection === 'status') loadStatus();
       try { document.getElementById('refresh-time').textContent = new Date().toLocaleTimeString(); } catch(e) {}
     }

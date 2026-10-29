@@ -1563,6 +1563,86 @@ class DecisionsTest(unittest.TestCase):
             self.assertIn(needle, html)
 
 
+class StartRunTest(unittest.TestCase):
+    """FR-034: `GET /api/run/plan` and `POST /api/run/start`, with the launcher stubbed."""
+
+    TASKS = "## Phase 1: A\n\n- [ ] T001 Do it\n- [ ] T002 [manual] You\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.root = base / "project"
+        (self.root / ".sdd").mkdir(parents=True)
+        (self.root / "specs" / "001-a").mkdir(parents=True)
+        (self.root / "specs" / "001-a" / "tasks.md").write_text(self.TASKS, encoding="utf-8")
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature,
+                      dash.DashboardHandler.port, dash.DashboardHandler.allow_ports)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
+        dash.DashboardHandler.port, dash.DashboardHandler.allow_ports = 8765, ()
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(base / "state")})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        (dash.DashboardHandler.project, dash.DashboardHandler.feature,
+         dash.DashboardHandler.port, dash.DashboardHandler.allow_ports) = self.saved
+        self.tmp.cleanup()
+
+    def init_git(self):
+        import subprocess
+        for args in (("init", "-q"), ("config", "user.email", "t@example.com"), ("config", "user.name", "T"),
+                     ("add", "."), ("commit", "-q", "-m", "init")):
+            subprocess.run(["git", *args], cwd=self.root, capture_output=True, check=True)
+
+    def test_plan_reports_runnable_phases_and_why_it_cannot_start(self):
+        data = request(self, "GET", "/api/run/plan")
+        self.assertFalse(data["can_start"])  # not a git repository yet
+        self.assertIn("git repository", data["reason"])
+        self.init_git()
+        data = request(self, "GET", "/api/run/plan")
+        self.assertTrue(data["can_start"])
+        self.assertEqual(data["phases"], [{"id": "1", "title": "A", "runnable": 1}])
+        self.assertEqual((data["runnable"], data["held"]), (1, 1))
+
+    def test_start_calls_the_launcher_and_answers_202(self):
+        self.init_git()
+        with mock.patch.object(dash.sdd_launch, "launch", return_value={"pid": 99, "run_args": "--no-converge",
+                                                                      "resumes": None}) as launch:
+            data = request(self, "POST", "/api/run/start", {"phases": ["1"], "no_converge": True, "max_tasks": 2},
+                           status=202)
+        self.assertEqual((data["ok"], data["pid"]), (True, 99))
+        args = launch.call_args.args
+        self.assertEqual(args[0], self.root)
+        self.assertEqual(args[2:], (["1"], True, 2))
+
+    def test_a_refusal_is_409_with_the_reason(self):
+        self.init_git()
+        (self.root / "stray.txt").write_text("mine")
+        data = request(self, "POST", "/api/run/start", {}, status=409)
+        self.assertIn("working tree has changes", data["error"])
+
+    def test_bad_bodies_are_400_and_nothing_starts(self):
+        with mock.patch.object(dash.sdd_launch, "launch") as launch:
+            for body in ({"phases": "1"}, {"phases": [{}]}, {"no_converge": "yes"}, {"max_tasks": "3"},
+                         {"max_tasks": True}, ["x"]):
+                request(self, "POST", "/api/run/start", body, status=400)
+            request(self, "POST", "/api/run/start", raw=b"{nope", status=400)
+        launch.assert_not_called()
+
+    def test_origin_and_content_type_are_checked(self):
+        with mock.patch.object(dash.sdd_launch, "launch") as launch:
+            request(self, "POST", "/api/run/start", {}, origin="http://evil.example", status=403)
+            request(self, "POST", "/api/run/start", {}, origin=None, status=403)
+            request(self, "POST", "/api/run/start", {}, content_type="text/plain", status=415)
+        launch.assert_not_called()
+
+    def test_the_runs_view_has_a_start_panel_with_a_confirmation(self):
+        html = dash.build_html()
+        for needle in ('id="start-run-card"', "function loadStartRun", "function startRun",
+                       "/api/run/start", "/api/run/plan", "window.confirm"):
+            self.assertIn(needle, html)
+
+
 class ReadOnlyTest(unittest.TestCase):
     """data-model.md §4.8 (FR-020): the dashboard's source has no way to write or run anything,
     except `write_control()` and `write_answer()` (FR-033), which write `control.json` and one answer file
