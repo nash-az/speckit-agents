@@ -210,6 +210,13 @@ The test did not actually run in a browser. These are environment results, not d
   `ThreadingHTTPServer` in `bin/sdd-dashboard.py`), so the dashboard can't start here either.
 - Harness finding for T065: `UITestCase.setUpClass` only skips when the browser is missing. When the browser launches but
   the dashboard can't bind its port, `Dashboard.start()` raises `RuntimeError`, so the class errors instead of skipping.
+  - **Result (T065): fixed.** Test first: `test_ui_test_case_skips_when_dashboard_cannot_start` in
+    `tests/test_ui_harness.py` (a faked browser, `Dashboard.start` raising the bind error) failed with the class in
+    `errors`. Fix: `start_dashboard()` in `tests/ui/harness.py` turns that `RuntimeError` into a one-line skip
+    ("the dashboard cannot start (... ; PermissionError: ...)"), or a failure under `SDD_UI_TESTS=1`
+    (`skip_or_fail()`, shared with `require_browser()`; tested by `test_ui_test_case_fails_when_dashboard_cannot_start_and_strict`).
+    `UITestCase` and the test classes with their own `setUpClass` (`test_views.py`, `test_banner.py`, `test_rollup.py`)
+    all start their dashboard through it.
 
 Dashboard findings (console errors, phases missing from the Tasks view): none yet. The smoke test still has to be run
 outside the sandbox with `SDD_UI_TESTS=1 python3 -m unittest tests/ui/test_smoke.py -v`, and its failures listed here.
@@ -237,11 +244,23 @@ Failures (listed, not fixed, per FR-031):
   `offline: blocked request to https://fonts.googleapis.com/...` and the console error `Failed to load resource: net::ERR_FAILED`.
   Both tests fail on this one error. Possible fixes (not chosen here): drop the web fonts for a system font stack, or vendor
   the fonts and add them to the CDN fallback (FR-032).
+  - **Result (T065): fixed by dropping the web fonts.** Vendoring them would be a download and a fifth CDN dependency the
+    plan does not list (plan.md Technical Context names only `marked`, `@highlightjs/cdn-assets` and `dompurify`); the CSS
+    already had system fallbacks after `'Inter'` and `'JetBrains Mono'`, so no style rule changed. Those two fonts are
+    still used where they are installed locally. Test first: `DocumentsViewTest.test_no_other_external_urls` in
+    `tests/test_sdd_dashboard.py` (the page's only `<script src>`/`<link href>` network loads are the four pinned files)
+    failed on the fonts URL, and `tests/ui/test_smoke.py` failed 2 of 2 (with `test_status.py` 3 of 3). After removing the
+    `<link>` from `build_html()`, both pass, and the `WEB_FONTS` empty-stylesheet workaround in `test_views.py`,
+    `test_banner.py` and `test_rollup.py` (marked "remove with T065") is gone: `python3 -m unittest discover -s tests/ui`
+    runs 24 tests, OK; `python3 -m unittest discover -s tests` runs 321, OK.
 - **Test expectation, fixed in the test:** the first version expected the raw `## Phase 1: Setup` heading. The dashboard shows
   the parser's title (`Setup`, per `PHASE_RE` in `bin/sdd-tasks.py`), uppercased with CSS. The test now reads the title span's
   DOM text and compares it without case. With that change the Tasks view lists the toy's phase. The only failure left is the
   font error above.
+  - **Result (T065):** nothing to fix in the dashboard; the smoke test passes with this expectation.
 - Observation, not a failure: the Tasks view phase heading does not show the phase number ("SETUP", not "Phase 1: Setup").
+  - **Result (T065):** left as it is. No test or requirement asks for the number, and whether to show it is a layout
+    choice for the design review (T067 and the design fold-in), not a defect, so it is not in `BLOCKED.md` either.
 
 Screenshots and HTML of both failures: `.sdd/scratch/ui/tests.ui.test_smoke.SmokeTest.*.{png,html}` (git-ignored).
 `SDD_UI_TESTS=1` was not set for this run because the run's shell refuses `VAR=value` prefixes. It was not needed: the

@@ -15,10 +15,6 @@ shows the feature picker listing both, and choosing one loads its Tasks view (FR
 `CdnBlockedTest` aborts the four CDN URLs: the Documents view shows the raw text under a one-line
 notice and the Tasks view still lists its cards (FR-032).
 
-The page loads Google Fonts from the network (`research.md` `## First browser run`, fixed by T065).
-Until then `open_view()` answers that one stylesheet with an empty one, so the offline page records
-no error for it; every other request and console error still fails the test.
-
 Run it with `python3 -m unittest discover -s tests/ui`. It skips without Playwright or a Chromium;
 `SDD_UI_TESTS=1` makes that a failure. Not part of the default `checks.commands`.
 """
@@ -38,7 +34,6 @@ _spec.loader.exec_module(harness)
 
 TIMEOUT_MS = 10000
 RUN_ID = "20261030-1200"
-WEB_FONTS = "https://fonts.googleapis.com/**"  # the known finding above; remove with T065
 
 SPEC = """# Feature: Toy views
 
@@ -89,7 +84,7 @@ class ViewsTest(harness.UITestCase):
         harness.require_browser()
         cls._tmp = tempfile.TemporaryDirectory(prefix="sdd-ui-views-")
         project = build_views_project(Path(cls._tmp.name) / "toy")
-        cls.dashboard = harness.Dashboard(project).start()
+        cls.dashboard = harness.start_dashboard(project)
 
     @classmethod
     def tearDownClass(cls):
@@ -102,14 +97,8 @@ class ViewsTest(harness.UITestCase):
 
     @contextlib.contextmanager
     def open_view(self, section, element=None):
-        """The dashboard at `#<section>`, with the web-font stylesheet answered empty (see the module doc);
-        returns once `element` (default `#section-<section>`) is visible.
-
-        The harness opens a same-origin JSON page first, so the route is in place before the
-        dashboard's own first load."""
-        with harness.browser_page(self.dashboard.url + "api/features", name=self.id()) as ui:
-            ui.page.route(WEB_FONTS, lambda route: route.fulfill(status=200, content_type="text/css", body=""))
-            ui.page.goto(self.dashboard.url + "#" + section)
+        """The dashboard at `#<section>`; returns once `element` (default `#section-<section>`) is visible."""
+        with harness.browser_page(self.dashboard.url + "#" + section, name=self.id()) as ui:
             ui.page.locator(element or "#section-" + section).wait_for(state="visible", timeout=TIMEOUT_MS)
             yield ui
             ui.page.wait_for_load_state("networkidle")
@@ -242,7 +231,7 @@ class FeaturePickerTest(harness.UITestCase):
         cls._tmp = tempfile.TemporaryDirectory(prefix="sdd-ui-picker-")
         project = build_picker_project(Path(cls._tmp.name) / "toy")
         assert not (project / ".specify" / "feature.json").exists()
-        cls.dashboard = harness.Dashboard(project).start()
+        cls.dashboard = harness.start_dashboard(project)
 
     @classmethod
     def tearDownClass(cls):
@@ -253,9 +242,7 @@ class FeaturePickerTest(harness.UITestCase):
         with urllib.request.urlopen(self.dashboard.url + "api/features", timeout=10) as res:
             features = json.loads(res.read().decode("utf-8"))
         self.assertEqual(features, {"features": sorted(PICKER_FEATURES), "active": None})
-        with harness.browser_page(self.dashboard.url + "api/features", name=self.id(), ignore=PICKER_IGNORE) as ui:
-            ui.page.route(WEB_FONTS, lambda route: route.fulfill(status=200, content_type="text/css", body=""))
-            ui.page.goto(self.dashboard.url + "#tasks")
+        with harness.browser_page(self.dashboard.url + "#tasks", name=self.id(), ignore=PICKER_IGNORE) as ui:
             picker = ui.page.locator("#feature-picker")
             picker.wait_for(state="visible", timeout=TIMEOUT_MS)
             buttons = picker.locator("#feature-picker-list button[data-feature]")
@@ -295,7 +282,7 @@ class CdnBlockedTest(harness.UITestCase):
         harness.require_browser()
         cls._tmp = tempfile.TemporaryDirectory(prefix="sdd-ui-cdn-")
         project = build_views_project(Path(cls._tmp.name) / "toy")
-        cls.dashboard = harness.Dashboard(project).start()
+        cls.dashboard = harness.start_dashboard(project)
 
     @classmethod
     def tearDownClass(cls):
@@ -305,7 +292,8 @@ class CdnBlockedTest(harness.UITestCase):
     @contextlib.contextmanager
     def open_offline(self, section, element):
         """The dashboard at `#<section>` with the four CDN URLs aborted (a page route outranks the
-        harness's context route that serves the vendored copies) and the web fonts answered empty."""
+        harness's context route that serves the vendored copies). The harness opens a same-origin
+        JSON page first, so the routes are in place before the dashboard's own first load."""
         blocked = []
 
         def abort(route):
@@ -316,7 +304,6 @@ class CdnBlockedTest(harness.UITestCase):
                                   ignore=CDN_BLOCKED_IGNORE) as ui:
             for url in harness.CDN:
                 ui.page.route(url, abort)
-            ui.page.route(WEB_FONTS, lambda route: route.fulfill(status=200, content_type="text/css", body=""))
             ui.page.goto(self.dashboard.url + "#" + section)
             ui.page.locator(element).wait_for(state="visible", timeout=TIMEOUT_MS)
             yield ui

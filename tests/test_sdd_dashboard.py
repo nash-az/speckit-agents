@@ -1289,6 +1289,14 @@ class DocumentsViewTest(unittest.TestCase):
             self.assertIn(tag, self.html)
         self.assertNotIn("npm/highlight.js", self.html)
 
+    def test_no_other_external_urls(self):
+        """T065 (research.md `## First browser run`): the four pinned files are the page's only network
+        loads; the web fonts link made every offline browser test fail, so the CSS uses its system fallbacks."""
+        loads = re.findall(r'<(?:script|link)\b[^>]*\b(?:src|href)="(https?://[^"]+)"', self.html)
+        pinned = [re.search(r'(?:src|href)="([^"]+)"', tag).group(1) for tag in self.URLS]
+        self.assertEqual(sorted(loads), sorted(pinned))
+        self.assertNotIn("fonts.googleapis.com", self.html)
+
     def test_nav_entry_per_doc_name(self):
         got = self.run_js("DOC_TITLES")
         self.assertEqual(set(got), set(dash.DOC_NAMES))

@@ -15,8 +15,9 @@ Leaving the `with` block normally fails the test when anything was recorded; `ui
 the records, and `ignore=` takes regexes for records a test expects.
 
 When `playwright` cannot be imported or neither Chromium nor Google Chrome launches, `UITestCase`
-and `browser_page()` skip with a one-line reason naming the install command; `SDD_UI_TESTS=1`
-turns that skip into a failure (`require_browser()`).
+and `browser_page()` skip with a one-line reason naming the install command; `UITestCase` also
+skips when the dashboard cannot start (a sandbox that refuses a local port). `SDD_UI_TESTS=1`
+turns either skip into a failure (`require_browser()`, `skip_or_fail()`).
 """
 
 from __future__ import annotations
@@ -141,6 +142,17 @@ class Dashboard:
         self.stop()
 
 
+def start_dashboard(project=None):
+    """`Dashboard(project).start()`, skipping (or failing under `SDD_UI_TESTS=1`) when it cannot start,
+    e.g. in a sandbox that refuses to bind a local port."""
+    try:
+        return Dashboard(project).start()
+    except RuntimeError as exc:
+        lines = [l.strip() for l in str(exc).strip().splitlines() if l.strip()]
+        cause = "; ".join(dict.fromkeys(lines[:1] + lines[-1:])) or type(exc).__name__  # first line, stderr's last
+        skip_or_fail("the dashboard cannot start (%s)" % cause)
+
+
 class UITestCase(unittest.TestCase):
     """Starts one dashboard on the toy project per test class; `self.dashboard.url` is the page."""
 
@@ -150,7 +162,7 @@ class UITestCase(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
         require_browser()
-        cls.dashboard = Dashboard().start()
+        cls.dashboard = start_dashboard()
 
     @classmethod
     def tearDownClass(cls):
@@ -237,8 +249,12 @@ def browser_problem(refresh=False):
 def require_browser():
     """Skip (raise `unittest.SkipTest`) when there is no browser; fail instead when `SDD_UI_TESTS=1`."""
     problem = browser_problem()
-    if problem is None:
-        return
+    if problem is not None:
+        skip_or_fail(problem)
+
+
+def skip_or_fail(problem):
+    """Raise `unittest.SkipTest(problem)`, or an `AssertionError` when `SDD_UI_TESTS=1`."""
     if os.environ.get(STRICT_ENV) == "1":
         raise AssertionError("%s (%s=1, so this fails instead of skipping)" % (problem, STRICT_ENV))
     raise unittest.SkipTest(problem)

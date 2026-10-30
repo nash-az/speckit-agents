@@ -1211,7 +1211,7 @@ def build_html():
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>speckit-agents Dashboard</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- No web fonts: 'Inter' and 'JetBrains Mono' are used when installed, else the system fallbacks in the CSS. -->
 <!-- Document rendering (data-model.md §4.3): pinned browser builds from jsDelivr -->
 <link href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github-dark.min.css" rel="stylesheet">
 <style>

@@ -6,9 +6,6 @@ The toy has its own `tasks.md` and `BLOCKED.md`; the expected status of each pha
 checked against both the API's phase `status` (Python `ROLLUP_ORDER`) and the heading badge the page
 draws (its JavaScript copy, recomputed over the merged states).
 
-The page loads Google Fonts from the network (`research.md` `## First browser run`, fixed by T065);
-`open_tasks()` answers that stylesheet with an empty one, as `test_views.py` does.
-
 Run it with `python3 -m unittest discover -s tests/ui`. It skips without Playwright or a Chromium;
 `SDD_UI_TESTS=1` makes that a failure. Not part of the default `checks.commands`.
 """
@@ -26,7 +23,6 @@ harness = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(harness)
 
 TIMEOUT_MS = 10000
-WEB_FONTS = "https://fonts.googleapis.com/**"  # the known finding above; remove with T065
 
 TASKS = """# Tasks
 
@@ -91,7 +87,7 @@ class PhaseRollupBrowserTest(harness.UITestCase):
         harness.require_browser()
         cls._tmp = tempfile.TemporaryDirectory(prefix="sdd-ui-rollup-")
         project = build_rollup_project(Path(cls._tmp.name) / "toy")
-        cls.dashboard = harness.Dashboard(project).start()
+        cls.dashboard = harness.start_dashboard(project)
 
     @classmethod
     def tearDownClass(cls):
@@ -104,9 +100,7 @@ class PhaseRollupBrowserTest(harness.UITestCase):
 
     @contextlib.contextmanager
     def open_tasks(self):
-        with harness.browser_page(self.dashboard.url + "api/features", name=self.id()) as ui:
-            ui.page.route(WEB_FONTS, lambda route: route.fulfill(status=200, content_type="text/css", body=""))
-            ui.page.goto(self.dashboard.url + "#tasks")
+        with harness.browser_page(self.dashboard.url + "#tasks", name=self.id()) as ui:
             ui.page.locator("#tasks-list .phase-heading").first.wait_for(state="visible", timeout=TIMEOUT_MS)
             yield ui
             ui.page.wait_for_load_state("networkidle")

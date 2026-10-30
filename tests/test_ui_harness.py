@@ -133,6 +133,35 @@ class SkipLogicTest(unittest.TestCase):
         self.assertEqual(result.skipped, [])
         self.assertEqual(len(result.errors) + len(result.failures), 1)
 
+    def _run_probe_with_dashboard_failure(self, env, clear):
+        """A browser is there (`_problem = None`) but the dashboard cannot bind its port (T065)."""
+        class Probe(harness.UITestCase):
+            def test_page(self):
+                pass
+
+        def refuse(self):
+            raise RuntimeError("dashboard did not report its port: ''\n"
+                               "PermissionError: [Errno 1] Operation not permitted")
+
+        harness._problem = None
+        with mock.patch.dict(os.environ, env, clear=clear), mock.patch.object(harness.Dashboard, "start", refuse):
+            return unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(
+                unittest.defaultTestLoader.loadTestsFromTestCase(Probe))
+
+    def test_ui_test_case_skips_when_dashboard_cannot_start(self):
+        result = self._run_probe_with_dashboard_failure(env_without_strict(), clear=True)
+        self.assertEqual(result.errors + result.failures, [])
+        self.assertEqual(len(result.skipped), 1)
+        reason = result.skipped[0][1]
+        self.assertIn("dashboard cannot start", reason)
+        self.assertIn("Operation not permitted", reason)
+        self.assertNotIn("\n", reason)
+
+    def test_ui_test_case_fails_when_dashboard_cannot_start_and_strict(self):
+        result = self._run_probe_with_dashboard_failure({harness.STRICT_ENV: "1"}, clear=False)
+        self.assertEqual(result.skipped, [])
+        self.assertEqual(len(result.errors) + len(result.failures), 1)
+
     def test_browser_page_skips_without_browser(self):
         with mock.patch.dict(sys.modules, NO_PLAYWRIGHT), mock.patch.dict(os.environ, env_without_strict(), clear=True):
             with self.assertRaises(unittest.SkipTest):

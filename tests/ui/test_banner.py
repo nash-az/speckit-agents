@@ -7,9 +7,6 @@ state directory that `state_dir()` gives for the toy project, under a temporary 
 that the dashboard process inherits. It reads back the `control.json` the dashboard writes and
 deletes it between tests, as the supervisor would.
 
-The page loads Google Fonts from the network (`research.md` `## First browser run`, fixed by T065);
-`open_page()` answers that stylesheet with an empty one, as `test_views.py` does.
-
 Run it with `python3 -m unittest discover -s tests/ui`. It skips without Playwright or a Chromium;
 `SDD_UI_TESTS=1` makes that a failure. Not part of the default `checks.commands`.
 """
@@ -33,7 +30,6 @@ sdd_supervise = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sdd_supervise)
 
 TIMEOUT_MS = 10000
-WEB_FONTS = "https://fonts.googleapis.com/**"  # the known finding above; remove with T065
 STOP_NOW_QUESTION = "Stop the run now?"
 
 
@@ -81,7 +77,7 @@ class BannerTestCase(harness.UITestCase):
         project = harness.build_toy_project(base / "toy")
         cls.supervisor = FakeSupervisor(base / "state", project)
         with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(cls.supervisor.state_home)}):
-            cls.dashboard = harness.Dashboard(project).start()
+            cls.dashboard = harness.start_dashboard(project)
 
     @classmethod
     def tearDownClass(cls):
@@ -94,12 +90,8 @@ class BannerTestCase(harness.UITestCase):
 
     @contextlib.contextmanager
     def open_page(self):
-        """The dashboard's Overview with the web-font stylesheet answered empty; returns once the
-        run banner is visible. The harness opens a same-origin JSON page first, so the route is in
-        place before the dashboard's own first load."""
-        with harness.browser_page(self.dashboard.url + "api/features", name=self.id()) as ui:
-            ui.page.route(WEB_FONTS, lambda route: route.fulfill(status=200, content_type="text/css", body=""))
-            ui.page.goto(self.dashboard.url)
+        """The dashboard's Overview; returns once the run banner is visible."""
+        with harness.browser_page(self.dashboard.url, name=self.id()) as ui:
             ui.page.locator("#run-banner").wait_for(state="visible", timeout=TIMEOUT_MS)
             yield ui
             ui.page.wait_for_load_state("networkidle")
