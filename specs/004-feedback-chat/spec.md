@@ -22,8 +22,10 @@ the edit/commit helpers (FR-033, FR-035, FR-036) and the run guard.
   constitution changed gets that listed under "Not covered" with the file named; the person edits it in the
   Docs view.
 - Q: How is "the drafting session cannot edit project files" guaranteed? → A: By a tool allowlist plus the run
-  guard (2026-10-30): the session may read and search, and write only its one result file; every other
-  write is blocked by the guard in code. No copy of the project and no prompt-only rule.
+  guard (2026-10-30). Refined in the plan (2026-10-30): the session is started with only the read tools
+  (`--tools Read,Grep,Glob`, `--permission-mode dontAsk`) and returns its result as structured output
+  (`--json-schema`), so it has no write tool at all; the run guard is the second layer while a run is
+  active. No copy of the project and no prompt-only rule.
 - Q: What happens to a `drafting` note when the dashboard or machine stops? → A: At the next start it becomes
   `failed` ("interrupted") with a Retry button; nothing restarts by itself (2026-10-30).
 - Q: Can a person apply only part of a proposal and leave the rest pending? → A: No (2026-10-30). The person
@@ -206,9 +208,10 @@ git history shows two commits and `specs/` matches.
   that the dashboard calls, never by the dashboard source itself, in the project directory with the
   project's own settings and no broader permissions than an interactive session there. The session is
   given the note, its context, `spec.md`, `plan.md`, `tasks.md`, `decisions.md`, `BLOCKED.md`, earlier
-  questions and answers, and may read the code. It MUST NOT edit project files: it is started with a tool
-  allowlist (read, search, and write of its result file only) and the run guard, which blocks every
-  other write in code. Its only output is one structured result file.
+  questions and answers, and may read the code. It MUST NOT edit project files: it is started with only the
+  read tools (read, search; no write, edit or shell tool exists in the session), with permission
+  prompts denied, and the run guard blocks writes in code as a second layer while a run is active. Its
+  only output is one structured result, which the helper validates.
 - **FR-005**: The result is one of: `proposal`, `questions`, `nothing_to_do`, `out_of_scope`. A `proposal` is
   structured data, not prose to be executed: `{spec_edits[], new_tasks[], amended_tasks[], dropped_tasks[],
   new_specs[], removed_specs[], assumptions[], not_covered[]}`. Each change carries `from` (the part of the
@@ -261,8 +264,9 @@ git history shows two commits and `specs/` matches.
 - **FR-016**: The Feedback view and the note box MUST work with the 003 URL sections (`#feedback`), show
   progress while `drafting` (the session's readable log, as for a task's live output) and not redraw while
   the person is typing.
-- **FR-017**: A proposal MUST name only these targets: the feature's `spec.md`, its `tasks.md`, and (story 5)
-  a feature folder under `specs/`. The helper MUST reject a result that names any other file. A needed
+- **FR-017**: A proposal MUST name only these targets: the feature's `spec.md`, its `tasks.md` (a dropped
+  task is recorded as a `status: wontfix` entry in the feature's `BLOCKED.md`, as FR-036 does for a skipped
+  manual task), and (story 5) a feature folder under `specs/`. Apply also appends to `feedback-log.md`. The helper MUST reject a result that names any other file. A needed
   change to another file (`plan.md`, `research.md`, `data-model.md`, `quickstart.md`, the constitution) is
   listed under `not_covered` with the file named.
 
@@ -288,8 +292,9 @@ git history shows two commits and `specs/` matches.
 - **SC-004**: A note can never cause a project change while a run is active, and a stale proposal never
   overwrites newer edits: both covered by tests.
 - **SC-005**: Re-sending the same note after Discard produces a new note and never changes the old one.
-- **SC-006**: A test starts a drafting session whose scripted agent tries to edit `tasks.md`, `spec.md` and a
-  source file; the guard blocks all three and the project's files are unchanged.
+- **SC-006**: A test checks the exact command a drafting session is started with: its tool list holds only
+  read tools and no write, edit or shell tool; and a scripted session that returns a result naming a file
+  other than the allowed targets is rejected with the project unchanged.
 
 ## Out of Scope
 
