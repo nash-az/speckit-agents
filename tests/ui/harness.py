@@ -13,12 +13,17 @@ under `.sdd/scratch/ui/` when the test fails.
 
 Leaving the `with` block normally fails the test when anything was recorded; `ui.errors` holds
 the records, and `ignore=` takes regexes for records a test expects.
+
+When `playwright` cannot be imported or neither Chromium nor Google Chrome launches, `UITestCase`
+and `browser_page()` skip with a one-line reason naming the install command; `SDD_UI_TESTS=1`
+turns that skip into a failure (`require_browser()`).
 """
 
 from __future__ import annotations
 
 import contextlib
 import importlib.util
+import os
 import re
 import select
 import subprocess
@@ -35,6 +40,8 @@ DASHBOARD = ROOT / "bin" / "sdd-dashboard.py"
 VENDOR = HERE / "vendor"
 SCRATCH = ROOT / ".sdd" / "scratch" / "ui"
 START_TIMEOUT = 15  # seconds to wait for the dashboard's first output line
+INSTALL = "python3 -m pip install playwright && python3 -m playwright install chromium"
+STRICT_ENV = "SDD_UI_TESTS"  # "1": a missing browser fails the test instead of skipping it
 
 # The pinned CDN files in `build_html()` → their vendored copies (tests/ui/vendor/README.md).
 CDN = {
@@ -142,6 +149,7 @@ class UITestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        require_browser()
         cls.dashboard = Dashboard().start()
 
     @classmethod
@@ -185,6 +193,48 @@ def launch_chromium(playwright):
         except Error as chrome:
             raise RuntimeError("cannot launch Chromium (%s) or Google Chrome (%s)"
                                % (bundled.message.splitlines()[0], chrome.message.splitlines()[0])) from chrome
+
+
+def _one_line(exc):
+    lines = str(exc).strip().splitlines()
+    return (lines[0].strip() if lines else "") or type(exc).__name__
+
+
+_UNPROBED = object()
+_problem = _UNPROBED
+
+
+def browser_problem(refresh=False):
+    """None when Playwright imports and a Chromium launches, else a one-line reason with `INSTALL`.
+
+    The launch is tried once per process; `refresh=True` probes again.
+    """
+    global _problem
+    if _problem is not _UNPROBED and not refresh:
+        return _problem
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        _problem = "Playwright for Python is not installed (%s); install it: %s" % (_one_line(exc), INSTALL)
+        return _problem
+    try:
+        with sync_playwright() as p:
+            launch_chromium(p).close()
+    except Exception as exc:  # noqa: BLE001 - any launch failure means no browser to test with
+        _problem = "Chromium cannot be launched (%s); install it: %s" % (_one_line(exc), INSTALL)
+        return _problem
+    _problem = None
+    return None
+
+
+def require_browser():
+    """Skip (raise `unittest.SkipTest`) when there is no browser; fail instead when `SDD_UI_TESTS=1`."""
+    problem = browser_problem()
+    if problem is None:
+        return
+    if os.environ.get(STRICT_ENV) == "1":
+        raise AssertionError("%s (%s=1, so this fails instead of skipping)" % (problem, STRICT_ENV))
+    raise unittest.SkipTest(problem)
 
 
 def _route(session):
@@ -251,7 +301,9 @@ def browser_page(url, name=None, ignore=(), check=True, out_dir=None):
     The four CDN URLs are served from `tests/ui/vendor/`; any other non-local request is aborted
     and recorded. When the block raises, or (`check=True`) leaves with recorded errors, the
     screenshot and HTML go to `out_dir` (default `.sdd/scratch/ui/`) and the test fails.
+    Without a browser it skips, or fails under `SDD_UI_TESTS=1` (`require_browser()`).
     """
+    require_browser()
     from playwright.sync_api import sync_playwright
 
     parts = urllib.parse.urlsplit(url)
