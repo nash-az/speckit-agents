@@ -98,7 +98,7 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   - **Browser tests:** Playwright is installed for the system `python3` (via Artifactory, see `.sdd/learnings.md`); use
     `channel="chrome"`. `tests/ui/vendor/` holds the CDN copies. The dashboard check that works today is a throwaway Node
     script using the language app's Playwright (see learnings).
-- **Handoff (end of 2026-10-30) — start here.** `main` is at the commit after `8d94060`, not pushed; run `20261030-1515`
+- **Handoff (end of 2026-10-30) — start here.** `main` holds everything (not pushed); run `20261030-1515`
   (003 Phase 11, T052/T053/T061) is merged into `main` (fast-forward). Read `logs/2026-10-30-lessons.md` first.
   - **Done this session:** dashboard: Docs tabs, spec/constitution editor (FR-035), Overview ("Running now", grouped "Needs
     you"), clicked task/run opens its log/events/report under itself, runs↔tasks linked both ways with commits, readable event
@@ -115,7 +115,7 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
     with a sandboxed `tests/ui/test_smoke.py` before relying on it; do not widen the sandbox further without asking. Then
     T053's step can be redone by a run, or by hand and settled with the new "I did it" button.
   - **Rule:** while `.sdd/run.json` exists, change nothing in the project (user, 2026-10-30); draft under `/tmp`.
-  - Tests at handoff: 317 Python passing (`python3 -m unittest discover -s tests`); node and plugin tests not re-run this session's end.
+  - Tests at handoff: 317 Python, 24 node, 17 plugin, all passing.
 - **State (2026-10-30):** held `[manual]` tasks have **I did it** and **Skip** buttons in "Waiting on you" (FR-036, `bin/sdd-manual.py`; a `wontfix` entry now outranks the tag). **State (2026-10-29, later session):** `auto/20261029-1003` is merged into `main`. The planned dashboard improvements are done:
   `/api/run/current` says `running` for a live supervisor that is running or stopping (§4.5), "Waiting on you" skips tasks held only
   behind a dependency, task logs are readable text (§4.6), the 3 s refresh redraws only on change and keeps scroll, the sidebar
