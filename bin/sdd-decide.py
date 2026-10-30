@@ -79,7 +79,7 @@ def apply(project: Path, feature: Path, task_id: str, answer: str, commit: bool 
             _git(project, "rev-parse", "--is-inside-work-tree")
         except Refused:
             raise Refused("the project is not a git repository") from None
-        dirty = _git(project, "status", "--porcelain").strip()
+        dirty = _git(project, "status", "--porcelain").rstrip("\n")  # keep the first line's leading space
         if dirty:
             raise Refused("the working tree has other changes; commit or stash them first: "
                           + ", ".join(l[3:] for l in dirty.splitlines()[:5]))

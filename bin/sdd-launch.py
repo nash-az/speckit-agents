@@ -97,7 +97,8 @@ def preview(project: Path, feature: Path) -> dict:
         result.update(can_start=False, reason="the project is not a git repository")
         return result
     if not result["resumes"]:
-        _, dirty = _git_output(project, "status", "--porcelain")
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=project, capture_output=True, text=True)
+        dirty = status.stdout.rstrip("\n")  # not .strip(): the first line may start with a space
         if dirty:
             files = ", ".join(line[3:] for line in dirty.splitlines()[:5])
             result.update(can_start=False, reason=f"the working tree has changes; commit or stash them first: {files}")

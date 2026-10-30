@@ -97,6 +97,11 @@ class LaunchTest(unittest.TestCase):
         with self.assertRaisesRegex(launch.Refused, "working tree has changes"):
             launch.launch(self.root, self.feature, dry_run=True)
 
+    def test_the_dirty_tree_message_names_a_modified_file_whole(self):
+        (self.feature / "tasks.md").write_text((self.feature / "tasks.md").read_text() + "\n")
+        with self.assertRaisesRegex(launch.Refused, r": specs/\S+/tasks\.md"):
+            launch.launch(self.root, self.feature, dry_run=True)
+
     def test_an_interrupted_run_resumes_even_with_a_dirty_tree(self):
         (self.root / "stray.txt").write_text("interrupted work")
         (self.root / ".sdd" / "run.json").write_text(json.dumps({"run_id": "20261028-1005"}))

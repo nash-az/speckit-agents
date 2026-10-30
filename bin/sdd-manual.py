@@ -71,7 +71,7 @@ def settle(project: Path, feature: Path, task_id: str, action: str, note: str = 
                "skip": [feature / "BLOCKED.md"]}[action]
     if commit:
         rel = [str(p.relative_to(project)) for p in targets]
-        dirty = _git(project, "status", "--porcelain", "--", *rel).strip()
+        dirty = _git(project, "status", "--porcelain", "--", *rel).rstrip("\n")  # keep the first line's leading space
         if dirty:
             raise Refused("these files have other changes; commit or stash them first: "
                           + ", ".join(l[3:] for l in dirty.splitlines()))

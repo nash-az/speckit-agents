@@ -71,6 +71,7 @@ class SettleTest(unittest.TestCase):
         with self.assertRaises(manual.Refused) as ctx:
             manual.settle(self.root, self.feature, "T001", "done")
         self.assertIn("other changes", str(ctx.exception))
+        self.assertIn(" specs/001-a/tasks.md", " " + str(ctx.exception).split(": ", 1)[1])  # first path is whole
         git(self.root, "checkout", "--", ".")
         (self.root / ".sdd").mkdir()
         (self.root / ".sdd" / "run.json").write_text("{}")
