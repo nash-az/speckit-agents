@@ -235,6 +235,74 @@ class WaitingBannerTest(PausedBannerTestCase):
             self.click_and_read(ui, "Let it resume", "release")
 
 
+class PollingBannerTest(BannerTestCase):
+    """The banner follows `status.json` by polling (`setInterval(refreshAll, 3000)` in `build_html()`):
+    a supervisor that goes from `running` to `held` shows as held within 5 seconds, and every banner
+    the page draws on the way is either the running one or the held one, never an error."""
+
+    FOLLOW_MS = 5000  # FR-029: the banner follows the supervisor within 5 seconds
+    HELD_TEXT = "Stopped by you"
+    RUNNING_PREFIX = "Working on"
+
+    # Records the banner after every change to it (and once now): shown or hidden, its text, whether
+    # an error or a reason line is in it, and its button labels. The stale-run banner is recorded too.
+    WATCH_BANNER = """() => {
+      window.__bannerSeen = [];
+      const banner = document.getElementById('run-banner');
+      const stale = document.getElementById('stale-banner');
+      const snap = () => {
+        const text = banner.querySelector('.run-banner-text');
+        window.__bannerSeen.push({
+          shown: banner.style.display !== 'none',
+          text: text ? text.textContent.trim() : '',
+          error: !!banner.querySelector('.run-banner-error, [role=alert]'),
+          reason: !!banner.querySelector('.run-banner-reason'),
+          stale: !!stale && stale.style.display !== 'none',
+          buttons: Array.from(banner.querySelectorAll('button[data-control]')).map(b => b.textContent.trim()),
+        });
+      };
+      new MutationObserver(snap).observe(banner, {childList: true, subtree: true, characterData: true, attributes: true});
+      if (stale) new MutationObserver(snap).observe(stale, {childList: true, attributes: true});
+      snap();
+    }"""
+
+    def setUp(self):
+        super().setUp()
+        self.supervisor.write_status("running", cycle=1)
+
+    def test_banner_follows_running_to_held_within_5_seconds(self):
+        with self.open_page() as ui:
+            self.button(ui, "Stop now").wait_for(state="visible", timeout=TIMEOUT_MS)
+            ui.page.evaluate(self.WATCH_BANNER)
+            self.supervisor.write_status("held", cycle=1)
+            started = time.monotonic()
+            ui.page.wait_for_function(
+                "text => { const t = document.querySelector('#run-banner .run-banner-text');"
+                " return !!t && t.textContent.trim() === text; }",
+                arg=self.HELD_TEXT, timeout=self.FOLLOW_MS)
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, self.FOLLOW_MS / 1000, f"the banner took {elapsed:.1f} s to show held")
+            self.assertEqual(self.button(ui, "Resume").all_inner_texts(), ["Resume"])
+            self.assertEqual(self.button(ui, "Stop now").count(), 0)
+
+            seen = ui.page.evaluate("() => window.__bannerSeen")
+            self.assertTrue(seen, "the banner watcher recorded nothing")
+            for snap in seen:
+                self.assertTrue(snap["shown"], f"the banner was hidden on the way to held: {seen}")
+                self.assertFalse(snap["error"], f"the banner showed an error on the way to held: {snap}")
+                self.assertFalse(snap["reason"], f"the banner showed a disabled-control reason: {snap}")
+                self.assertFalse(snap["stale"], f"the stale-run banner showed on the way to held: {snap}")
+                if snap["text"] == self.HELD_TEXT:
+                    self.assertEqual(snap["buttons"], ["Resume"], snap)
+                else:
+                    self.assertTrue(snap["text"].startswith(self.RUNNING_PREFIX),
+                                    f"the banner showed neither running nor held: {snap}")
+                    self.assertEqual(snap["buttons"], ["Stop after current task", "Stop now"], snap)
+            held_from = next(i for i, s in enumerate(seen) if s["text"] == self.HELD_TEXT)
+            self.assertTrue(all(s["text"] == self.HELD_TEXT for s in seen[held_from:]),
+                            f"the banner went back to running after held: {seen}")
+
+
 class NoSupervisorBannerTest(BannerTestCase):
     """A `.sdd/run.json` and no supervisor `status.json`: the banner shows the run, every control
     is disabled, and the reason (`NO_SUPERVISOR` in `bin/sdd-dashboard.py`) is shown."""
