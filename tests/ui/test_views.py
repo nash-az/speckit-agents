@@ -1,8 +1,11 @@
 """Browser tests of the dashboard's main views (FR-001): Tasks, Blocked, Documents and Runs each open
 without a console error and show their content.
 
-The toy project is the harness's (`specs/001-only` with the status fixture's tasks.md and BLOCKED.md),
-plus a `spec.md` for the Documents view and one run (`.sdd/runs/<id>/workflows.json` pointing at a
+The Documents view also renders a table and highlighted code and drops a `<script>`, and a task
+whose text is markup shows as text.
+
+The toy project is the harness's (`specs/001-only` with the status fixture's tasks.md and BLOCKED.md,
+plus one task whose text is an `<img onerror=...>`), a `spec.md` for the Documents view and one run (`.sdd/runs/<id>/workflows.json` pointing at a
 `wf_…` journal, the fixture of `tests/test_sdd_dashboard.py`) for the Runs view. What each view must
 show is read from the dashboard's own API, so the tests follow the fixtures.
 
@@ -36,13 +39,33 @@ SPEC = """# Feature: Toy views
 ## Summary
 
 The toy feature the browser tests open in the Documents view.
+
+## Formats
+
+| Field | Meaning |
+|-------|---------|
+| id    | The task id |
+
+```python
+def answer():
+    return 42
+```
+
+<script>window.sddScriptRan = true;</script>
 """
+
+# A task whose text is markup: the page must show it as text, never as an element (FR-001).
+MARKUP_TASK_ID = "T014"
+MARKUP_TEXT = '<img src="x" onerror="window.sddImgRan = true">'
+MARKUP_TASK = "- [ ] %s Show %s as text\n" % (MARKUP_TASK_ID, MARKUP_TEXT)
 
 
 def build_views_project(root):
-    """The harness toy project, a spec.md and one finished run."""
+    """The harness toy project with a task whose text is markup, a spec.md and one finished run."""
     root = harness.build_toy_project(root)
-    (root / "specs" / "001-only" / "spec.md").write_text(SPEC, encoding="utf-8")
+    feature = root / "specs" / "001-only"
+    (feature / "tasks.md").write_text(harness.fixtures.STATUS_TASKS + MARKUP_TASK, encoding="utf-8")
+    (feature / "spec.md").write_text(SPEC, encoding="utf-8")
     wf = harness.fixtures.write_workflow_dir(root.resolve().parent / "transcripts" / "wf_views")
     harness.fixtures.write_run(root, RUN_ID, [wf])
     (root / ".sdd" / "runs" / (RUN_ID + ".md")).write_text("# Run Report\n\n- approved: T1\n", encoding="utf-8")
@@ -137,6 +160,37 @@ class ViewsTest(harness.UITestCase):
             self.assertIn("The toy feature the browser tests open", ui.page.locator("#doc-content p").first.inner_text())
             self.assertNotIn("# Feature", ui.page.locator("#doc-content").inner_text(), "the markdown was not rendered")
             self.assertEqual(ui.page.locator("#doc-title").inner_text().strip(), "Spec")
+
+    def test_documents_view_renders_tables_and_code_and_drops_scripts(self):
+        with self.open_view("spec", "#section-doc") as ui:
+            doc = ui.page.locator("#doc-content")
+            doc.locator("h1").wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertEqual(doc.locator("h1").count(), 1)
+            self.assertEqual([h.inner_text().strip() for h in doc.locator("h2").all()], ["Summary", "Formats"])
+            table = doc.locator("table")
+            self.assertEqual(table.count(), 1, "the markdown table was not rendered")
+            self.assertEqual([c.inner_text().strip() for c in table.locator("th").all()], ["Field", "Meaning"])
+            self.assertEqual([c.inner_text().strip() for c in table.locator("td").all()], ["id", "The task id"])
+            code = doc.locator("pre code")
+            self.assertEqual(code.count(), 1)
+            self.assertIn("hljs", code.get_attribute("class") or "", "the code block was not highlighted")
+            self.assertGreater(code.locator("span[class^='hljs-']").count(), 0, "the code block has no highlighted tokens")
+            self.assertIn("return 42", code.inner_text())
+            self.assertEqual(doc.locator("script").count(), 0, "the document's <script> reached the page")
+            self.assertIsNone(ui.page.evaluate("window.sddScriptRan"), "the document's <script> ran")
+            self.assertNotIn("sddScriptRan", doc.inner_text())
+
+    def test_task_text_with_markup_shows_as_text(self):
+        tasks = {t["id"]: t for p in self.api("/api/project/tasks")["phases"] for t in p["tasks"]}
+        self.assertIn(MARKUP_TEXT, tasks[MARKUP_TASK_ID]["text"])
+        with self.open_view("tasks") as ui:
+            card = ui.page.locator('#tasks-list .task-card[data-task-card="%s"]' % MARKUP_TASK_ID)
+            card.wait_for(state="visible", timeout=TIMEOUT_MS)
+            text = card.locator(".task-text")
+            self.assertIn(MARKUP_TEXT, text.inner_text(), "the markup in the task text is not shown as text")
+            self.assertEqual(text.locator("img").count(), 0, "the task text became an element")
+            self.assertEqual(ui.page.locator("#tasks-list img").count(), 0)
+            self.assertIsNone(ui.page.evaluate("window.sddImgRan"), "the task text's onerror ran")
 
     def test_runs_view_lists_the_runs(self):
         runs = self.api("/api/runs")
