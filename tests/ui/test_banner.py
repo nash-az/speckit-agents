@@ -169,5 +169,105 @@ class RunningBannerTest(BannerTestCase):
             self.assertEqual(control.get("id"), res.value.json().get("id"))
 
 
+class PausedBannerTestCase(BannerTestCase):
+    """The states with one enabled control: clicking it sends one POST and writes one command."""
+
+    def click_and_read(self, ui, label, command):
+        """Click the enabled `label` button, wait for its `POST /api/run/<command>` answer and
+        return the `control.json` it wrote."""
+        btn = self.button(ui, label)
+        btn.wait_for(state="visible", timeout=TIMEOUT_MS)
+        self.assertEqual(btn.count(), 1)
+        self.assertTrue(btn.is_enabled(), f"{label} is disabled")
+        with ui.page.expect_response(lambda r: r.url.endswith("/api/run/" + command), timeout=TIMEOUT_MS) as res:
+            btn.click()
+        self.assertEqual(res.value.status, 202, res.value.text())
+        control = self.supervisor.read_control()
+        self.assertIsNotNone(control, f"{label} wrote no control.json")
+        self.assertEqual(control.get("command"), command)
+        self.assertNotIn("mode", control)
+        self.assertEqual(control.get("id"), res.value.json().get("id"))
+        return control
+
+    def enabled_labels(self, ui):
+        buttons = ui.page.locator("#run-banner button[data-control]")
+        return [buttons.nth(i).inner_text().strip() for i in range(buttons.count()) if buttons.nth(i).is_enabled()]
+
+
+class HeldBannerTest(PausedBannerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.supervisor.write_status("held", cycle=1)
+
+    def test_held_shows_resume_and_writes_resume(self):
+        with self.open_page() as ui:
+            self.button(ui, "Resume").wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertIn("Stopped by you", ui.page.locator("#run-banner .run-banner-text").inner_text())
+            self.assertEqual(ui.page.locator("#run-banner button[data-control]").count(), 1)
+            self.assertEqual(self.button(ui, "Stop now").count(), 0)
+            self.click_and_read(ui, "Resume", "resume")
+
+
+class WaitingBannerTest(PausedBannerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.resets_at = int(time.time()) + 3600
+        self.reset_hhmm = time.strftime("%H:%M", time.localtime(self.resets_at))
+
+    def test_waiting_shows_keep_paused_and_writes_hold(self):
+        self.supervisor.write_status("waiting", cycle=1, resets_at=self.resets_at)
+        with self.open_page() as ui:
+            self.button(ui, "Keep paused").wait_for(state="visible", timeout=TIMEOUT_MS)
+            text = ui.page.locator("#run-banner .run-banner-text").inner_text()
+            self.assertIn("Waiting for credits until " + self.reset_hhmm, text)
+            self.assertEqual(self.enabled_labels(ui), ["Keep paused"])
+            self.assertEqual(self.button(ui, "Let it resume").count(), 0)
+            self.click_and_read(ui, "Keep paused", "hold")
+
+    def test_waiting_kept_paused_shows_let_it_resume_and_writes_release(self):
+        self.supervisor.write_status("waiting", cycle=1, resets_at=self.resets_at, keep_paused=True)
+        with self.open_page() as ui:
+            self.button(ui, "Let it resume").wait_for(state="visible", timeout=TIMEOUT_MS)
+            text = ui.page.locator("#run-banner .run-banner-text").inner_text()
+            self.assertIn("Will stay paused after the reset at " + self.reset_hhmm, text)
+            self.assertEqual(self.enabled_labels(ui), ["Let it resume"])
+            self.assertEqual(self.button(ui, "Keep paused").count(), 0)
+            self.click_and_read(ui, "Let it resume", "release")
+
+
+class NoSupervisorBannerTest(BannerTestCase):
+    """A `.sdd/run.json` and no supervisor `status.json`: the banner shows the run, every control
+    is disabled, and the reason (`NO_SUPERVISOR` in `bin/sdd-dashboard.py`) is shown."""
+
+    RUN_ID = "20261030-0000"
+
+    def setUp(self):
+        super().setUp()
+        self.run_file = self.dashboard.project / ".sdd" / "run.json"
+        self.run_file.write_text(json.dumps({"run_id": self.RUN_ID}), encoding="utf-8")
+
+    def tearDown(self):
+        with contextlib.suppress(FileNotFoundError):
+            self.run_file.unlink()
+        super().tearDown()
+
+    def test_no_supervisor_disables_every_control_and_shows_the_reason(self):
+        with self.open_page() as ui:
+            buttons = ui.page.locator("#run-banner button[data-control]")
+            buttons.first.wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertGreater(buttons.count(), 0)
+            for i in range(buttons.count()):
+                label = buttons.nth(i).inner_text().strip()
+                self.assertFalse(buttons.nth(i).is_enabled(), f"{label} is enabled without a supervisor")
+                self.assertIn("no supervisor is running", buttons.nth(i).get_attribute("title") or "")
+            reason = ui.page.locator("#run-banner .run-banner-reason")
+            reason.wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertIn("no supervisor is running", reason.inner_text())
+            self.assertIn("python3 bin/sdd-supervise.py", reason.locator("code").inner_text())
+            buttons.first.click(force=True)  # a disabled button sends nothing
+            ui.page.wait_for_timeout(500)
+            self.assertIsNone(self.supervisor.read_control(), "a disabled control wrote control.json")
+
+
 if __name__ == "__main__":
     unittest.main()
