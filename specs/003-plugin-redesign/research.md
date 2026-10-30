@@ -190,3 +190,26 @@ cannot write to the plugin directory (sandbox), which is why harvesting is a sep
 ## Phase roll-up
 
 Decision (2026-10-29): (b)
+
+## First browser run
+
+T053, 2026-10-30, in the unattended run's sandbox (run on branch `auto/20261030-1515`), Playwright 1.64.1 for the system `python3`:
+
+```
+python3 -m unittest tests/ui/test_smoke.py -v
+setUpClass (tests.ui.test_smoke.SmokeTest) ... skipped "Chromium cannot be launched (...)"
+Ran 0 tests  OK (skipped=1)
+```
+
+The test did not actually run in a browser. These are environment results, not dashboard findings:
+
+- The bundled Chromium is not installed (`chromium_headless_shell-1248` is missing under `~/Library/Caches/ms-playwright/`).
+  The fallback, Google Chrome with `channel="chrome"`, fails inside the sandbox with "Failed to create a ProcessSingleton
+  for your profile directory".
+- The sandbox also refuses to bind a local port (`PermissionError: [Errno 1] Operation not permitted` from
+  `ThreadingHTTPServer` in `bin/sdd-dashboard.py`), so the dashboard can't start here either.
+- Harness finding for T065: `UITestCase.setUpClass` only skips when the browser is missing. When the browser launches but
+  the dashboard can't bind its port, `Dashboard.start()` raises `RuntimeError`, so the class errors instead of skipping.
+
+Dashboard findings (console errors, phases missing from the Tasks view): none yet. The smoke test still has to be run
+outside the sandbox with `SDD_UI_TESTS=1 python3 -m unittest tests/ui/test_smoke.py -v`, and its failures listed here.
