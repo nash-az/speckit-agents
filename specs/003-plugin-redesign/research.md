@@ -265,3 +265,34 @@ Failures (listed, not fixed, per FR-031):
 Screenshots and HTML of both failures: `.sdd/scratch/ui/tests.ui.test_smoke.SmokeTest.*.{png,html}` (git-ignored).
 `SDD_UI_TESTS=1` was not set for this run because the run's shell refuses `VAR=value` prefixes. It was not needed: the
 browser launched, so nothing was skipped.
+
+## Mutation check
+
+T066, 2026-10-30, run on branch `auto/20261030-1854` at `ae112f8`, inside the run sandbox, Playwright 1.64.1, Python 3.14.5.
+Each mutation was applied to `bin/sdd-dashboard.py` in its own scratch copy of the repo
+(`.sdd/scratch/20261030-1854/T066/copies/<name>/`, git-ignored), never in the tree. In each copy the script ran
+`python3 -m unittest discover -s tests/ui -v` with `SDD_UI_TESTS=1` set in the child's environment (so a missing
+browser or port fails instead of skipping), then `python3 -m unittest discover -s tests -v`. Command, from the project root:
+`python3 .sdd/scratch/20261030-1854/T066/mutate.py` (scratch script, not committed; logs and `results.json` beside it).
+One run per mutation; nothing was re-run or picked.
+
+| Mutation | UI tests (24) | Python unit tests (321) |
+|---|---|---|
+| none (baseline) | OK | OK |
+| 1. `taskCardHtml()`: `taskBadge(t)` removed from the task card head (so no `statusBadge` call) | FAILED: `test_views.ViewsTest.test_tasks_view_shows_task_cards_with_a_status_badge` and `test_views.CdnBlockedTest.test_tasks_view_still_works` (one subtest per task, "no status badge on T001" … T014) | FAILED: `test_sdd_dashboard.TasksViewTest.test_task_card_badges` |
+| 2. `renderRunBanner()`: the banner button's click handler no longer calls `postControl(...)` | ERROR (4): `test_banner.RunningBannerTest.test_stop_now_accepted_writes_stop_now`, `HeldBannerTest.test_held_shows_resume_and_writes_resume`, `WaitingBannerTest.test_waiting_shows_keep_paused_and_writes_hold`, `WaitingBannerTest.test_waiting_kept_paused_shows_let_it_resume_and_writes_release` | OK (not caught) |
+| 3. `build_html()`: the `marked@12.0.2` `<script src>` line removed | FAILED/ERROR (4): `test_views.ViewsTest.test_documents_view_renders_the_spec`, `ViewsTest.test_documents_view_renders_tables_and_code_and_drops_scripts`, `CdnBlockedTest.test_documents_view_shows_raw_text_and_a_notice`, `CdnBlockedTest.test_tasks_view_still_works` | FAILED: `test_sdd_dashboard.DocumentsViewTest.test_pinned_urls`, `DocumentsViewTest.test_no_other_external_urls` |
+
+Result against SC-007: met for these three mutations. Each one made at least one browser test fail, and the failing
+test's name names the view (Tasks view, banner, Documents view). No change went uncaught by the browser tests.
+
+What the numbers do not show:
+
+- Mutation 2 is caught only by the browser tests; the Python unit tests pass with the click handler broken. The browser
+  failures are Playwright timeouts ("Timeout 10000ms exceeded while waiting for event \"response\"") rather than an
+  assertion that says the click wrote nothing to `control.json`; the test name is what tells you it is the banner.
+- In mutation 3 the two `CdnBlockedTest` failures come from the harness's own check that all four CDN URLs were requested
+  and blocked ("not every CDN file was requested and blocked"), not from the fallback behaviour. The two `ViewsTest`
+  documents tests fail by timing out while waiting for the rendered `h1`.
+- Only the task card's badge was removed in mutation 1; the same `taskBadge()` is also used on blocked-entry cards and the
+  Overview "Running now" rows, which were not mutated here.
