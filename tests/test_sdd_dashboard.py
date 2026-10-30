@@ -1140,7 +1140,12 @@ class TransientStateTest(unittest.TestCase):
         self.assertIn("Not available yet", before)
         self.assertIn("&lt;one&gt;\ntwo", after)
         self.assertNotIn("Live output", queued)
-        self.assertIn("Not available yet", unavailable)
+        self.assertIn("Not available: run is not active", unavailable)
+
+    def test_a_clicked_card_opens_its_log_under_itself(self):
+        self.assertIn("data-task-card", self.html)
+        self.assertIn("function showsLog(t)", self.html)
+        self.assertIn("openLogs[tid]", self.html)
 
     def test_polls_log_route(self):
         self.assertIn("'/tasks/' + encodeURIComponent(id) + '/log'", self.html)

@@ -1286,6 +1286,7 @@ def build_html():
 
   /* Task board */
   .task-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; cursor: pointer; transition: all 0.15s; }
+  .task-card.log-open { border-color: var(--accent); }
   .task-card:hover { border-color: var(--accent); background: var(--surface-hover); }
   .task-id { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 700; color: var(--accent); margin-bottom: 0.25rem; display: block; }
   .task-text { font-size: 0.875rem; color: var(--text); margin-bottom: 0.5rem; line-height: 1.4; }
@@ -1722,7 +1723,7 @@ def build_html():
     // "Live output" panel on a running task (data-model.md §4.6, FR-021). log is the last
     // /api/runs/<id>/tasks/<task>/log answer, or undefined before the first one.
     function liveOutputBodyHtml(log) {
-      if (!log || !log.available) return '<div class="live-output-empty">Not available yet</div>';
+      if (!log || !log.available) return '<div class="live-output-empty">' + (log && log.reason ? 'Not available: ' + escapeHtml(log.reason) : 'Not available yet') + '</div>';
       return '<pre class="live-output-lines">' + escapeHtml((log.lines || []).join('\\n')) + '</pre>';
     }
 
@@ -1730,7 +1731,7 @@ def build_html():
     var liveLogs = {};
 
     function liveOutputHtml(t, log) {
-      return '<div class="live-output"><div class="live-output-title">Live output</div>' +
+      return '<div class="live-output"><div class="live-output-title">' + (taskStatusKey(t) === 'running' ? 'Live output' : 'Log') + '</div>' +
         '<div class="live-output-body" data-live-task="' + escapeHtml(t.id) + '">' + liveOutputBodyHtml(log) + '</div></div>';
     }
 
@@ -1769,12 +1770,18 @@ def build_html():
       }).join('');
     }
 
+    // A card opens its log right under itself when clicked; a running task always shows it.
+    var openLogs = {};
+
+    function showsLog(t) { return taskStatusKey(t) === 'running' || !!openLogs[t.id]; }
+
     function taskCardHtml(t) {
-      return '<div class="task-card' + (taskStatusKey(t) === 'done' ? ' task-done' : '') + '">' +
+      return '<div class="task-card' + (taskStatusKey(t) === 'done' ? ' task-done' : '') + (openLogs[t.id] ? ' log-open' : '') +
+        '" data-task-card="' + escapeHtml(t.id) + '">' +
         '<div class="task-head"><span class="task-id">' + escapeHtml(t.id) + '</span>' + taskBadge(t) + '</div>' +
         '<div class="task-text">' + inlineCode(t.text) + '</div>' +
         '<div class="task-tags">' + tagsHtml(t.tags) + '</div>' +
-        (taskStatusKey(t) === 'running' ? liveOutputHtml(t, liveLogs[t.id]) : '') + '</div>';
+        (showsLog(t) ? liveOutputHtml(t, liveLogs[t.id]) : '') + '</div>';
     }
 
     function phaseHeadingHtml(p) {
@@ -2343,7 +2350,7 @@ def build_html():
       phasesOpenFirst(phases).forEach(function(p) {
         (p.tasks || []).forEach(function(t) {
           if (isWaiting(t)) { waiting += waitingItemHtml(t, p.title); count++; }
-          if (taskStatusKey(t) === 'running') running.push(t.id);
+          if (showsLog(t)) running.push(t.id);
         });
         list += phaseHeadingHtml(p) + '<div class="phase-tasks">' + phaseTasksHtml(p) + '</div>';
       });
@@ -2379,7 +2386,14 @@ def build_html():
 
     function pollLiveOutputs(runId, ids) {
       Object.keys(liveLogs).forEach(function(id) { if (ids.indexOf(id) < 0) delete liveLogs[id]; });
-      if (!runId) return;
+      if (!runId) {
+        ids.forEach(function(id) {
+          liveLogs[id] = { available: false, reason: 'no run to read a log from' };
+          var el = document.querySelector('.live-output-body[data-live-task="' + id + '"]');
+          if (el) { el.innerHTML = liveOutputBodyHtml(liveLogs[id]); el._html = el.innerHTML; }
+        });
+        return;
+      }
       ids.forEach(function(id) {
         fetchJSON('/api/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(id) + '/log', 'GET').then(function(log) {
           liveLogs[id] = log || { available: false, reason: 'request failed' };
@@ -2536,6 +2550,12 @@ def build_html():
       if (!t || !t.classList) return;
       if (t.classList.contains('decision-submit')) saveDecision(t.getAttribute('data-task'));
       if (t.classList.contains('decision-apply')) applyDecision(t.getAttribute('data-task'));
+      var card = t.closest ? t.closest('[data-task-card]') : null;
+      if (card && !t.closest('.live-output, button, a, textarea') && !(window.getSelection && String(window.getSelection()))) {
+        var tid = card.getAttribute('data-task-card');
+        if (openLogs[tid]) delete openLogs[tid]; else openLogs[tid] = true;
+        loadTasks();
+      }
       if (t.classList.contains('manual-done')) settleManual(t.getAttribute('data-task'), 'done');
       if (t.classList.contains('manual-skip')) settleManual(t.getAttribute('data-task'), 'skip');
       if (t.id === 'start-run-btn') startRun();
