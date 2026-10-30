@@ -19,7 +19,8 @@ Endpoints:
     GET /api/project/blocked      -- read BLOCKED.md
     GET /api/project/decisions    -- alias of /api/doc?name=decisions
     GET /api/project/config       -- alias of /api/doc?name=config
-    GET /api/runs                 -- list runs with status and counts
+    GET /api/runs                 -- list runs with status, counts and the tasks each touched
+    GET /api/runs/tasks           -- {task id: [{run, outcome, commits}]}, newest run first
     GET /api/runs/<id>/events     -- event feed for one run
     GET /api/runs/<id>/tasks/<task>/log -- live transcript of the task's agent (data-model.md §4.6)
     GET /api/runs/<id>/report     -- run report markdown (id must look like 20261027-1431)
@@ -173,6 +174,72 @@ TRANSCRIPT_GONE = ("This run's transcript is gone (Claude Code keeps transcripts
                    "`cleanupPeriodDays`, default 30); its report is `.sdd/runs/{id}.md`.")
 
 
+def run_tasks(events, finished):
+    """The tasks one run touched, in the order it first started them: `{id, outcome, started, ended,
+    attempts, commits}`. The newest event decides the outcome: approved (committed once its group
+    finished), blocked (blocked or failed), rejected (the verifier's last word), else running, or
+    interrupted when the run is finished. `commits` come from `group.finished`."""
+    tasks, order = {}, []
+    for ev in events:
+        ids = [ev["id"]] if isinstance(ev.get("id"), str) else [i for i in ev.get("ids") or [] if isinstance(i, str)]
+        for task_id in ids:
+            if task_id not in tasks:
+                tasks[task_id] = {"id": task_id, "outcome": None, "started": ev.get("ts"), "ended": ev.get("ts"),
+                                  "attempts": 0, "commits": []}
+                order.append(task_id)
+            t = tasks[task_id]
+            t["ended"] = ev.get("ts") or t["ended"]
+            kind = ev.get("kind")
+            if kind == "task.started":
+                t["attempts"] = max(t["attempts"], ev.get("attempt") or 1)
+                t["outcome"] = "running"
+            elif kind == "task.implemented":
+                t["outcome"] = "running"
+            elif kind == "task.verified" and ev.get("verdict") == "reject":
+                t["outcome"] = "rejected"
+            elif kind == "task.approved":
+                t["outcome"] = "approved"
+            elif kind in ("task.blocked", "task.failed"):
+                t["outcome"] = "blocked"
+            elif kind == "group.finished":
+                if len(ids) == 1 or not t["commits"]:
+                    t["commits"] = [str(c) for c in ev.get("commits") or []]
+                if ev.get("checks_passed") and t["outcome"] == "approved":
+                    t["outcome"] = "committed"
+    for t in tasks.values():
+        if t["outcome"] in (None, "running"):
+            t["outcome"] = "interrupted" if finished else "running"
+    return [tasks[i] for i in order]
+
+
+CREATED_RE = re.compile(r"\*\*Created\*\*:\s*(\d{4})-(\d{2})-(\d{2})")
+
+
+def run_feature(project, run_id, listing):
+    """The feature a run was for: `feature` in its `workflows.json` (runs since 2026-10-30), else the
+    newest feature whose spec says it was created on or before the run's date (older runs)."""
+    if isinstance(listing, dict) and isinstance(listing.get("feature"), str):
+        return listing["feature"]
+    day, best = run_id[:8], None
+    for name in feature_names(project):
+        m = CREATED_RE.search(read_text(project / "specs" / name / "spec.md") or "")
+        if m and "".join(m.groups()) <= day and (best is None or "".join(m.groups()) >= best[0]):
+            best = ("".join(m.groups()), name)
+    return best[1] if best else None
+
+
+def runs_by_task(project, feature):
+    """`GET /api/runs/tasks`: {task id: [{run, outcome, commits}, ...]} for the runs of `feature`, newest
+    run first, so a task card can say which run did it. Task ids repeat across features, hence the filter."""
+    index = {}
+    for run in list_runs(project):
+        if feature is None or run.get("feature") != feature:
+            continue
+        for t in run["tasks"]:
+            index.setdefault(t["id"], []).append({"run": run["id"], "outcome": t["outcome"], "commits": t["commits"]})
+    return index
+
+
 def list_runs(project):
     """Runs are `.sdd/runs/<id>/` directories holding `workflows.json` (data-model.md §4.4),
     newest id first (ids are timestamps). Flat files such as `.sdd/runs/x.jsonl` are ignored."""
@@ -196,6 +263,8 @@ def list_runs(project):
             "finished": (runs_dir / (run_id + ".md")).is_file(),
             "stopped": None,
         })
+        runs[-1]["tasks"] = run_tasks(events, runs[-1]["finished"])
+        runs[-1]["feature"] = run_feature(project, run_id, read_json(entry / "workflows.json"))
     return runs
 
 
@@ -1000,6 +1069,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/runs":
             self._send_json(list_runs(proj))
             return
+        if path == "/api/runs/tasks":
+            feature = self._feature_dir()
+            self._send_json(runs_by_task(proj, feature.name if feature else None))
+            return
         m = re.match(r"^/api/runs/([^/]+)/events$", path)
         if m:
             events = get_events(proj, m.group(1))
@@ -1343,8 +1416,22 @@ def build_html():
   .event-row { display: flex; padding: 0.625rem 0.875rem; border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem; }
   .event-row:last-child { border-bottom: none; }
   .event-ts { width: 120px; color: var(--text-muted); }
-  .event-kind { width: 160px; font-weight: 600; color: var(--accent); }
-  .event-payload { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; padding-left: 0.75rem; }
+  .event-kind { width: 120px; font-weight: 600; color: var(--accent); }
+  .event-payload { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; padding-left: 0.75rem; font-family: 'Inter', sans-serif; }
+  .event-ts { width: 64px; }
+  .run-tasks { display: flex; flex-direction: column; gap: 0.25rem; }
+  .run-task { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; min-width: 0; font-size: 0.8125rem; }
+  .run-task:hover { border-color: var(--accent); }
+  .run-task.other { cursor: default; }
+  .run-task .id { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+  .run-task .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+  .run-task .meta { color: var(--text-muted); white-space: nowrap; }
+  .run-outcome { font-size: 0.6875rem; font-weight: 600; padding: 0.05rem 0.4rem; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .o-committed { color: var(--st-done); } .o-approved { color: var(--st-running); } .o-blocked { color: var(--st-blocked); }
+  .o-rejected { color: var(--st-retrying); } .o-interrupted { color: var(--st-paused); } .o-running { color: var(--st-running); }
+  .run-chip { display: inline-flex; align-items: center; gap: 0.3rem; margin-left: 0.4rem; font-size: 0.75rem; color: var(--text-muted); cursor: pointer; }
+  .run-chip:hover { color: var(--accent); }
+  .task-card.flash { box-shadow: 0 0 0 2px var(--accent); }
 
   /* Buttons */
   .decision-text { font-size: 0.95rem; line-height: 1.55; color: var(--text); margin-bottom: 0.5rem; }
@@ -1536,7 +1623,8 @@ def build_html():
     var expandedRun = null, reportRun = null;
     var runDetailEl = document.createElement('div');
     runDetailEl.className = 'run-detail';
-    runDetailEl.innerHTML = '<div class="card-title">Event feed</div><div id="events-view" class="events-list"></div>' +
+    runDetailEl.innerHTML = '<div class="card-title">Tasks in this run</div><div id="run-tasks" class="run-tasks"></div>' +
+      '<div class="card-title" style="margin-top:0.75rem">Event feed</div><div id="events-view" class="events-list"></div>' +
       '<div id="report-card" style="margin-top:1rem;display:none;"><div class="card-title"><span>Run report <span class="mono" id="report-run"></span></span></div>' +
       '<div id="report-view" class="markdown"></div></div>';
     function rd(id) { return runDetailEl.querySelector('#' + id); }
@@ -1770,6 +1858,27 @@ def build_html():
 
     // A card opens its log right under itself when clicked; a running task always shows it.
     var openLogs = {};
+    // {task id: [{run, outcome, commits}]} for the selected feature, newest run first (/api/runs/tasks),
+    // and the task a "Tasks in this run" row asked to show.
+    var taskRuns = {}, pendingTask = null;
+
+    var OUTCOME_LABELS = { committed: 'committed', approved: 'approved', blocked: 'blocked', rejected: 'rejected',
+                           interrupted: 'interrupted', running: 'running' };
+
+    function outcomeHtml(outcome) {
+      return '<span class="run-outcome o-' + escapeHtml(outcome) + '">' + escapeHtml(OUTCOME_LABELS[outcome] || outcome) + '</span>';
+    }
+
+    // The newest run that touched the task, as a chip that opens that run; the title lists every run.
+    function taskRunChipHtml(id) {
+      var runs = taskRuns[id];
+      if (!runs || !runs.length) return '';
+      var r = runs[0];
+      var title = runs.map(function(x) { return '#' + x.run + ': ' + x.outcome + (x.commits.length ? ' (' + x.commits.join(', ') + ')' : ''); }).join('\\n');
+      return '<span class="run-chip" data-run="' + escapeHtml(r.run) + '" title="' + escapeHtml(title) + '">' + outcomeHtml(r.outcome) +
+        ' in run #' + escapeHtml(r.run) + (r.commits.length ? ' · <span class="mono">' + escapeHtml(r.commits[0]) + '</span>' : '') +
+        (runs.length > 1 ? ' · +' + (runs.length - 1) + ' more' : '') + '</span>';
+    }
 
     function showsLog(t) { return taskStatusKey(t) === 'running' || !!openLogs[t.id]; }
 
@@ -1778,7 +1887,7 @@ def build_html():
         '" data-task-card="' + escapeHtml(t.id) + '">' +
         '<div class="task-head"><span class="task-id">' + escapeHtml(t.id) + '</span>' + taskBadge(t) + '</div>' +
         '<div class="task-text">' + inlineCode(t.text) + '</div>' +
-        '<div class="task-tags">' + tagsHtml(t.tags) + '</div>' +
+        '<div class="task-tags">' + tagsHtml(t.tags) + taskRunChipHtml(t.id) + '</div>' +
         (showsLog(t) ? liveOutputHtml(t, liveLogs[t.id]) : '') + '</div>';
     }
 
@@ -2288,8 +2397,10 @@ def build_html():
 
     // The tasks with the selected run's transient states merged in (as the Tasks view shows them).
     function loadMergedTasks() {
-      return Promise.all([fetchJSON('/api/project/tasks', 'GET'), fetchJSON('/api/run/current', 'GET')]).then(function(r) {
+      return Promise.all([fetchJSON('/api/project/tasks', 'GET'), fetchJSON('/api/run/current', 'GET'),
+                          fetchJSON('/api/runs/tasks', 'GET')]).then(function(r) {
         var data = r[0] || {}, run = r[1] || {};
+        taskRuns = r[2] || {};
         var runId = selectedRunId || (run.state && run.state !== 'none' ? run.run_id : null);
         var feed = runId ? fetchJSON('/api/runs/' + encodeURIComponent(runId) + '/events', 'GET') : Promise.resolve(null);
         return feed.then(function(f) {
@@ -2345,6 +2456,9 @@ def build_html():
 
     function renderTasks(phases, runId) {
       var waiting = '', count = 0, list = '', running = [];
+      if (pendingTask) (phases || []).forEach(function(p) {
+        if ((p.tasks || []).some(function(t) { return t.id === pendingTask; })) openDone[p.title] = true;
+      });
       phasesOpenFirst(phases).forEach(function(p) {
         (p.tasks || []).forEach(function(t) {
           if (isWaiting(t)) { waiting += waitingItemHtml(t, p.title); count++; }
@@ -2366,6 +2480,11 @@ def build_html():
         });
       }
       pollLiveOutputs(runId, running);
+      if (pendingTask) {
+        var target = tasksEl.querySelector('[data-task-card="' + pendingTask + '"]');
+        pendingTask = null;
+        if (target) { target.scrollIntoView({ block: 'center' }); target.classList.add('flash'); setTimeout(function() { target.classList.remove('flash'); }, 1500); }
+      }
     }
 
     // Fetch the live output of each running task; loadTasks runs every 3 s (refreshAll), so this
@@ -2549,10 +2668,18 @@ def build_html():
       if (t.classList.contains('decision-submit')) saveDecision(t.getAttribute('data-task'));
       if (t.classList.contains('decision-apply')) applyDecision(t.getAttribute('data-task'));
       var card = t.closest ? t.closest('[data-task-card]') : null;
-      if (card && !t.closest('.live-output, button, a, textarea') && !(window.getSelection && String(window.getSelection()))) {
+      if (card && !t.closest('.live-output, button, a, textarea, [data-run]') && !(window.getSelection && String(window.getSelection()))) {
         var tid = card.getAttribute('data-task-card');
         if (openLogs[tid]) delete openLogs[tid]; else openLogs[tid] = true;
         loadTasks();
+      }
+      var goto = t.closest ? t.closest('[data-goto-task]') : null;
+      if (goto) {
+        pendingTask = goto.getAttribute('data-goto-task');
+        openLogs[pendingTask] = true;
+        showSection('tasks');
+        loadTasks();
+        return;
       }
       if (t.classList.contains('manual-done')) settleManual(t.getAttribute('data-task'), 'done');
       if (t.classList.contains('manual-skip')) settleManual(t.getAttribute('data-task'), 'skip');
@@ -2582,11 +2709,39 @@ def build_html():
       if (RAW_DOCS[kind]) setRawDoc(kind, true);
     }
 
+    var runTaskText = {}, activeFeature = null;
+
+    function minutesBetween(a, b) {
+      var ms = Date.parse(b) - Date.parse(a);
+      return isFinite(ms) && ms >= 0 ? Math.max(1, Math.round(ms / 60000)) + ' min' : '';
+    }
+
+    // One row per task the run touched; a row opens the task in Tasks when the run was for the selected feature.
+    function runTasksHtml(run) {
+      var tasks = run.tasks || [];
+      if (!tasks.length) return '<div class="live-output-empty">No tasks recorded for this run.</div>';
+      var here = run.feature && run.feature === activeFeature;
+      return (here ? '' : '<div class="live-output-empty">This run was for ' + escapeHtml(run.feature || 'an unknown feature') +
+          '; choose that feature in Docs → Spec to open its tasks.</div>') +
+        tasks.map(function(t) {
+          return '<div class="run-task' + (here ? '' : ' other') + '"' + (here ? ' data-goto-task="' + escapeHtml(t.id) + '"' : '') + '>' +
+            '<span class="id">' + escapeHtml(t.id) + '</span>' + outcomeHtml(t.outcome) +
+            '<span class="txt">' + escapeHtml(here ? shortText(runTaskText[t.id] || '', 110) : '') + '</span>' +
+            (t.commits.length ? '<span class="mono meta">' + escapeHtml(t.commits.join(', ')) + '</span>' : '') +
+            '<span class="meta">' + escapeHtml((t.attempts > 1 ? t.attempts + ' attempts · ' : '') + minutesBetween(t.started, t.ended)) + '</span></div>';
+        }).join('');
+    }
+
     function loadRuns() {
-      fetchJSON('/api/runs', 'GET').then(function(runs) {
-        runs = runs || [];
+      Promise.all([fetchJSON('/api/runs', 'GET'), fetchJSON('/api/project/tasks', 'GET'), fetchJSON('/api/features', 'GET')]).then(function(r) {
+        var runs = r[0] || [];
+        activeFeature = (r[2] && r[2].active) || null;
+        runTaskText = {};
+        ((r[1] && r[1].phases) || []).forEach(function(p) { (p.tasks || []).forEach(function(t) { runTaskText[t.id] = t.text; }); });
+        var open = runs.filter(function(x) { return x.id === expandedRun; })[0];
+        if (open) setHtml(rd('run-tasks'), runTasksHtml(open));
         var el = document.getElementById('runs-list');
-        var signature = JSON.stringify([runs, selectedRunId, expandedRun]);
+        var signature = JSON.stringify([runs.map(function(x) { return [x.id, x.events_count, x.finished]; }), selectedRunId, expandedRun]);
         if (el._signature === signature) return;
         el._signature = signature;
         var top = el.scrollTop;
@@ -2623,6 +2778,22 @@ def build_html():
       }).catch(function(e) { console.error('loadRuns error', e); });
     }
 
+    // One event as a short sentence; the full record is the row's tooltip.
+    function eventText(ev) {
+      var k = ev.kind;
+      if (k === 'task.started') return 'implementation started' + (ev.attempt > 1 ? ' (attempt ' + ev.attempt + ')' : '');
+      if (k === 'task.implemented') return 'implemented, sent to the verifier';
+      if (k === 'task.verified') return ev.verdict === 'approve' ? 'verifier approved' :
+        'verifier rejected' + (ev.problems && ev.problems.length ? ': ' + String(ev.problems[0]) : '');
+      if (k === 'task.approved') return 'approved';
+      if (k === 'task.blocked') return 'blocked' + (ev.reason ? ': ' + ev.reason : '') + (ev.tag ? ' [' + ev.tag + ']' : '');
+      if (k === 'task.failed') return 'agent failed' + (ev.error ? ': ' + ev.error : '');
+      if (k === 'group.repair') return 'repairing the checks';
+      if (k === 'group.finished') return (ev.checks_passed ? 'checks passed, committed' : 'finished, checks failed') +
+        (ev.commits && ev.commits.length ? ' ' + ev.commits.join(', ') : '');
+      return k;
+    }
+
     function loadEvents() {
       if (!selectedRunId || expandedRun !== selectedRunId) return;
       fetchJSON('/api/runs/' + encodeURIComponent(selectedRunId) + '/events', 'GET').then(function(data) {
@@ -2638,11 +2809,10 @@ def build_html():
         }
         // Newest first, so the latest event is at the top and a refresh never has to scroll.
         setHtml(el, events.slice().reverse().map(function(ev) {
-          var ts = ev.ts ? new Date(ev.ts).toLocaleTimeString() : '-';
-          var json = JSON.stringify(ev);
-          var payloadShort = json.slice(0, 120) + (json.length > 120 ? '…' : '');
-          return '<div class="event-row"><div class="event-ts">[' + ts + ']</div><div class="event-kind">' + escapeHtml(ev.kind) +
-            '</div><div class="event-payload" title="' + escapeHtml(payloadShort) + '">' + escapeHtml(payloadShort) + '</div></div>';
+          var ts = ev.ts ? new Date(ev.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-';
+          var ids = ev.id ? [ev.id] : (ev.ids || []);
+          return '<div class="event-row" title="' + escapeHtml(JSON.stringify(ev, null, 1)) + '"><div class="event-ts">' + escapeHtml(ts) + '</div>' +
+            '<div class="event-kind">' + escapeHtml(ids.join(', ')) + '</div><div class="event-payload">' + escapeHtml(eventText(ev)) + '</div></div>';
         }).join(''));
       }).catch(function(e) { console.error('loadEvents error', e); });
     }

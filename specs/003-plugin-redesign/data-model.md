@@ -294,6 +294,15 @@ name descending (run ids are timestamps), not by mtime. A run whose `missing` is
 `cleanupPeriodDays`, default 30); its report is `.sdd/runs/<id>.md`." The UI already polls every 3 s
 (`setInterval(refreshAll, 3000)`); keep polling — no server-sent events.
 
+Added 2026-10-30: each run in `list_runs()` also carries `tasks` (`run_tasks()`: per task touched, in first-start
+order, `{id, outcome, started, ended, attempts, commits}`; outcome is committed, approved, blocked, rejected,
+interrupted or running, from the newest event; `commits` from `group.finished`) and `feature`. The feature is
+`feature` in `workflows.json`, which `/sdd-run` writes since this date, else the newest feature whose `spec.md`
+says `**Created**` on or before the run's date. `GET /api/runs/tasks` returns `{task id: [{run, outcome,
+commits}]}` for the selected feature's runs, newest first; task ids repeat across features, hence the filter.
+The Runs view shows "Tasks in this run" under an open run and a readable event line per event; each task card
+names the newest run that touched it.
+
 ### 4.5 Stale run (FR-017)
 `GET /api/run/current` returns `{"state": "none" | "running" | "paused" | "stale", "run_id", "workflow_dir"}`:
 - no `.sdd/run.json` → `none`;

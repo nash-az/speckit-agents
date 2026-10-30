@@ -318,10 +318,38 @@ class RunsTest(unittest.TestCase):
         run = runs[0]
         self.assertEqual((run["approved"], run["blocked"], run["events_count"]), (1, 1, 6))
         self.assertEqual(set(run), {"id", "events_count", "approved", "blocked", "interrupted",
-                                    "finished", "stopped"})
+                                    "finished", "stopped", "tasks", "feature"})
         self.assertFalse(run["finished"])
         (self.root / ".sdd" / "runs" / "20261025-1200.md").write_text("# Report\n", encoding="utf-8")
         self.assertTrue(request(self, "GET", "/api/runs")[0]["finished"])
+
+    def test_run_tasks_outcomes_and_commits(self):
+        ev = lambda kind, i, **f: dict({"ts": f.pop("ts", "2026-10-25T10:00:00Z"), "kind": kind, "id": i}, **f)
+        events = [ev("task.started", "T1", attempt=1, ts="2026-10-25T10:00:00Z"), ev("task.approved", "T1"),
+                  {"ts": "2026-10-25T10:05:00Z", "kind": "group.finished", "ids": ["T1"], "checks_passed": True, "commits": ["abc1234"]},
+                  ev("task.started", "T2", attempt=1), ev("task.verified", "T2", verdict="reject"),
+                  ev("task.started", "T3", attempt=1), ev("task.blocked", "T3"),
+                  ev("task.started", "T4", attempt=2)]
+        got = {t["id"]: (t["outcome"], t["commits"], t["attempts"]) for t in dash.run_tasks(events, finished=True)}
+        self.assertEqual(got, {"T1": ("committed", ["abc1234"], 1), "T2": ("rejected", [], 1),
+                               "T3": ("blocked", [], 1), "T4": ("interrupted", [], 2)})
+        self.assertEqual(dash.run_tasks(events, finished=False)[3]["outcome"], "running")
+        self.assertEqual([t["id"] for t in dash.run_tasks(events, True)], ["T1", "T2", "T3", "T4"])
+
+    def test_run_feature_from_listing_or_spec_dates(self):
+        for name, day in (("001-a", "2026-10-01"), ("002-b", "2026-10-20"), ("003-c", "2026-10-30")):
+            (self.root / "specs" / name).mkdir(parents=True)
+            (self.root / "specs" / name / "spec.md").write_text(f"# S\n\n**Created**: {day}\n", encoding="utf-8")
+        self.assertEqual(dash.run_feature(self.root, "20261025-1200", {"workflow_dirs": []}), "002-b")
+        self.assertEqual(dash.run_feature(self.root, "20261030-0900", {}), "003-c")
+        self.assertEqual(dash.run_feature(self.root, "20261025-1200", {"feature": "001-a"}), "001-a")
+        self.assertIsNone(dash.run_feature(self.root, "20260101-0000", {}))
+        index = request(self, "GET", "/api/runs/tasks")
+        self.assertEqual(index, {})  # the active feature is 003-c, the run belongs to 002-b
+        dash.DashboardHandler.feature = "002-b"
+        index = request(self, "GET", "/api/runs/tasks")
+        self.assertTrue(index)
+        self.assertTrue(all(v[0]["run"] == "20261025-1200" for v in index.values()))
 
     def test_sorted_by_name_descending_not_mtime(self):
         write_run(self.root, "20261026-0900", [self.wf])
@@ -1153,6 +1181,20 @@ class TransientStateTest(unittest.TestCase):
         self.assertNotIn('<div class="card-title">Event Feed</div>', self.html)  # no separate feed at the bottom
         self.assertNotIn("View report", self.html)  # no icon buttons: the click opens both
         self.assertIn("function loadReport()", self.html)
+
+    def test_event_text_is_a_sentence(self):
+        for text in ("function eventText(ev)", "'implementation started'", "'verifier rejected'",
+                     "'checks passed, committed'", "escapeHtml(eventText(ev))"):
+            self.assertIn(text, self.html)
+        self.assertNotIn("payloadShort", self.html)  # no raw JSON in the feed rows
+
+    def test_task_card_names_the_run_that_did_it(self):
+        got = self.run_js("(function() { taskRuns = {T1: [{run: '20261029-1003', outcome: 'committed', commits: ['168b8ce']},"
+                          " {run: '20261028-1005', outcome: 'rejected', commits: []}]}; return [taskRunChipHtml('T1'), taskRunChipHtml('T2')]; })()")
+        self.assertIn('data-run="20261029-1003"', got[0])
+        self.assertIn("168b8ce", got[0])
+        self.assertIn("+1 more", got[0])
+        self.assertEqual(got[1], "")
 
     def test_polls_log_route(self):
         self.assertIn("'/tasks/' + encodeURIComponent(id) + '/log'", self.html)

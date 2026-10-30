@@ -93,7 +93,7 @@ Remind the user that permission prompts stop an unattended run, and that a headl
    ```
    `taskAllow` gives per-task permission overrides (for example a `[dep:ok]` task may add a dependency even when `[allow] dependencies = false`). Build it from the tasks' tags: a task tagged `[dep:ok]` gets `{ dependencies: true }`, one tagged `[download:ok]` gets `{ downloads: true }`.
    The Workflow result names the run's `Transcript dir`. Add it to `.sdd/run.json` as `workflow_dir` right away: if the run is cut off, the next `/sdd-run` reads its journal there and resumes instead of starting the tasks over.
-   At the same moment, record the directory in `.sdd/runs/<run id>/workflows.json`, `{"workflow_dirs": ["<absolute transcript dir>", …]}`, oldest first: create the file (and its directory) if it is missing, and when resuming, append the new directory to its list. `python3 <helper> events . <run id>` reads the run's events from these directories.
+   At the same moment, record the directory in `.sdd/runs/<run id>/workflows.json`, `{"workflow_dirs": ["<absolute transcript dir>", …], "feature": "<the feature folder name, e.g. 004-feedback-chat>"}`, oldest first: create the file (and its directory) if it is missing, and when resuming, append the new directory to its list. `python3 <helper> events . <run id>` reads the run's events from these directories.
 4. Tell the user in one line that the run started, on which branch, and that `/workflows` shows progress. Then end your turn. The workflow notifies you when it finishes.
 
 ## 7. When the workflow finishes
