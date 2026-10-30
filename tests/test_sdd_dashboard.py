@@ -1147,6 +1147,13 @@ class TransientStateTest(unittest.TestCase):
         self.assertIn("function showsLog(t)", self.html)
         self.assertIn("openLogs[tid]", self.html)
 
+    def test_a_clicked_run_opens_its_events_and_report_under_itself(self):
+        self.assertIn("var runDetailEl", self.html)
+        self.assertIn("block.appendChild(runDetailEl)", self.html)
+        self.assertNotIn('<div class="card-title">Event Feed</div>', self.html)  # no separate feed at the bottom
+        self.assertNotIn("View report", self.html)  # no icon buttons: the click opens both
+        self.assertIn("function loadReport()", self.html)
+
     def test_polls_log_route(self):
         self.assertIn("'/tasks/' + encodeURIComponent(id) + '/log'", self.html)
         self.assertIn("setInterval(refreshAll, 3000)", self.html)
@@ -1235,7 +1242,8 @@ class DocumentsViewTest(unittest.TestCase):
         self.assertEqual(got, ["/api/doc?name=data-model", "text", "markdown"])
 
     def test_reports_render_as_documents(self):
-        self.assertIn("showDoc(el, '/api/runs/' + encodeURIComponent(runId) + '/report', 'markdown')", self.html)
+        self.assertIn("fetchDoc('/api/runs/' + encodeURIComponent(runId) + '/report')", self.html)
+        self.assertIn("renderDoc(rd('report-view'), d.text, 'markdown')", self.html)
         self.assertNotIn("function loadFile(", self.html)
 
 

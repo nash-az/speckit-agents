@@ -1233,15 +1233,13 @@ def build_html():
 
   /* Run list */
   .run-item { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.5rem; cursor: pointer; transition: all 0.15s; background: var(--surface); }
+  .run-detail { margin: -0.25rem 0 0.75rem; padding: 0.75rem; border: 1px solid var(--border); border-top: 0; border-radius: 0 0 6px 6px; background: var(--surface); }
+  .run-detail > .card-title { margin-bottom: 0.5rem; }
   .run-item:hover { border-color: var(--accent); background: var(--surface-hover); }
   .run-item.active { border-color: var(--accent); background: rgba(59,130,246,0.05); }
   .run-info { flex: 1; }
   .run-id { font-family: 'JetBrains Mono', monospace; font-size: 0.875rem; font-weight: 600; color: var(--text); }
   .run-meta { font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem; }
-  .run-actions { display: flex; gap: 0.5rem; opacity: 0; transition: opacity 0.15s; }
-  .run-item:hover .run-actions { opacity: 1; }
-  .btn-icon { width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.875rem; }
-  .btn-icon:hover { border-color: var(--accent); color: var(--accent); }
 
   /* Empty state */
   .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; color: var(--text-muted); }
@@ -1511,14 +1509,6 @@ def build_html():
         </div>
         <div class="card-title">Run History</div>
         <div id="runs-list"></div>
-        <div class="card" style="margin-top:1rem;">
-          <div class="card-title">Event Feed</div>
-          <div id="events-view" class="events-list"></div>
-        </div>
-        <div class="card" id="report-card" style="margin-top:1rem;display:none;">
-          <div class="card-title"><span>Run report <span class="mono" id="report-run"></span></span></div>
-          <div id="report-view" class="markdown"></div>
-        </div>
       </section>
 
       <!-- Status -->
@@ -1542,6 +1532,14 @@ def build_html():
 <script>
   (function() {
     var selectedRunId = null;
+    // The run whose events and report are open right under it (clicked again, it closes), and the run whose report is shown.
+    var expandedRun = null, reportRun = null;
+    var runDetailEl = document.createElement('div');
+    runDetailEl.className = 'run-detail';
+    runDetailEl.innerHTML = '<div class="card-title">Event feed</div><div id="events-view" class="events-list"></div>' +
+      '<div id="report-card" style="margin-top:1rem;display:none;"><div class="card-title"><span>Run report <span class="mono" id="report-run"></span></span></div>' +
+      '<div id="report-view" class="markdown"></div></div>';
+    function rd(id) { return runDetailEl.querySelector('#' + id); }
     var selectedSection = 'overview';
     var sectionShown = false;
     // The design documents share one sidebar entry, "Docs", with a tab per document.
@@ -2588,10 +2586,11 @@ def build_html():
       fetchJSON('/api/runs', 'GET').then(function(runs) {
         runs = runs || [];
         var el = document.getElementById('runs-list');
-        var signature = JSON.stringify([runs, selectedRunId]);
+        var signature = JSON.stringify([runs, selectedRunId, expandedRun]);
         if (el._signature === signature) return;
         el._signature = signature;
         var top = el.scrollTop;
+        if (runDetailEl.parentNode) runDetailEl.parentNode.removeChild(runDetailEl);  // keep it (and its scroll) across the rebuild
         el.innerHTML = '';
         if (runs.length === 0) {
           el.innerHTML = '<div class="empty"><div class="empty-icon">🔄</div><div>No runs found.</div></div>';
@@ -2603,32 +2602,32 @@ def build_html():
           (function(runId) {
             div.addEventListener('click', function() {
               selectedRunId = runId;
+              if (expandedRun === runId) { expandedRun = null; reportRun = null; }
+              else { expandedRun = runId; reportRun = null; }
+              rd('report-card').style.display = 'none';
               loadRuns();
               loadEvents();
+              loadReport();
             });
           })(run.id);
           var statusCls = run.finished ? (run.stopped ? 'status-stopped' : 'status-done') : (run.interrupted > 0 ? 'status-paused' : 'status-running');
           var finishedText = run.finished ? (run.stopped ? 'stopped' : 'done') : 'running';
-          div.innerHTML = '<div class="run-info"><div class="run-id">#' + escapeHtml(run.id) + '</div><div class="run-meta"><span class="pill ' + statusCls + '"><span class="pill-dot"></span>' + finishedText + '</span> ' + run.approved + ' approved · ' + run.blocked + ' blocked · ' + run.interrupted + ' interrupted · ' + run.events_count + ' events</div></div><div class="run-actions"><button class="btn-icon" title="View events">📋</button><button class="btn-icon" title="View report">📄</button></div></div>';
-          var actions = div.querySelectorAll('.run-actions .btn-icon');
-          if (actions.length >= 2) {
-            actions[0].addEventListener('click', function(ev) { ev.stopPropagation(); selectedRunId = run.id; loadEvents(); });
-            actions[1].addEventListener('click', function(ev) { ev.stopPropagation(); viewReport(run.id); });
-          }
-          el.appendChild(div);
+          div.innerHTML = '<div class="run-info"><div class="run-id">#' + escapeHtml(run.id) + '</div><div class="run-meta"><span class="pill ' + statusCls + '"><span class="pill-dot"></span>' + finishedText + '</span> ' + run.approved + ' approved · ' + run.blocked + ' blocked · ' + run.interrupted + ' interrupted · ' + run.events_count + ' events</div></div>';
+          var block = document.createElement('div');
+          block.className = 'run-block';
+          block.appendChild(div);
+          if (expandedRun === run.id) block.appendChild(runDetailEl);
+          el.appendChild(block);
         });
         el.scrollTop = top;
       }).catch(function(e) { console.error('loadRuns error', e); });
     }
 
     function loadEvents() {
-      if (!selectedRunId) {
-        setHtml(document.getElementById('events-view'), '<div class="empty"><div class="empty-icon">📋</div><div>Select a run to see its events.</div></div>');
-        return;
-      }
+      if (!selectedRunId || expandedRun !== selectedRunId) return;
       fetchJSON('/api/runs/' + encodeURIComponent(selectedRunId) + '/events', 'GET').then(function(data) {
         var events = (data && data.events) || [];
-        var el = document.getElementById('events-view');
+        var el = rd('events-view');
         if (data && data.notice) {
           setHtml(el, '<div class="empty"><div class="empty-icon">📭</div><div class="transcript-gone">' + escapeHtml(data.notice) + '</div></div>');
           return;
@@ -2648,13 +2647,19 @@ def build_html():
       }).catch(function(e) { console.error('loadEvents error', e); });
     }
 
-    // Run reports render like every other document (data-model.md §4.3).
-    function viewReport(runId) {
-      document.getElementById('report-card').style.display = 'block';
-      document.getElementById('report-run').textContent = '#' + runId;
-      var el = document.getElementById('report-view');
-      el.innerHTML = '';
-      showDoc(el, '/api/runs/' + encodeURIComponent(runId) + '/report', 'markdown');
+    // The open run's report renders like every other document (data-model.md §4.3); a run without one shows no report.
+    function loadReport() {
+      var runId = expandedRun;
+      if (!runId) return;
+      fetchDoc('/api/runs/' + encodeURIComponent(runId) + '/report').then(function(d) {
+        if (expandedRun !== runId) return;
+        var card = rd('report-card');
+        if (d.text == null) { card.style.display = 'none'; return; }
+        reportRun = runId;
+        card.style.display = 'block';
+        rd('report-run').textContent = '#' + runId;
+        renderDoc(rd('report-view'), d.text, 'markdown');
+      });
     }
 
     function loadStatus() {
@@ -2890,9 +2895,9 @@ def build_html():
       document.addEventListener('click', function(ev) {
         var row = ev.target.closest ? ev.target.closest('[data-go], [data-run]') : null;
         if (!row) return;
-        if (row.hasAttribute('data-run')) selectedRunId = row.getAttribute('data-run');
+        if (row.hasAttribute('data-run')) { selectedRunId = row.getAttribute('data-run'); expandedRun = selectedRunId; reportRun = null; }
         showSection(row.hasAttribute('data-run') ? 'runs' : row.getAttribute('data-go'));
-        if (row.hasAttribute('data-run')) { loadRuns(); loadEvents(); }
+        if (row.hasAttribute('data-run')) { loadRuns(); loadEvents(); loadReport(); }
       });
 
       document.querySelectorAll('button[data-raw]').forEach(function(btn) {
