@@ -35,6 +35,7 @@ Endpoints:
     POST /api/decisions/answer    -- { "task", "answer" } save a decision answer and apply it (sdd-decide.py)
     POST /api/decisions/apply     -- { "task" } try again to apply a saved answer
     POST /api/manual/done|skip    -- { "task", "note" } settle an open [manual] task (sdd-manual.py, FR-036)
+    POST /api/blocked/done|answer|drop -- { "task", "text" } settle an open BLOCKED.md entry (sdd-unblock.py, FR-037)
     GET /api/run/plan             -- what a run would do and whether it can start now (FR-034)
     POST /api/run/start           -- { "phases"?, "no_converge"?, "max_tasks"? } start a supervised run
     GET /api/features             -- the feature folders under specs/ and the active one
@@ -70,6 +71,8 @@ _spec = importlib.util.spec_from_file_location("sdd_decide", Path(__file__).with
 sdd_decide = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_decide)
 _spec = importlib.util.spec_from_file_location("sdd_manual", Path(__file__).with_name("sdd-manual.py"))
 sdd_manual = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_manual)
+_spec = importlib.util.spec_from_file_location("sdd_unblock", Path(__file__).with_name("sdd-unblock.py"))
+sdd_unblock = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_unblock)
 _spec = importlib.util.spec_from_file_location("sdd_launch", Path(__file__).with_name("sdd-launch.py"))
 sdd_launch = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_launch)
 _spec = importlib.util.spec_from_file_location("sdd_edit", Path(__file__).with_name("sdd-edit.py"))
@@ -957,6 +960,32 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         self._send_json({"ok": True, "commit": result["commit"], "files": result["files"]}, 200, cors)
 
+    def _unblock(self, action):
+        """`POST /api/blocked/done|answer|drop` `{task, text}` (FR-037), after the §4.9 checks: 400 for a bad body,
+        409 when the entry cannot be settled now (the reason is in `error`; nothing changed), else
+        `200 {ok, commit, files}`. The helper `sdd-unblock.py` does the writing."""
+        cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
+        try:
+            data = self._read_json_body()
+        except ValueError:
+            data = None
+        task_id = data.get("task") if isinstance(data, dict) else None
+        text = data.get("text", "") if isinstance(data, dict) else None
+        if not isinstance(task_id, str) or not TASK_ID_RE.match(task_id) or not isinstance(text, str) \
+                or len(text) > ANSWER_MAX_CHARS:
+            self._send_json({"error": "task must be a task id such as T053 and text a string"}, 400, cors)
+            return
+        feature = self._feature_dir()
+        if feature is None:
+            self._send_json({"error": "choose a feature", "features": feature_names(DashboardHandler.project)}, 409, cors)
+            return
+        try:
+            result = sdd_unblock.settle(DashboardHandler.project, feature, task_id, action, text)
+        except sdd_unblock.Refused as e:
+            self._send_json({"error": str(e)}, 409, cors)
+            return
+        self._send_json({"ok": True, "commit": result["commit"], "files": result["files"]}, 200, cors)
+
     def _feature_dir(self):
         """The person's in-memory choice if one was made, else active_feature()."""
         proj = DashboardHandler.project
@@ -1129,6 +1158,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         if path in ("/api/doc/save", "/api/doc/commit"):
             self._doc_edit(path.rsplit("/", 1)[1])
+            return
+        if path in ("/api/blocked/done", "/api/blocked/answer", "/api/blocked/drop"):
+            self._unblock(path.rsplit("/", 1)[1])
             return
         if path in ("/api/manual/done", "/api/manual/skip"):
             self._manual(path.rsplit("/", 1)[1])
@@ -1917,6 +1949,7 @@ def build_html():
         (t.status_reason ? '<div class="blocked-reason">' + escapeHtml(t.status_reason) + '</div>' : '') +
         (ask ? '<div class="blocked-question">' + escapeHtml(ask) + '</div>' : '') +
         (taskStatusKey(t) === 'held' && t.status_tag === 'manual' ? manualActionsHtml(t) : '') +
+        (t.status === 'blocked' && t.status_tag === 'open' ? unblockActionsHtml(t.id) : '') +
         '</div>';
     }
 
@@ -1927,6 +1960,28 @@ def build_html():
         '<textarea class="manual-note" id="manual-note-' + id + '" rows="2" placeholder="What you found or did (optional for I did it; required to skip)"></textarea>' +
         '<button class="btn manual-done" data-task="' + id + '">I did it</button> ' +
         '<button class="btn manual-skip" data-task="' + id + '">Skip</button></div>';
+    }
+
+    // An open BLOCKED.md entry (FR-037): the person did the step, answers the question so the next run retries
+    // the task with it, or drops the task. Each button is one commit; all refuse while a run is active.
+    function unblockActionsHtml(id) {
+      id = escapeHtml(id);
+      return '<div class="manual-actions">' +
+        '<textarea class="manual-note" id="unblock-text-' + id + '" rows="2" placeholder="Your answer, what you did, or why you drop it"></textarea>' +
+        '<button class="btn unblock-btn" data-task="' + id + '" data-action="done" title="You did the step by hand: the task is ticked">I did it</button> ' +
+        '<button class="btn unblock-btn" data-task="' + id + '" data-action="answer" title="The next run retries the task with your answer">Answer and retry</button> ' +
+        '<button class="btn unblock-btn" data-task="' + id + '" data-action="drop" title="Drop the task">Won&#39;t fix</button></div>';
+    }
+
+    function settleBlocked(task, action) {
+      var boxes = document.querySelectorAll('[id="unblock-text-' + task + '"]'), text = '';
+      boxes.forEach(function(b) { if (b.value.trim()) text = b.value.trim(); });
+      if (action !== 'done' && !text) { toast(action === 'answer' ? 'Write your answer first' : 'Say why you drop it'); if (boxes[0]) boxes[0].focus(); return; }
+      postEdit('/api/blocked/' + action, { task: task, text: text }).then(function(res) {
+        if (!res.ok) { toast('Not saved: ' + (res.error || 'unknown error')); return; }
+        toast(task + { done: ' marked done', answer: ' answered: the next run retries it', drop: ' dropped' }[action] + ' (commit ' + res.commit + ')');
+        refreshAll();
+      }).catch(function(e) { console.error('settleBlocked error', e); toast('Could not save'); });
     }
 
     function settleManual(task, action) {
@@ -1946,7 +2001,8 @@ def build_html():
         (e.reason ? '<div class="blocked-reason">' + escapeHtml(e.reason) + '</div>' : '') +
         (e.question ? '<div class="blocked-question">' + escapeHtml(e.question) + '</div>' : '') +
         (e.answer ? '<div class="blocked-answer">' + escapeHtml(e.answer) + '</div>' : '') +
-        '<div class="blocked-tags">' + tagsHtml(e.tag ? [e.tag] : []) + '</div></div>';
+        '<div class="blocked-tags">' + tagsHtml(e.tag ? [e.tag] : []) + '</div>' +
+        (e.status === 'open' ? unblockActionsHtml(e.id) : '') + '</div>';
     }
 
     // Documents (data-model.md §4.3): every /api/doc name. tasks and blocked keep their structured views
@@ -2764,6 +2820,7 @@ def build_html():
         loadTasks();
         return;
       }
+      if (t.classList.contains('unblock-btn')) settleBlocked(t.getAttribute('data-task'), t.getAttribute('data-action'));
       if (t.classList.contains('manual-done')) settleManual(t.getAttribute('data-task'), 'done');
       if (t.classList.contains('manual-skip')) settleManual(t.getAttribute('data-task'), 'skip');
       if (t.id === 'start-run-btn') startRun();
@@ -2779,10 +2836,10 @@ def build_html():
         var entries = data.entries || [];
         var el = document.getElementById('blocked-list');
         if (entries.length === 0) {
-          el.innerHTML = '<div class="empty"><div class="empty-icon">✅</div><div>No BLOCKED.md entries.</div></div>';
+          setHtml(el, '<div class="empty"><div class="empty-icon">✅</div><div>No BLOCKED.md entries.</div></div>');
           return;
         }
-        el.innerHTML = entries.map(entryItemHtml).join('');
+        setHtml(el, entries.map(entryItemHtml).join(''));  // redraws only on change, so a typed answer stays
       }).catch(function(e) { console.error('loadBlocked error', e); });
     }
 

@@ -273,7 +273,8 @@ pause, answer a decision or resume.
   session that performs it under the run guard. This feature documents that action channel's shape
   and ships no other action routes. The only exceptions are FR-029 (one control request file in the
   supervisor's state directory, outside the project), FR-033 (saving and applying a decision),
-  FR-034 (starting a supervised run), FR-035 (editing and committing a spec or the constitution) and FR-036 (settling a manual task).
+  FR-034 (starting a supervised run), FR-035 (editing and committing a spec or the constitution), FR-036 (settling a manual task) and FR-037
+  (settling a blocked task).
 - **FR-021**: A running task's dashboard view MUST show its live agent output (a tail of its
   transcript), or a clear "not available yet" state — never an error.
 - **FR-022**: The dashboard server MUST bind only to localhost, and MUST reject requests whose Host
@@ -366,6 +367,13 @@ pause, answer a decision or resume.
   only the files it touched as `chore(manual): <id> ...`. It MUST refuse, and change nothing, while a run
   is active, when a file it would touch has other uncommitted changes, when the project is not a git
   repository, or when the task is not an open `[manual]` task; the view shows the reason.
+- **FR-037**: The dashboard MUST let a person settle an open `BLOCKED.md` entry (a task a run could not finish)
+  without a terminal. Its card in the Blocked view and in "Waiting on you" has a text box and three buttons:
+  **I did it** (`POST /api/blocked/done`, ticks the task and sets the entry `resolved` with the note), **Answer and
+  retry** (`/answer`, sets `resolved` with the answer, so the next run retries the task with it, FR-023) and
+  **Won't fix** (`/drop`, sets `wontfix` with the reason). They go through `bin/sdd-unblock.py`, which rewrites only
+  that task's last entry and commits only the files it touched. The same refusals as FR-036 apply, and an answer
+  or reason is required for `answer` and `drop`.
 
 ### Key Entities
 - **Run control request**: one command (`stop` with a mode, `resume`, `hold` or `release`), an id and a time, written by

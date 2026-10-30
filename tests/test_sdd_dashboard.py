@@ -917,6 +917,17 @@ class DocEditRouteTest(unittest.TestCase):
         self.assertTrue(done["ok"])
         self.assertFalse(done["dirty"])
 
+    def test_blocked_entry_routes(self):
+        request(self, "POST", "/api/blocked/done", {"text": "x"}, status=400)
+        got = request(self, "POST", "/api/blocked/answer", {"task": "T007"}, status=409)
+        self.assertIn("write the answer first", got["error"])
+        done = request(self, "POST", "/api/blocked/answer", {"task": "T007", "text": "the v2 API"})
+        self.assertTrue(done["ok"] and done["commit"])
+        blocked = (self.root / "specs" / "001-only" / "BLOCKED.md").read_text()
+        self.assertIn("the v2 API", blocked)
+        got = request(self, "POST", "/api/blocked/done", {"task": "T007"}, status=409)  # no longer open
+        self.assertIn("no open entry", got["error"])
+
     def test_manual_task_routes(self):
         request(self, "POST", "/api/manual/done", {"note": "x"}, status=400)
         got = request(self, "POST", "/api/manual/done", {"task": "T003"}, status=409)  # a decision, not manual
