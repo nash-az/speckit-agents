@@ -217,3 +217,32 @@ outside the sandbox with `SDD_UI_TESTS=1 python3 -m unittest tests/ui/test_smoke
 Retry, 2026-10-30, run on branch `auto/20261030-1545` (after the answer "continue"): same result, `Ran 0 tests OK (skipped=1)`.
 `chromium_headless_shell-1248` is still missing and Google Chrome still fails with the ProcessSingleton error inside the
 sandbox, so there are still no dashboard findings. No browser result had been recorded outside the sandbox either.
+
+Real run, 2026-10-30, branch `auto/20261030-1854`, inside the run sandbox after the sandbox fix (answer 2:
+`allowLocalBinding` in `.claude/settings.json`, and `launch_chromium()` retrying with `--single-process`, commit `b765e6e`).
+The browser starts and the dashboard binds its port, so both tests ran:
+
+```
+python3 -m unittest tests/ui/test_smoke.py -v
+test_page_opens_without_errors ... FAIL
+test_tasks_view_lists_the_toy_phases ... FAIL
+Ran 2 tests in 4.5s  FAILED (failures=2)
+```
+
+Failures (listed, not fixed, per FR-031):
+
+- **Dashboard: the page loads Google Fonts from the network.** `build_html()` in `bin/sdd-dashboard.py` (line ~1213) has
+  `<link href="https://fonts.googleapis.com/css2?family=Inter...&family=JetBrains+Mono...">`. This is not one of the four
+  pinned CDN files, so the harness neither vendors it nor has a fallback for it. The offline test page records
+  `offline: blocked request to https://fonts.googleapis.com/...` and the console error `Failed to load resource: net::ERR_FAILED`.
+  Both tests fail on this one error. Possible fixes (not chosen here): drop the web fonts for a system font stack, or vendor
+  the fonts and add them to the CDN fallback (FR-032).
+- **Test expectation, fixed in the test:** the first version expected the raw `## Phase 1: Setup` heading. The dashboard shows
+  the parser's title (`Setup`, per `PHASE_RE` in `bin/sdd-tasks.py`), uppercased with CSS. The test now reads the title span's
+  DOM text and compares it without case. With that change the Tasks view lists the toy's phase. The only failure left is the
+  font error above.
+- Observation, not a failure: the Tasks view phase heading does not show the phase number ("SETUP", not "Phase 1: Setup").
+
+Screenshots and HTML of both failures: `.sdd/scratch/ui/tests.ui.test_smoke.SmokeTest.*.{png,html}` (git-ignored).
+`SDD_UI_TESTS=1` was not set for this run because the run's shell refuses `VAR=value` prefixes. It was not needed: the
+browser launched, so nothing was skipped.
