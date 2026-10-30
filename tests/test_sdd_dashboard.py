@@ -1196,6 +1196,45 @@ class TransientStateTest(unittest.TestCase):
         self.assertIn("+1 more", got[0])
         self.assertEqual(got[1], "")
 
+    def overview_js(self, expr):
+        """Run expr with the Overview helpers, which sit after the slice in self.js."""
+        start = self.html.index("    function shortText(")
+        short = self.html[start:self.html.index("}", self.html.index("return", start)) + 1]
+        a = self.html.index("    var NEEDS_GROUPS")
+        b = self.html.index("    // The first open tasks nothing is holding")
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        script = self.js + "\n" + short + "\n" + self.html[a:b] + "\nprocess.stdout.write(JSON.stringify(" + expr + "));"
+        out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_overview_needs_groups_and_running_now(self):
+        got = self.overview_js("""(function() { var ph = [{title: 'P', tasks: [
+            {id: 'T1', text: 'blocked one', status: 'blocked', question: 'Which API?'},
+            {id: 'T2', text: 'record audio', status: 'held', status_tag: 'manual'},
+            {id: 'T3', text: 'add a package', status: 'held', status_tag: 'dep'},
+            {id: 'T4', text: 'after T2', status: 'held', status_tag: 'dependency'},
+            {id: 'T5', text: 'pick db', status: 'held', status_tag: 'decision'},
+            {id: 'T6', text: 'working', status: null, transient: {key: 'running', vars: {step: 'Verifying'}}},
+            {id: 'T7', text: 'again', status: null, transient: {key: 'retrying', vars: {n: 2, max: 3}}}]}];
+          var g = needsGroups(ph, [{id: 'T5', question: 'Which database?'}]);
+          var rows = runningRows(ph);
+          return [Object.keys(g).map(function(k) { return k + ':' + g[k].map(function(r) { return r.id; }).join(','); }),
+                  overviewNeedsHtml(ph, [{id: 'T5', question: 'Which database?'}]),
+                  rows.map(function(r) { return r.t.id; }),
+                  overviewRunningHtml(rows, {T6: new Date(Date.now() - 125000).toISOString()}, {T6: '< 297 passed'}),
+                  sinceText(new Date(Date.now() - 3 * 3600000 - 60000).toISOString())]; })()""")
+        groups, needs, running, html, since = got
+        self.assertEqual(groups, ["blocked:T1", "decision:T5", "manual:T2", "other:T3"])  # T4 waits on T2, not on the person
+        self.assertEqual(needs["count"], 4)
+        self.assertLess(needs["html"].index("Blocked by a run"), needs["html"].index("Decisions"))
+        self.assertEqual(running, ["T6", "T7"])
+        self.assertIn('data-goto-task="T6"', html)
+        self.assertIn("2 min", html)
+        self.assertIn("&lt; 297 passed", html)
+        self.assertEqual(since, "3 h 1 min")
+
     def test_polls_log_route(self):
         self.assertIn("'/tasks/' + encodeURIComponent(id) + '/log'", self.html)
         self.assertIn("setInterval(refreshAll, 3000)", self.html)

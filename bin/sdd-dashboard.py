@@ -1289,6 +1289,15 @@ def build_html():
   .ov-mini > span { display: block; height: 100%; background: var(--st-done); }
   .ov-ok { color: var(--text-muted); font-size: 0.875rem; padding: 0.5rem 0.625rem; }
   .ov-more { color: var(--text-muted); font-size: 0.8125rem; padding: 0.375rem 0.625rem; }
+  .ov-more[data-go] { cursor: pointer; }
+  .ov-more[data-go]:hover { color: var(--accent); }
+  .ov-group + .ov-group { margin-top: 0.75rem; }
+  .ov-group-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); padding: 0 0.625rem 0.25rem; cursor: pointer; }
+  .ov-group-title:hover { color: var(--accent); }
+  .ov-run-task { border-radius: 6px; cursor: pointer; }
+  .ov-run-task:hover { background: var(--surface-hover); }
+  .ov-run-task .ov-row:hover { background: none; }
+  .ov-run-line { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted); padding: 0 0.625rem 0.5rem 4.6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .stat-value { font-size: 1.875rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--text); }
   .stat-label { font-size: 0.8125rem; color: var(--text-muted); }
 
@@ -1533,6 +1542,7 @@ def build_html():
       <!-- Overview -->
       <section id="section-overview" class="section">
         <div class="card" id="ov-progress"></div>
+        <div class="card" id="ov-running-card" style="display:none;"><div class="card-title">Running now <span class="badge" id="ov-running-count">0</span></div><div id="ov-running"></div></div>
         <div class="grid-2">
           <div class="card"><div class="card-title">Needs you <span class="badge" id="ov-needs-count">0</span></div><div id="ov-needs"></div></div>
           <div class="card"><div class="card-title">Next up</div><div id="ov-next"></div></div>
@@ -2336,25 +2346,74 @@ def build_html():
         '<div class="ov-bar">' + bar + '</div><div class="ov-legend">' + legend + '</div>';
     }
 
-    // Open decisions, blocked tasks and tasks held for a person, most pressing first; each row opens its view.
-    function overviewNeedsHtml(phases, decisions) {
-      var rows = [];
-      (decisions || []).forEach(function(d) {
-        rows.push({ go: 'decisions', icon: '⚖️', id: d.id, text: d.question || d.text, meta: 'decision' });
-      });
+    // What waits on the person, in labelled groups, most pressing first: tasks a run blocked, open decisions,
+    // manual tasks, then other holds (a dependency or download to approve). Each row opens its view.
+    var NEEDS_GROUPS = [
+      { key: 'blocked', title: 'Blocked by a run', icon: '🚫', go: 'blocked' },
+      { key: 'decision', title: 'Decisions', icon: '⚖️', go: 'decisions' },
+      { key: 'manual', title: 'Manual: needs you to do it', icon: '✋', go: 'tasks' },
+      { key: 'other', title: 'Approve to continue', icon: '⏳', go: 'tasks' }
+    ];
+    var NEEDS_PER_GROUP = 5;
+
+    function needsGroups(phases, decisions) {
+      var groups = { blocked: [], decision: [], manual: [], other: [] }, seen = {};
+      (decisions || []).forEach(function(d) { seen[d.id] = true; groups.decision.push({ id: d.id, text: d.question || d.text, meta: 'decision' }); });
       (phases || []).forEach(function(p) {
         (p.tasks || []).forEach(function(t) {
-          if (!isWaiting(t) || (t.status_tag === 'decision' && (decisions || []).some(function(d) { return d.id === t.id; }))) return;
-          rows.push({ go: taskStatusKey(t) === 'blocked' ? 'blocked' : 'tasks', icon: taskStatusKey(t) === 'blocked' ? '🚫' : '⏳',
-                      id: t.id, text: t.question || t.text, meta: taskStatusKey(t) === 'blocked' ? 'blocked' : (t.status_tag || 'held') });
+          if (!isWaiting(t) || seen[t.id]) return;
+          var key = taskStatusKey(t) === 'blocked' ? 'blocked' : t.status_tag === 'decision' ? 'decision' : t.status_tag === 'manual' ? 'manual' : 'other';
+          groups[key].push({ id: t.id, text: t.question || t.text, meta: key === 'other' ? (t.status_tag || 'held') : '' });
         });
       });
-      var html = rows.slice(0, 6).map(function(r) {
-        return '<div class="ov-row" data-go="' + r.go + '"><span>' + r.icon + '</span><span class="id">' + escapeHtml(r.id) + '</span>' +
-          '<span class="txt">' + escapeHtml(shortText(r.text, 110)) + '</span><span class="meta">' + escapeHtml(r.meta) + '</span></div>';
+      return groups;
+    }
+
+    function overviewNeedsHtml(phases, decisions) {
+      var groups = needsGroups(phases, decisions), count = 0, html = '';
+      NEEDS_GROUPS.forEach(function(g) {
+        var rows = groups[g.key];
+        if (!rows.length) return;
+        count += rows.length;
+        html += '<div class="ov-group"><div class="ov-group-title" data-go="' + g.go + '">' + g.icon + ' ' + escapeHtml(g.title) +
+          ' <span class="badge">' + rows.length + '</span></div>' +
+          rows.slice(0, NEEDS_PER_GROUP).map(function(r) {
+            return '<div class="ov-row" ' + (g.go === 'tasks' ? 'data-goto-task="' + escapeHtml(r.id) + '"' : 'data-go="' + g.go + '"') + '><span class="id">' + escapeHtml(r.id) + '</span>' +
+              '<span class="txt">' + escapeHtml(shortText(r.text, 110)) + '</span>' + (r.meta ? '<span class="meta">' + escapeHtml(r.meta) + '</span>' : '') + '</div>';
+          }).join('') +
+          (rows.length > NEEDS_PER_GROUP ? '<div class="ov-more" data-go="' + g.go + '">and ' + (rows.length - NEEDS_PER_GROUP) + ' more</div>' : '') + '</div>';
+      });
+      return { count: count, html: html || '<div class="ov-ok">✓ Nothing is waiting on you.</div>' };
+    }
+
+    // Tasks a run is working on now: step, attempt, time since the attempt started, and the newest log line.
+    // starts is {task id: ts of its newest task.started}; lines is {task id: last log line}.
+    function runningRows(phases) {
+      var rows = [];
+      (phases || []).forEach(function(p) {
+        (p.tasks || []).forEach(function(t) {
+          var key = taskStatusKey(t);
+          if (key === 'running' || key === 'retrying' || (key === 'paused' && t.transient)) rows.push({ t: t, phase: p.title });
+        });
+      });
+      return rows;
+    }
+
+    function sinceText(ts, now) {
+      var ms = (now || Date.now()) - Date.parse(ts);
+      if (!isFinite(ms) || ms < 0) return '';
+      var m = Math.floor(ms / 60000);
+      return m < 1 ? 'just started' : m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min';
+    }
+
+    function overviewRunningHtml(rows, starts, lines, now) {
+      return rows.map(function(r) {
+        var t = r.t, line = lines[t.id];
+        return '<div class="ov-run-task" data-goto-task="' + escapeHtml(t.id) + '"><div class="ov-row"><span class="id">' + escapeHtml(t.id) + '</span>' +
+          taskBadge(t) + '<span class="txt">' + escapeHtml(shortText(t.text, 100)) + '</span>' +
+          '<span class="meta">' + escapeHtml(starts[t.id] ? sinceText(starts[t.id], now) : '') + '</span></div>' +
+          (line ? '<div class="ov-run-line">' + escapeHtml(shortText(line, 160)) + '</div>' : '') + '</div>';
       }).join('');
-      if (rows.length > 6) html += '<div class="ov-more">and ' + (rows.length - 6) + ' more</div>';
-      return { count: rows.length, html: html || '<div class="ov-ok">✓ Nothing is waiting on you.</div>' };
     }
 
     // The first open tasks nothing is holding, in file order.
@@ -2405,7 +2464,28 @@ def build_html():
         var feed = runId ? fetchJSON('/api/runs/' + encodeURIComponent(runId) + '/events', 'GET') : Promise.resolve(null);
         return feed.then(function(f) {
           var states = transientStates(f && f.events, data.max_retries, runId === run.run_id ? run.state : null);
-          return { phases: mergeTransient(data.phases, states), run: run, runId: runId };
+          return { phases: mergeTransient(data.phases, states), run: run, runId: runId, events: (f && f.events) || [] };
+        });
+      });
+    }
+
+    // The "Running now" card, shown only while a task is running; the newest log line per task is fetched here.
+    var ovLines = {};
+
+    function loadOverviewRunning(m) {
+      var rows = runningRows(m.phases), card = document.getElementById('ov-running-card');
+      card.style.display = rows.length ? '' : 'none';
+      document.getElementById('ov-running-count').textContent = rows.length;
+      var starts = {};
+      (m.events || []).forEach(function(ev) { if (ev.kind === 'task.started' && ev.id) starts[ev.id] = ev.ts; });
+      var draw = function() { setHtml(document.getElementById('ov-running'), overviewRunningHtml(rows, starts, ovLines)); };
+      draw();
+      if (!m.runId) return;
+      rows.slice(0, 5).forEach(function(r) {
+        fetchJSON('/api/runs/' + encodeURIComponent(m.runId) + '/tasks/' + encodeURIComponent(r.t.id) + '/log', 'GET').then(function(log) {
+          var lines = (log && log.available && log.lines) || [];
+          for (var i = lines.length - 1; i >= 0; i--) if (String(lines[i]).trim()) { ovLines[r.t.id] = String(lines[i]).trim(); break; }
+          draw();
         });
       });
     }
@@ -2418,6 +2498,7 @@ def build_html():
         document.getElementById('ov-needs-count').textContent = needs.count;
         setHtml(document.getElementById('ov-needs'), needs.html);
         setHtml(document.getElementById('ov-next'), overviewNextHtml(m.phases));
+        loadOverviewRunning(m);
         setHtml(document.getElementById('ov-phases'), overviewPhasesHtml(m.phases));
         setHtml(document.getElementById('ov-runs'), overviewRunsHtml(runs));
       }).catch(function(e) { console.error('loadOverview error', e); });
