@@ -95,13 +95,27 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   Phase 11 (Convergence, T049–T071) is the open work: run `20261029-1003` (started from the dashboard with a 1-task cap)
   did T051 (UI test harness) on branch `auto/20261029-1003`, **not merged**. T049/T050 (Playwright, CDN files) were done by hand.
   T062 (roll-up) is answered (b); T063 applies it. T052–T061, T063–T066, T069, T071 are runnable; T067 is yours.
-  - **Dashboard improvements planned for the next session:** logs/timeline/task list force-scroll on every 3 s refresh
-    (follow only when at the bottom, never scroll the newest-first timeline, redraw only on change); make task logs readable
-    (message text and tool calls, not raw JSON); `/api/run/current` says `paused` while the supervisor runs (spec §4.5 rule 3);
-    "Waiting on you" counts tasks held only behind a dependency; sidebar title clipped at the left edge.
   - **Browser tests:** Playwright is installed for the system `python3` (via Artifactory, see `.sdd/learnings.md`); use
     `channel="chrome"`. `tests/ui/vendor/` holds the CDN copies. The dashboard check that works today is a throwaway Node
     script using the language app's Playwright (see learnings).
+- **Handoff (end of 2026-10-30) — start here.** `main` is at the commit after `8d94060`, not pushed; run `20261030-1515`
+  (003 Phase 11, T052/T053/T061) is merged into `main` (fast-forward). Read `logs/2026-10-30-lessons.md` first.
+  - **Done this session:** dashboard: Docs tabs, spec/constitution editor (FR-035), Overview ("Running now", grouped "Needs
+    you"), clicked task/run opens its log/events/report under itself, runs↔tasks linked both ways with commits, readable event
+    feed, headline in words (no run ids), a just-blocked task shows "Blocked (not recorded yet)"; buttons for `[manual]` tasks
+    (FR-036, `bin/sdd-manual.py`) and for run-blocked BLOCKED.md entries (FR-037, `bin/sdd-unblock.py`: I did it / Answer and
+    retry / Won't fix). FR-037 buttons are unit- and route-tested but **not yet clicked in a browser**.
+  - **004 feedback and chat:** spec (clarified), plan, research, data model, contracts, quickstart and tasks (33, 31 runnable)
+    are committed in `specs/004-feedback-chat/`. Not started. Do not name a phase "Convergence" there (see lessons).
+  - **005 Jobs:** `specs/005-jobs/spec.md` is a draft (user named it "Job"; a Job continues by itself after the person
+    settles an item). Next: `/speckit-clarify`, then plan and tasks. User's order: Jobs before building 004.
+  - **Open in 003 Phase 11:** T053 is blocked (browser cannot run in the sandbox); T054–T057 wait on it; T063–T066, T069, T071
+    runnable. Planned fix the user chose: let runs do browser tasks — `"allowLocalBinding": true` under `sandbox.network` in
+    `.claude/settings.json`, install the Playwright headless shell build the run wants (`-1248`; cache has `-1228`), prove it
+    with a sandboxed `tests/ui/test_smoke.py` before relying on it; do not widen the sandbox further without asking. Then
+    T053's step can be redone by a run, or by hand and settled with the new "I did it" button.
+  - **Rule:** while `.sdd/run.json` exists, change nothing in the project (user, 2026-10-30); draft under `/tmp`.
+  - Tests at handoff: 317 Python passing (`python3 -m unittest discover -s tests`); node and plugin tests not re-run this session's end.
 - **State (2026-10-30):** held `[manual]` tasks have **I did it** and **Skip** buttons in "Waiting on you" (FR-036, `bin/sdd-manual.py`; a `wontfix` entry now outranks the tag). **State (2026-10-29, later session):** `auto/20261029-1003` is merged into `main`. The planned dashboard improvements are done:
   `/api/run/current` says `running` for a live supervisor that is running or stopping (§4.5), "Waiting on you" skips tasks held only
   behind a dependency, task logs are readable text (§4.6), the 3 s refresh redraws only on change and keeps scroll, the sidebar
