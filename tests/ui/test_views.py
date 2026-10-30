@@ -12,6 +12,9 @@ show is read from the dashboard's own API, so the tests follow the fixtures.
 `FeaturePickerTest` uses its own toy with two features and no `.specify/feature.json`: the page
 shows the feature picker listing both, and choosing one loads its Tasks view (FR-027).
 
+`CdnBlockedTest` aborts the four CDN URLs: the Documents view shows the raw text under a one-line
+notice and the Tasks view still lists its cards (FR-032).
+
 The page loads Google Fonts from the network (`research.md` `## First browser run`, fixed by T065).
 Until then `open_view()` answers that one stylesheet with an empty one, so the offline page records
 no error for it; every other request and console error still fails the test.
@@ -274,6 +277,79 @@ class FeaturePickerTest(harness.UITestCase):
         with urllib.request.urlopen(self.dashboard.url + "api/features", timeout=10) as res:
             self.assertEqual(json.loads(res.read().decode("utf-8"))["active"], "002-beta")
         self.assertFalse((self.dashboard.project / ".specify").exists(), "choosing a feature wrote a file")
+
+
+# Chromium logs each aborted CDN file as "Failed to load resource: net::ERR_FAILED"; those four are
+# what the test does, not page errors. Anything else (an uncaught exception from a missing library,
+# a failed same-origin request) still fails it.
+CDN_BLOCKED_IGNORE = (r"Failed to load resource: net::ERR_FAILED",)
+DOC_NOTICE = "The document renderer did not load (offline?), so this is the plain text."
+
+
+class CdnBlockedTest(harness.UITestCase):
+    """FR-032: with the four CDN files unreachable the Documents view shows the raw text under a
+    one-line notice instead of an empty pane, and the Tasks view still works."""
+
+    @classmethod
+    def setUpClass(cls):
+        harness.require_browser()
+        cls._tmp = tempfile.TemporaryDirectory(prefix="sdd-ui-cdn-")
+        project = build_views_project(Path(cls._tmp.name) / "toy")
+        cls.dashboard = harness.Dashboard(project).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls._tmp.cleanup()
+
+    @contextlib.contextmanager
+    def open_offline(self, section, element):
+        """The dashboard at `#<section>` with the four CDN URLs aborted (a page route outranks the
+        harness's context route that serves the vendored copies) and the web fonts answered empty."""
+        blocked = []
+
+        def abort(route):
+            blocked.append(route.request.url)
+            route.abort()
+
+        with harness.browser_page(self.dashboard.url + "api/features", name=self.id(),
+                                  ignore=CDN_BLOCKED_IGNORE) as ui:
+            for url in harness.CDN:
+                ui.page.route(url, abort)
+            ui.page.route(WEB_FONTS, lambda route: route.fulfill(status=200, content_type="text/css", body=""))
+            ui.page.goto(self.dashboard.url + "#" + section)
+            ui.page.locator(element).wait_for(state="visible", timeout=TIMEOUT_MS)
+            yield ui
+            ui.page.wait_for_load_state("networkidle")
+            self.assertEqual(sorted(set(blocked)), sorted(harness.CDN), "not every CDN file was requested and blocked")
+            self.assertIsNone(ui.page.evaluate("window.marked || window.DOMPurify || window.hljs || null"),
+                              "a CDN library loaded although its URL was blocked")
+
+    def test_documents_view_shows_raw_text_and_a_notice(self):
+        with self.open_offline("spec", "#section-doc") as ui:
+            doc = ui.page.locator("#doc-content")
+            plain = doc.locator("pre.doc-plain")
+            plain.wait_for(state="visible", timeout=TIMEOUT_MS)
+            notice = doc.locator(".doc-notice")
+            self.assertEqual(notice.count(), 1)
+            self.assertEqual(notice.inner_text().strip(), DOC_NOTICE)
+            self.assertEqual(len(notice.inner_text().strip().splitlines()), 1, "the notice is not one line")
+            self.assertEqual(plain.text_content(), SPEC, "the pane does not show the document's raw text")
+            self.assertEqual(doc.locator("h1, table, script").count(), 0, "the document was rendered or injected")
+            self.assertIsNone(ui.page.evaluate("window.sddScriptRan"), "the document's <script> ran")
+            self.assertEqual(ui.page.locator("#doc-title").inner_text().strip(), "Spec")
+
+    def test_tasks_view_still_works(self):
+        expected = [t["id"] for p in json.loads(urllib.request.urlopen(
+            self.dashboard.url + "api/project/tasks", timeout=10).read().decode("utf-8"))["phases"] for t in p["tasks"]]
+        self.assertTrue(expected, "the toy has no tasks")
+        with self.open_offline("tasks", "#section-tasks") as ui:
+            cards = ui.page.locator("#tasks-list .task-card[data-task-card]")
+            cards.first.wait_for(state="attached", timeout=TIMEOUT_MS)
+            self.assertEqual(sorted(c.get_attribute("data-task-card") for c in cards.all()), sorted(expected))
+            for card in cards.all():
+                with self.subTest(task=card.get_attribute("data-task-card")):
+                    self.assertEqual(card.locator(".task-head .status").count(), 1)
 
 
 if __name__ == "__main__":
