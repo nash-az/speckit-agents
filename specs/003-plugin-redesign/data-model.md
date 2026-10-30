@@ -335,8 +335,9 @@ Transient status for the Tasks view comes from the same event feed: newest event
 `task.verified` with `verdict: reject` → `retrying` (n = number of rejects so far + 1,
 max = `max_retries` + 1), `task.approved → running(Committing)`. When the run state (§4.5) is
 `paused`, a task whose newest event is one of these shows `paused` instead.
-`task.blocked|task.failed` → no transient state (the parked state from §2 applies after the
-bookkeeper records it).
+`task.failed` → no transient state. `task.blocked` → `blocked` labelled "Blocked (not recorded yet)" until the
+bookkeeper records it in BLOCKED.md, when the parked state from §2 wins (amended 2026-10-30: it showed
+`queued` in between, which contradicted the run). It stays `blocked` while the run is `paused`.
 
 ### 4.7 Host header and discovery (FR-015, FR-022)
 At the top of `do_GET` and `do_POST`: if the `Host` header, without its port, is not one of

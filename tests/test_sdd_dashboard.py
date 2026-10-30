@@ -1123,6 +1123,7 @@ class TransientStateTest(unittest.TestCase):
             "T2": {"key": "running", "vars": {"step": "Verifying"}},
             "T3": {"key": "retrying", "vars": {"n": 3, "max": 3}},
             "T4": {"key": "running", "vars": {"step": "Committing"}},
+            "T5": {"key": "blocked", "vars": {"label": "Blocked (not recorded yet)"}},
         })
 
     def test_retry_uses_max_retries(self):
@@ -1131,8 +1132,9 @@ class TransientStateTest(unittest.TestCase):
 
     def test_paused_run_shows_paused(self):
         got = self.run_js("transientStates(" + self.EVENTS + ", 2, 'paused')")
-        self.assertEqual(set(got), {"T1", "T2", "T3", "T4"})
-        self.assertEqual({v["key"] for v in got.values()}, {"paused"})
+        self.assertEqual(set(got), {"T1", "T2", "T3", "T4", "T5"})
+        self.assertEqual({k: v["key"] for k, v in got.items()},
+                         {"T1": "paused", "T2": "paused", "T3": "paused", "T4": "paused", "T5": "blocked"})
 
     def test_badges_and_merge(self):
         got = self.run_js(
@@ -1147,11 +1149,11 @@ class TransientStateTest(unittest.TestCase):
             " t1: taskBadge(phases[0].tasks[0]), t3: taskBadge(phases[1].tasks[0]),"
             " t2: taskBadge(phases[1].tasks[1]), t5: taskBadge(phases[2].tasks[0]),"
             " t9: phases[0].tasks[0 + 1].transient}; })()")
-        self.assertEqual(got["status"], ["running", "retrying", "queued", None])
+        self.assertEqual(got["status"], ["running", "retrying", "blocked", None])
         self.assertIn('title="Running: Implementing"', got["t1"])
         self.assertIn('>Retry 3/3<', got["t3"])
         self.assertIn('title="Held: manual"', got["t2"])  # a parked status wins over the event
-        self.assertIn('title="Queued"', got["t5"])  # task.blocked: no transient state
+        self.assertIn('title="Blocked (not recorded yet)"', got["t5"])  # task.blocked before BLOCKED.md has it
         self.assertIsNone(got["t9"])
 
     def test_live_output_panel(self):

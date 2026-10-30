@@ -1750,7 +1750,8 @@ def build_html():
 
     // Transient states from the selected run's events (data-model.md §4.6): the newest event per
     // task id decides. Returns {taskId: {key, vars}}; a task whose newest event maps to nothing
-    // (task.blocked, task.failed, anything else) is left out, so its parked state or queued applies.
+    // (task.failed, anything else) is left out, so its parked state or queued applies. task.blocked shows
+    // as blocked until BLOCKED.md has the entry (the parked status then wins), never as queued.
     // runState is /api/run/current's state: while `paused`, every transient state shows `paused`.
     function transientStates(events, maxRetries, runState) {
       var newest = {}, rejects = {};
@@ -1767,8 +1768,9 @@ def build_html():
         else if (ev.kind === 'task.implemented') st = { key: 'running', vars: { step: 'Verifying' } };
         else if (ev.kind === 'task.verified' && ev.verdict === 'reject') st = { key: 'retrying', vars: { n: rejects[id] + 1, max: max } };
         else if (ev.kind === 'task.approved') st = { key: 'running', vars: { step: 'Committing' } };
+        else if (ev.kind === 'task.blocked') st = { key: 'blocked', vars: { label: 'Blocked (not recorded yet)' } };
         if (!st) return;
-        if (runState === 'paused') st = { key: 'paused', vars: {} };
+        if (runState === 'paused' && st.key !== 'blocked') st = { key: 'paused', vars: {} };
         out[id] = st;
       });
       return out;
@@ -2327,8 +2329,8 @@ def build_html():
 
     function runPillHtml(run) {
       var state = (run && run.state) || 'none';
-      var label = { running: 'Run ' + (run && run.run_id) + ' is running', paused: 'Run ' + (run && run.run_id) + ' is paused',
-                    stale: 'Run ' + (run && run.run_id) + ' was left behind', none: 'No run in progress' }[state] || 'No run in progress';
+      // Words for the person, never the run id (that lives in the Runs view).
+      var label = { running: 'Working', paused: 'Paused', stale: 'Stopped unexpectedly', none: 'Nothing running' }[state] || 'Nothing running';
       return '<span class="ov-run ' + escapeHtml(state) + '"><span class="dot"></span>' + escapeHtml(label) + '</span>';
     }
 
@@ -2996,6 +2998,37 @@ def build_html():
       return escapeHtml(reason).replace(/`([^`]+)`/g, '<code>$1</code>');
     }
 
+    // What the agents are doing, from the run's newest task event: {id, step, since}, or null before the first one.
+    var bannerActivity = null;
+
+    function activityFrom(events) {
+      var last = null, starts = {};
+      (events || []).forEach(function(ev) {
+        if (!ev || typeof ev.id !== 'string') return;
+        if (ev.kind === 'task.started') starts[ev.id] = ev.ts;
+        last = ev;
+      });
+      if (!last) return null;
+      var step = { 'task.started': 'implementing', 'task.implemented': 'verifying', 'task.approved': 'committing',
+                   'task.blocked': 'recording a block', 'task.failed': 'recovering' }[last.kind] ||
+                 (last.kind === 'task.verified' ? (last.verdict === 'reject' ? 'retrying after review' : 'committing') : 'working');
+      return { id: last.id, step: step, since: starts[last.id] || last.ts };
+    }
+
+    function activityText(prefix) {
+      if (!bannerActivity) return prefix;
+      var mins = Math.floor((Date.now() - Date.parse(bannerActivity.since)) / 60000);
+      return prefix + ' ' + bannerActivity.id + ', ' + bannerActivity.step + (isFinite(mins) ? ' (' + (mins < 1 ? 'just started' : mins + ' min') + ')' : '');
+    }
+
+    function loadBannerActivity(runId) {
+      fetchJSON('/api/runs/' + encodeURIComponent(runId) + '/events', 'GET').then(function(data) {
+        bannerActivity = activityFrom(data && data.events);
+        var el = document.querySelector('#run-banner .run-banner-text');
+        if (el && el.getAttribute('data-activity')) el.textContent = activityText(el.getAttribute('data-activity'));
+      });
+    }
+
     function renderRunBanner(run) {
       var el = document.getElementById('run-banner');
       if (!el) return;
@@ -3011,8 +3044,10 @@ def build_html():
       lastBannerState = state;
       var reason = c.reason || null;
       var text = '', buttons = [];
+      var activity = null;  // the banner text's prefix when it ends with what the agents are doing
       if (state === 'running') {
-        text = 'Run ' + escapeHtml(run.run_id || '') + ' is running';
+        activity = 'Working on';
+        text = escapeHtml(activityText(activity));
         buttons.push(controlButton('Stop after current task', 'stop', 'after-task', true, reason));
         buttons.push(controlButton('Stop now', 'stop', 'now', true, reason,
           'Stop the run now? The current agent is stopped and its task is resumed from the journal on the next start.'));
@@ -3031,14 +3066,20 @@ def build_html():
         text = 'Will stay paused after the reset at ' + escapeHtml(resetTimeFromReason(reason));
         buttons.push(controlButton('Let it resume', 'release', null, !!c.release, reason));
         buttons.push(controlButton('Stop after current task', 'stop', 'after-task', false, reason));
+      } else if (run.state === 'running') {
+        // Started from a Claude session: the dashboard cannot stop it; say what it is doing and where to stop it.
+        activity = 'Working (started from a Claude session; stop it there) on';
+        text = escapeHtml(activityText(activity));
+        buttons.push(controlButton('Stop after current task', 'stop', 'after-task', false, reason));
+        buttons.push(controlButton('Stop now', 'stop', 'now', false, reason));
       } else {
-        text = 'Run ' + escapeHtml(run.run_id || '') + ' has no supervisor';
+        text = run.state === 'paused' ? 'Paused: the run waits to be resumed' : 'A run stopped without finishing';
         buttons.push(controlButton('Stop after current task', 'stop', 'after-task', false, reason));
         buttons.push(controlButton('Stop now', 'stop', 'now', false, reason));
         buttons.push(controlButton('Resume', 'resume', null, false, reason));
       }
       var anyDisabled = buttons.some(function(b) { return b.indexOf(' disabled ') !== -1; });
-      var html = '<span class="run-banner-text">' + text + '</span>' +
+      var html = '<span class="run-banner-text"' + (activity ? ' data-activity="' + escapeHtml(activity) + '"' : '') + '>' + text + '</span>' +
         '<span class="run-banner-actions">' + buttons.join('') + '</span>';
       if (anyDisabled && reason) html += '<span class="run-banner-reason">' + reasonHtml(reason) + '</span>';
       if (runBannerError) html += '<span class="run-banner-error" role="alert">' + escapeHtml(runBannerError) + '</span>';
@@ -3053,6 +3094,8 @@ def build_html():
       });
       if (state === 'stopping' && run.run_id) loadStoppingTask(run.run_id);
       else stoppingTask = null;
+      if (activity && run.run_id) loadBannerActivity(run.run_id);
+      else bannerActivity = null;
     }
 
     // The task the run stops after: the newest task event of the run.
