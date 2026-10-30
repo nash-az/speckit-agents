@@ -213,3 +213,7 @@ The test did not actually run in a browser. These are environment results, not d
 
 Dashboard findings (console errors, phases missing from the Tasks view): none yet. The smoke test still has to be run
 outside the sandbox with `SDD_UI_TESTS=1 python3 -m unittest tests/ui/test_smoke.py -v`, and its failures listed here.
+
+Retry, 2026-10-30, run on branch `auto/20261030-1545` (after the answer "continue"): same result, `Ran 0 tests OK (skipped=1)`.
+`chromium_headless_shell-1248` is still missing and Google Chrome still fails with the ProcessSingleton error inside the
+sandbox, so there are still no dashboard findings. No browser result had been recorded outside the sandbox either.
