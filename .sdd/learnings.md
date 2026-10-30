@@ -24,3 +24,8 @@
 - Answering an environment block (no browser, no local port) with "continue" without changing the sandbox or doing the step by hand only reproduces the block: change `.claude/settings.json` or do the step outside the sandbox first.
 - Inside the run sandbox, Google Chrome via `channel="chrome"` also fails (ProcessSingleton profile error), not just the bundled Chromium.
 
+## 20261030-1854 (2026-10-30)
+- Since `b765e6e` (`allowLocalBinding` plus the single-process Chromium fallback), browser tests run and pass inside the run sandbox: 31 UI tests ran in run agents with none skipped. A browser task no longer has to be `[manual]`.
+- In `dontAsk` mode the agents' `SDD_UI_TESTS=1 python3 -m unittest …` (an env-var prefix) is refused. They run the same tests without the prefix and confirm by hand that none skipped. Allowlist the prefixed command if strict runs are wanted.
+- The dashboard no longer loads Google Fonts (T065), so the UI tests have no network dependency besides the CDN files, which `tests/ui/vendor/` serves.
+
