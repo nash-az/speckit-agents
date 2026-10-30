@@ -1449,7 +1449,12 @@ def build_html():
   .blocked-phase { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem; }
   .blocked-answer { font-size: 0.875rem; color: var(--text); padding: 0.5rem; background: var(--bg); border-radius: 4px; border-left: 3px solid var(--success); margin-top: 0.5rem; white-space: pre-wrap; }
   .blocked-reason { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.5rem; }
-  .blocked-question { font-size: 0.875rem; color: var(--text); font-style: italic; padding: 0.5rem; background: var(--bg); border-radius: 4px; border-left: 3px solid var(--accent); }
+  .blocked-question { font-size: 0.875rem; line-height: 1.55; color: var(--text); padding: 0.5rem 0.75rem; background: var(--bg); border-radius: 4px; border-left: 3px solid var(--accent); }
+  .blocked-question p { margin: 0 0 0.4rem; }
+  .blocked-question p:last-child { margin-bottom: 0; }
+  .blocked-question .decision-choices { margin: 0; }
+  .blocked-question .decision-choices li { background: var(--surface); display: flex; gap: 0.5rem; }
+  .blocked-question code { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; padding: 0.05rem 0.3rem; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); overflow-wrap: anywhere; }
   .blocked-tags { display: flex; gap: 0.25rem; margin-top: 0.5rem; }
 
   /* Events */
@@ -1733,6 +1738,32 @@ def build_html():
       return escapeHtml(text).replace(/`([^`]+)`/g, '<code>$1</code>');
     }
 
+    // A BLOCKED.md question: `code` and bare file paths styled, one sentence per line, and an
+    // "Either <a>. Or <b>." question shown as two numbered ways to settle the task.
+    function questionText(text) {
+      var path = /(^|[\\s(])(~?\\/[\\w.\\/-]*[\\w\\/]|[\\w.-]+\\/[\\w.\\/-]*\\.\\w+)/g;
+      return String(text).split(/(`[^`]+`)/).map(function(part, i) {
+        return i % 2 ? '<code>' + escapeHtml(part.slice(1, -1)) + '</code>' : escapeHtml(part).replace(path, '$1<code>$2</code>');
+      }).join('');
+    }
+
+    function questionSentences(text) {
+      return String(text).split(/(?<=\\.)\\s+(?=[A-Z])(?=(?:[^`]*`[^`]*`)*[^`]*$)/).map(function(s) {
+        return '<p>' + questionText(s) + '</p>';
+      }).join('');
+    }
+
+    function blockedQuestionHtml(text) {
+      text = String(text || '').trim();
+      var m = text.match(/^Either\\s+([\\s\\S]+?\\.)\\s+Or\\s+([\\s\\S]+)$/);
+      if (!m) return '<div class="blocked-question">' + questionSentences(text) + '</div>';
+      var cap = function(s) { return s.charAt(0).toUpperCase() + s.slice(1); };
+      return '<div class="blocked-question"><p>Two ways to settle it:</p><ul class="decision-choices">' +
+        [m[1], m[2]].map(function(o, i) {
+          return '<li><span class="choice-key">' + (i + 1) + '</span><div>' + questionSentences(cap(o)) + '</div></li>';
+        }).join('') + '</ul></div>';
+    }
+
     // Status system (data-model.md §1). Keys match ROLLUP_ORDER in the Python code byte for byte.
     // Inline SVGs only: no icon font, no CDN.
     var SVG_OPEN = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
@@ -1947,7 +1978,7 @@ def build_html():
         (phaseTitle ? '<div class="blocked-phase">' + escapeHtml(phaseTitle) + '</div>' : '') +
         '<div class="task-text">' + inlineCode(t.text) + '</div>' +
         (t.status_reason ? '<div class="blocked-reason">' + escapeHtml(t.status_reason) + '</div>' : '') +
-        (ask ? '<div class="blocked-question">' + escapeHtml(ask) + '</div>' : '') +
+        (ask ? blockedQuestionHtml(ask) : '') +
         (taskStatusKey(t) === 'held' && t.status_tag === 'manual' ? manualActionsHtml(t) : '') +
         (t.status === 'blocked' && t.status_tag === 'open' ? unblockActionsHtml(t.id) : '') +
         '</div>';
@@ -1999,7 +2030,7 @@ def build_html():
       return '<div class="blocked-item">' +
         '<div class="blocked-header"><div class="blocked-id">' + escapeHtml(e.id) + '</div>' + entryBadge(e) + '</div>' +
         (e.reason ? '<div class="blocked-reason">' + escapeHtml(e.reason) + '</div>' : '') +
-        (e.question ? '<div class="blocked-question">' + escapeHtml(e.question) + '</div>' : '') +
+        (e.question ? blockedQuestionHtml(e.question) : '') +
         (e.answer ? '<div class="blocked-answer">' + escapeHtml(e.answer) + '</div>' : '') +
         '<div class="blocked-tags">' + tagsHtml(e.tag ? [e.tag] : []) + '</div>' +
         (e.status === 'open' ? unblockActionsHtml(e.id) : '') + '</div>';
