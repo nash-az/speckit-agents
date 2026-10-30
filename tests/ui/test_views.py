@@ -9,6 +9,9 @@ plus one task whose text is an `<img onerror=...>`), a `spec.md` for the Documen
 `wf_…` journal, the fixture of `tests/test_sdd_dashboard.py`) for the Runs view. What each view must
 show is read from the dashboard's own API, so the tests follow the fixtures.
 
+`FeaturePickerTest` uses its own toy with two features and no `.specify/feature.json`: the page
+shows the feature picker listing both, and choosing one loads its Tasks view (FR-027).
+
 The page loads Google Fonts from the network (`research.md` `## First browser run`, fixed by T065).
 Until then `open_view()` answers that one stylesheet with an empty one, so the offline page records
 no error for it; every other request and console error still fails the test.
@@ -204,6 +207,73 @@ class ViewsTest(harness.UITestCase):
             self.assertIn("done", meta)  # the run has its report, so it is finished
             self.assertIn("%d approved" % runs[0]["approved"], meta)
             self.assertIn("%d blocked" % runs[0]["blocked"], meta)
+
+
+# Two features and no `.specify/feature.json` (nor `run.feature`): no feature is active, so every
+# per-feature request answers 409 and the page offers the picker (data-model.md §4.2, FR-027).
+PICKER_FEATURES = {
+    "001-alpha": "# Tasks\n\n## Phase 1: Alpha\n\n- [ ] T101 Alpha first in `a.py`\n- [ ] T102 Alpha second in `b.py`\n",
+    "002-beta": "# Tasks\n\n## Phase 1: Beta\n\n- [ ] T201 Beta only in `c.py`\n",
+}
+# The 409s before a feature is chosen are the expected signal, not errors: the harness records the
+# response, and Chromium logs "Failed to load resource" for it.
+PICKER_IGNORE = (r" -> 409$", r"status of 409")
+
+
+def build_picker_project(root):
+    """A toy project with the two `PICKER_FEATURES` and no active feature."""
+    root = Path(root)
+    for name, tasks in PICKER_FEATURES.items():
+        harness.fixtures.write_project(root / "specs" / name, tasks)
+    (root / ".sdd").mkdir(parents=True, exist_ok=True)
+    (root / ".sdd" / "config.toml").write_text("[run]\nmax_retries = 2\n", encoding="utf-8")
+    return root
+
+
+class FeaturePickerTest(harness.UITestCase):
+    """FR-027 (partial): with several features and none active the page asks which one to show."""
+
+    @classmethod
+    def setUpClass(cls):
+        harness.require_browser()
+        cls._tmp = tempfile.TemporaryDirectory(prefix="sdd-ui-picker-")
+        project = build_picker_project(Path(cls._tmp.name) / "toy")
+        assert not (project / ".specify" / "feature.json").exists()
+        cls.dashboard = harness.Dashboard(project).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls._tmp.cleanup()
+
+    def test_picker_lists_both_features_and_choosing_one_loads_its_tasks(self):
+        with urllib.request.urlopen(self.dashboard.url + "api/features", timeout=10) as res:
+            features = json.loads(res.read().decode("utf-8"))
+        self.assertEqual(features, {"features": sorted(PICKER_FEATURES), "active": None})
+        with harness.browser_page(self.dashboard.url + "api/features", name=self.id(), ignore=PICKER_IGNORE) as ui:
+            ui.page.route(WEB_FONTS, lambda route: route.fulfill(status=200, content_type="text/css", body=""))
+            ui.page.goto(self.dashboard.url + "#tasks")
+            picker = ui.page.locator("#feature-picker")
+            picker.wait_for(state="visible", timeout=TIMEOUT_MS)
+            buttons = picker.locator("#feature-picker-list button[data-feature]")
+            buttons.first.wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertEqual([b.get_attribute("data-feature") for b in buttons.all()], sorted(PICKER_FEATURES))
+            self.assertEqual([b.inner_text().strip() for b in buttons.all()], sorted(PICKER_FEATURES))
+            self.assertEqual(ui.page.locator("#tasks-list .task-card[data-task-card]").count(), 0,
+                             "tasks show before a feature is chosen")
+
+            picker.locator('button[data-feature="002-beta"]').click()
+            picker.wait_for(state="hidden", timeout=TIMEOUT_MS)
+            ui.page.locator("#section-tasks").wait_for(state="visible", timeout=TIMEOUT_MS)
+            cards = ui.page.locator("#tasks-list .task-card[data-task-card]")
+            cards.first.wait_for(state="attached", timeout=TIMEOUT_MS)
+            self.assertEqual([c.get_attribute("data-task-card") for c in cards.all()], ["T201"])
+            self.assertIn("Beta only", ui.page.locator("#tasks-list").inner_text())
+            self.assertNotIn("Alpha", ui.page.locator("#tasks-list").inner_text())
+            ui.page.wait_for_load_state("networkidle")
+        with urllib.request.urlopen(self.dashboard.url + "api/features", timeout=10) as res:
+            self.assertEqual(json.loads(res.read().decode("utf-8"))["active"], "002-beta")
+        self.assertFalse((self.dashboard.project / ".specify").exists(), "choosing a feature wrote a file")
 
 
 if __name__ == "__main__":
