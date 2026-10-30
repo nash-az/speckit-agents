@@ -19,8 +19,8 @@ Set `status: wontfix` to drop the task, or `status: moved` if it became work out
 - answer: continue (2026-10-30)
 
 ## T053
-- status: open
+- status: resolved
 - tag: manual
 - reason: The test needs a working browser and a local port to run the dashboard on. In this sandbox the bundled Chromium is missing, Google Chrome fails with the ProcessSingleton profile error, and an earlier run found that binding a local port is refused. The answer "continue" gave no browser result to record.
 - question: Either run `SDD_UI_TESTS=1 python3 -m unittest tests/ui/test_smoke.py -v` outside the sandbox in /Users/nashwan.abouzidan/private/speckit-agents, record the result and any failures under `## First browser run` in specs/003-plugin-redesign/research.md, and settle T053 with "I did it". Or apply the planned sandbox fix so a run can do it: add `"allowLocalBinding": true` under `sandbox.network` in `.claude/settings.json`, and install the Playwright headless shell build `chromium_headless_shell-1248`.
-- answer:
+- answer: 2 (2026-10-30)
