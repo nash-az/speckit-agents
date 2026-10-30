@@ -16,3 +16,7 @@
 - In `tasks.md`, only the first id after `after`/`needs` is parsed as a dependency: write one `After Tnnn` per task, and chain the rest.
 - Dashboard Python tests load a slice of the page script from `escapeHtml(` to `loadProjects(`; a helper used by task cards (such as `inlineCode`) must be defined inside that slice or the node-based tests fail with a ReferenceError.
 
+## 20261030-1515 (2026-10-30)
+- A run's agents cannot bind a local port or launch Chromium/Chrome inside the sandbox, so browser tests in `tests/ui/` only skip during a run. A task that must see a real browser result (a "run it and record" step) has to be `[manual]`, or it blocks and every task after it is skipped.
+- Phase 11's tasks chain through T053 and T054 ("After T053", "After T054"), so one blocked browser task skipped 13 of 16 tasks. Tasks that only write test code should not depend on a task that records a real browser run.
+
