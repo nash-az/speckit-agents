@@ -161,6 +161,28 @@ A read-only view of one project, the one it was started with (the current direct
 - **Tasks and phases** with one status vocabulary (icon, color and label), a "Waiting on you" list of held and blocked tasks with their questions, the runs and their events (read from the run's own workflow journal), a running task's live agent output, and a red banner for a stale `.sdd/run.json`.
 - **Localhost only.** It binds to `127.0.0.1`, has no authentication, and answers 421 to any request whose `Host` is not `127.0.0.1`, `localhost` or `[::1]` (against DNS rebinding). There is deliberately no option to listen on another address.
 
+### Browser tests
+
+The dashboard's views are tested in a real browser (`tests/ui/`, FR-031). Each test starts the dashboard on a temporary toy project, opens it in Chromium through Playwright for Python, and fails on any console error, uncaught exception or failed same-origin request. The CDN scripts are served from pinned copies in `tests/ui/vendor/`, so the tests run offline. When a test fails, its screenshot and page HTML are saved under `.sdd/scratch/ui/`.
+
+Install Playwright and its Chromium once, for the `python3` you run the tests with:
+
+```
+python3 -m pip install playwright
+python3 -m playwright install chromium
+```
+
+If the bundled Chromium is missing or will not start, the tests use an installed Google Chrome instead.
+
+Run only the UI tests:
+
+```
+SDD_UI_TESTS=1 python3 -m unittest discover -s tests/ui
+```
+
+- **They skip when the browser is missing.** Without Playwright, or when neither Chromium nor Google Chrome launches, each test skips with a one-line reason that names the install command. `SDD_UI_TESTS=1` turns that skip into a failure, so a missing browser cannot pass for a green run.
+- **They are not in `checks.commands` by default.** `/sdd-init` does not add them, and `python3 -m unittest discover -s tests` does not collect `tests/ui/`. A run's checks therefore do not need a browser. Add the command above to `checks.commands` in `.sdd/config.toml` yourself if your runs can start a browser. Inside the run sandbox that also needs `"allowLocalBinding": true` under `sandbox.network`, so the dashboard can bind its port.
+
 ## Agent tags
 
 Agent tags are written after `[P]` and `[USn]`, as in `- [ ] T057 [US1] [manual] Record …`:
