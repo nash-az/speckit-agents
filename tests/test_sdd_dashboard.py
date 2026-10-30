@@ -889,6 +889,16 @@ class DocEditRouteTest(unittest.TestCase):
         self.assertTrue(done["ok"])
         self.assertFalse(done["dirty"])
 
+    def test_manual_task_routes(self):
+        request(self, "POST", "/api/manual/done", {"note": "x"}, status=400)
+        got = request(self, "POST", "/api/manual/done", {"task": "T003"}, status=409)  # a decision, not manual
+        self.assertIn("not an open manual task", got["error"])
+        got = request(self, "POST", "/api/manual/skip", {"task": "T002"}, status=409)
+        self.assertIn("say why", got["error"])
+        done = request(self, "POST", "/api/manual/done", {"task": "T002", "note": "checked"})
+        self.assertTrue(done["ok"] and done["commit"])
+        self.assertIn("- [x] T002", (self.root / "specs" / "001-only" / "tasks.md").read_text())
+
     def test_refusals_carry_the_reason(self):
         got = request(self, "POST", "/api/doc/save", {"name": "spec", "text": "# X\n", "base": "stale"}, status=409)
         self.assertIn("changed since you opened it", got["error"])

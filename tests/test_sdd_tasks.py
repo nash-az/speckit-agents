@@ -168,6 +168,13 @@ class PlanTest(unittest.TestCase):
         result = sdd.plan(sdd.parse_tasks(TASKS), {"T006": "wontfix"}, config, None, None)
         self.assertIn({"id": "T006", "tag": "wontfix", "reason": "dropped in BLOCKED.md (wontfix)"}, result["held"])
 
+    def test_wontfix_outranks_a_manual_tag(self):
+        # Skipping a [manual] task (FR-036) writes a wontfix entry; the tag must stop it waiting on a person.
+        config = sdd.load_config(None)
+        task = {"id": "T001", "tags": ["manual"], "done": False}
+        self.assertEqual(sdd.hold_reason(task, {}, config["allow"])[0], "manual")
+        self.assertEqual(sdd.hold_reason(task, {"T001": "wontfix"}, config["allow"])[0], "wontfix")
+
     def test_allow_dependencies(self):
         held = {h["id"] for h in self.plan(dependencies=True)["held"]}
         self.assertNotIn("T010", held)

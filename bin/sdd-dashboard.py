@@ -33,6 +33,7 @@ Endpoints:
     GET /api/decisions            -- open [decision] tasks, with answers already given (FR-033)
     POST /api/decisions/answer    -- { "task", "answer" } save a decision answer and apply it (sdd-decide.py)
     POST /api/decisions/apply     -- { "task" } try again to apply a saved answer
+    POST /api/manual/done|skip    -- { "task", "note" } settle an open [manual] task (sdd-manual.py, FR-036)
     GET /api/run/plan             -- what a run would do and whether it can start now (FR-034)
     POST /api/run/start           -- { "phases"?, "no_converge"?, "max_tasks"? } start a supervised run
     GET /api/features             -- the feature folders under specs/ and the active one
@@ -66,6 +67,8 @@ _spec = importlib.util.spec_from_file_location("sdd_tasks", Path(__file__).with_
 sdd_tasks = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_tasks)
 _spec = importlib.util.spec_from_file_location("sdd_decide", Path(__file__).with_name("sdd-decide.py"))
 sdd_decide = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_decide)
+_spec = importlib.util.spec_from_file_location("sdd_manual", Path(__file__).with_name("sdd-manual.py"))
+sdd_manual = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_manual)
 _spec = importlib.util.spec_from_file_location("sdd_launch", Path(__file__).with_name("sdd-launch.py"))
 sdd_launch = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_launch)
 _spec = importlib.util.spec_from_file_location("sdd_edit", Path(__file__).with_name("sdd-edit.py"))
@@ -859,6 +862,32 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         self._send_json({"ok": True, **result}, 200, cors)
 
+    def _manual(self, action):
+        """`POST /api/manual/done` and `/api/manual/skip` `{task, note}` (FR-036), after the §4.9 checks: 400 for
+        a bad body, 409 when the task cannot be settled now (the reason is in `error`; nothing changed), else
+        `200 {ok, commit, files}`. The helper `sdd-manual.py` does the writing."""
+        cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
+        try:
+            data = self._read_json_body()
+        except ValueError:
+            data = None
+        task_id = data.get("task") if isinstance(data, dict) else None
+        note = data.get("note", "") if isinstance(data, dict) else None
+        if not isinstance(task_id, str) or not TASK_ID_RE.match(task_id) or not isinstance(note, str) \
+                or len(note) > ANSWER_MAX_CHARS:
+            self._send_json({"error": "task must be a task id such as T067 and note a string"}, 400, cors)
+            return
+        feature = self._feature_dir()
+        if feature is None:
+            self._send_json({"error": "choose a feature", "features": feature_names(DashboardHandler.project)}, 409, cors)
+            return
+        try:
+            result = sdd_manual.settle(DashboardHandler.project, feature, task_id, action, note)
+        except sdd_manual.Refused as e:
+            self._send_json({"error": str(e)}, 409, cors)
+            return
+        self._send_json({"ok": True, "commit": result["commit"], "files": result["files"]}, 200, cors)
+
     def _feature_dir(self):
         """The person's in-memory choice if one was made, else active_feature()."""
         proj = DashboardHandler.project
@@ -1027,6 +1056,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         if path in ("/api/doc/save", "/api/doc/commit"):
             self._doc_edit(path.rsplit("/", 1)[1])
+            return
+        if path in ("/api/manual/done", "/api/manual/skip"):
+            self._manual(path.rsplit("/", 1)[1])
             return
         if path == "/api/run/start":
             self._start_run()
@@ -1331,6 +1363,8 @@ def build_html():
   .start-count { color: var(--text-muted); font-size: 0.8rem; margin-left: 0.4rem; }
   #start-run-btn { margin-top: 0.5rem; }
   #start-max-tasks { padding: 0.25rem 0.4rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; }
+  .manual-actions { margin-top: 0.75rem; }
+  .manual-note { width: 100%; margin: 0 0 0.5rem; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; font-size: 0.875rem; box-sizing: border-box; }
   .decision-answer { width: 100%; margin: 0.5rem 0; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; font-size: 0.875rem; box-sizing: border-box; }
   .decision-options { margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
   .decision-saved { margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted, inherit); }
@@ -1756,7 +1790,28 @@ def build_html():
         '<div class="task-text">' + inlineCode(t.text) + '</div>' +
         (t.status_reason ? '<div class="blocked-reason">' + escapeHtml(t.status_reason) + '</div>' : '') +
         (ask ? '<div class="blocked-question">' + escapeHtml(ask) + '</div>' : '') +
+        (taskStatusKey(t) === 'held' && t.status_tag === 'manual' ? manualActionsHtml(t) : '') +
         '</div>';
+    }
+
+    // A held [manual] task (FR-036): the person says they did it, or skips it. Each button is one commit.
+    function manualActionsHtml(t) {
+      var id = escapeHtml(t.id);
+      return '<div class="manual-actions">' +
+        '<textarea class="manual-note" id="manual-note-' + id + '" rows="2" placeholder="What you found or did (optional for I did it; required to skip)"></textarea>' +
+        '<button class="btn manual-done" data-task="' + id + '">I did it</button> ' +
+        '<button class="btn manual-skip" data-task="' + id + '">Skip</button></div>';
+    }
+
+    function settleManual(task, action) {
+      var box = document.getElementById('manual-note-' + task);
+      var note = box ? box.value.trim() : '';
+      if (action === 'skip' && !note) { toast('Say why you are skipping it'); if (box) box.focus(); return; }
+      postEdit('/api/manual/' + action, { task: task, note: note }).then(function(res) {
+        if (!res.ok) { toast('Not saved: ' + (res.error || 'unknown error')); return; }
+        toast(task + (action === 'done' ? ' marked done' : ' skipped') + ' (commit ' + res.commit + ')');
+        refreshAll();
+      }).catch(function(e) { console.error('settleManual error', e); toast('Could not save'); });
     }
 
     function entryItemHtml(e) {
@@ -2481,6 +2536,8 @@ def build_html():
       if (!t || !t.classList) return;
       if (t.classList.contains('decision-submit')) saveDecision(t.getAttribute('data-task'));
       if (t.classList.contains('decision-apply')) applyDecision(t.getAttribute('data-task'));
+      if (t.classList.contains('manual-done')) settleManual(t.getAttribute('data-task'), 'done');
+      if (t.classList.contains('manual-skip')) settleManual(t.getAttribute('data-task'), 'skip');
       if (t.id === 'start-run-btn') startRun();
       if (t.classList.contains('decision-option')) {
         var box = document.getElementById('answer-' + t.getAttribute('data-task'));

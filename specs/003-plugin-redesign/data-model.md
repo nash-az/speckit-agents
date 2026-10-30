@@ -355,10 +355,19 @@ bad body or a name that is not editable, or `409 {error}` when the helper refuse
 file next to the target and moves it into place, ends the text with one newline and stores `\n` line
 endings; `commit` runs `git add` and `git commit -- <file>`, so other changes in the tree stay as they are.
 
+### 4.8b Settling a manual task (FR-036)
+The dashboard source only calls `bin/sdd-manual.py` (`settle`). `POST /api/manual/done` and
+`/api/manual/skip` take `{task, note}` and answer `200 {ok, commit, files}`, `400` for a bad body, or
+`409 {error}` when the helper refuses (`skip` without a note, a run is active, the task is not an open
+`[manual]` task, the files it touches have other changes). `done` ticks the task and may add
+`- <id> (<date>): <note>` to `<feature>/manual-notes.md`; `skip` appends `## <id>`, `status: wontfix`,
+`tag: manual` and the reason to `BLOCKED.md`. In `hold_reason`, a `wontfix` or `moved` entry wins over a
+hold tag.
+
 ---
 
 ### 4.9 State-changing routes (FR-030)
-Applies to every `POST` route (`/api/project/select`, `/api/run/stop`, `/api/run/resume`, `/api/doc/save`, `/api/doc/commit`), after the
+Applies to every `POST` route (`/api/project/select`, `/api/run/stop`, `/api/run/resume`, `/api/doc/save`, `/api/doc/commit`, `/api/manual/done`, `/api/manual/skip`), after the
 Host check of §4.7 and before any work:
 - `Origin` header missing, or not in the allowed set → `403 {"error": "origin not allowed"}`. The
   allowed set is `http://127.0.0.1:<port>`, `http://localhost:<port>` and `http://[::1]:<port>` for

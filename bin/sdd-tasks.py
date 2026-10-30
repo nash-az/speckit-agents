@@ -265,10 +265,14 @@ def hold_reason(task: dict, blocked: dict[str, str], allow: dict) -> tuple[str, 
     A task is held when it is tagged for a person (manual, decision, dep unless
     allowed by the run or by `[dep:ok]` on the task, download unless allowed by
     the run or by `[download:ok]`), or when its BLOCKED.md entry has a
-    holding status (open, wontfix, moved). A resolved entry does not hold: the
+    holding status (open, wontfix, moved). A wontfix or moved entry wins over a tag. A resolved entry does not hold: the
     task is runnable again. A task whose dependency is open and held is held
     too (propagated in plan()).
     """
+    status = blocked.get(task["id"])
+    if status in ("wontfix", "moved"):  # the person dropped it: that outranks a tag that waits on them
+        return {"wontfix": ("wontfix", "dropped in BLOCKED.md (wontfix)"),
+                "moved": ("moved", "moved to product/admin use")}[status]
     for tag in task["tags"]:
         if tag not in HOLD_TAGS:
             continue
@@ -276,7 +280,6 @@ def hold_reason(task: dict, blocked: dict[str, str], allow: dict) -> tuple[str, 
         if allow_key and (allow.get(allow_key) or f"{tag}:ok" in task["tags"]):
             continue
         return tag, HOLD_TAGS[tag]
-    status = blocked.get(task["id"])
     if status in HOLDING_STATUSES:
         return {
             "open": ("blocked", "open entry in BLOCKED.md"),

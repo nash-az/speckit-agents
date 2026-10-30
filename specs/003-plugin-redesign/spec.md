@@ -273,7 +273,7 @@ pause, answer a decision or resume.
   session that performs it under the run guard. This feature documents that action channel's shape
   and ships no other action routes. The only exceptions are FR-029 (one control request file in the
   supervisor's state directory, outside the project), FR-033 (saving and applying a decision),
-  FR-034 (starting a supervised run) and FR-035 (editing and committing a spec or the constitution).
+  FR-034 (starting a supervised run), FR-035 (editing and committing a spec or the constitution) and FR-036 (settling a manual task).
 - **FR-021**: A running task's dashboard view MUST show its live agent output (a tail of its
   transcript), or a clear "not available yet" state — never an error.
 - **FR-022**: The dashboard server MUST bind only to localhost, and MUST reject requests whose Host
@@ -357,6 +357,15 @@ pause, answer a decision or resume.
   feature, `contracts/action-channel.md`), which creates and deletes feature folders under the run guard.
   Links inside a document MUST work: a `#heading` link scrolls, a link to another document's file opens
   that document, and the section in the URL (`#spec`) survives a refresh.
+- **FR-036**: The dashboard MUST let a person settle a held `[manual]` task without a terminal. Its card in
+  "Waiting on you" has a note box and two buttons. `POST /api/manual/done` `{task, note?}` (with the FR-030
+  checks) ticks the task in `tasks.md` and, when a note is given, adds it to the feature's
+  `manual-notes.md`. `POST /api/manual/skip` `{task, note}` (the reason is required) appends a
+  `status: wontfix` entry to `BLOCKED.md`; a `wontfix` or `moved` entry outranks the `[manual]` tag, so the
+  skipped task stops waiting and no run picks it up. Both go through `bin/sdd-manual.py`, which commits
+  only the files it touched as `chore(manual): <id> ...`. It MUST refuse, and change nothing, while a run
+  is active, when a file it would touch has other uncommitted changes, when the project is not a git
+  repository, or when the task is not an open `[manual]` task; the view shows the reason.
 
 ### Key Entities
 - **Run control request**: one command (`stop` with a mode, `resume`, `hold` or `release`), an id and a time, written by

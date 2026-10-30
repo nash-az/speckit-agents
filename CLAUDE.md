@@ -102,7 +102,7 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   - **Browser tests:** Playwright is installed for the system `python3` (via Artifactory, see `.sdd/learnings.md`); use
     `channel="chrome"`. `tests/ui/vendor/` holds the CDN copies. The dashboard check that works today is a throwaway Node
     script using the language app's Playwright (see learnings).
-- **State (2026-10-29, later session):** `auto/20261029-1003` is merged into `main`. The planned dashboard improvements are done:
+- **State (2026-10-30):** held `[manual]` tasks have **I did it** and **Skip** buttons in "Waiting on you" (FR-036, `bin/sdd-manual.py`; a `wontfix` entry now outranks the tag). **State (2026-10-29, later session):** `auto/20261029-1003` is merged into `main`. The planned dashboard improvements are done:
   `/api/run/current` says `running` for a live supervisor that is running or stopping (§4.5), "Waiting on you" skips tasks held only
   behind a dependency, task logs are readable text (§4.6), the 3 s refresh redraws only on change and keeps scroll, the sidebar
   title is fixed. Also new: the section is in the URL (`#tasks`), no project picker, design documents grouped as tabs under **Docs**
