@@ -11,7 +11,8 @@
         "registry.npmjs.org",
         "github.com",
         "objects.githubusercontent.com"
-      ]
+      ],
+      "allowLocalBinding": true
     }
   },
   "permissions": {

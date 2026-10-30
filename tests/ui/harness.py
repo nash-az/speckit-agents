@@ -183,11 +183,18 @@ class BrowserSession:
 
 
 def launch_chromium(playwright):
-    """The bundled Chromium when it is installed, else the installed Google Chrome."""
+    """The bundled Chromium when it is installed, else the installed Google Chrome.
+
+    Inside the run sandbox (macOS Seatbelt) Chromium dies at start: the sandbox refuses the Mach service
+    it registers for its child processes. In one process it needs none, so that is the second try."""
     from playwright.sync_api import Error
     try:
         return playwright.chromium.launch()
     except Error as bundled:
+        try:
+            return playwright.chromium.launch(args=["--single-process"])
+        except Error:
+            pass
         try:
             return playwright.chromium.launch(channel="chrome")
         except Error as chrome:
