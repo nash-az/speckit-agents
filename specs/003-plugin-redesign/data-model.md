@@ -38,9 +38,11 @@ one JS object `GLYPHS` keyed by glyph name; statuses map to glyphs in one JS obj
 (`{queued: {glyph: 'circle-outline', label: 'Queued'}, …}`). No icon font, no CDN.
 
 **Rollup (FR-004)** — priority list, most urgent first:
-`blocked, retrying, running, held, paused, queued, moved, wontfix, superseded, done`.
+`blocked, retrying, running, held, paused, queued, done, moved, wontfix, superseded`.
 A phase's status is the first key in this list that any of its tasks has. A phase with no tasks
-shows nothing.
+shows nothing. The dropped statuses (`moved`, `wontfix`, `superseded`) rank after `done`
+(T062, `research.md` `## Phase roll-up`): a phase whose tasks are all done or dropped reads `done`,
+and only a phase whose tasks are all dropped shows the drop.
 
 **BLOCKED.md entry badges** (the Blocked/"waiting on you" view): `open` → `blocked`;
 `resolved` → `queued` with label "Answered — runs next"; `wontfix` → `wontfix`; `moved` → `moved`.

@@ -588,9 +588,10 @@ def _readable_line(line):
 
 
 # Phase rollup (data-model.md §1, FR-004): most urgent first. A phase's status is the first key
-# that any of its tasks has.
+# that any of its tasks has. The dropped statuses rank after `done` (T062, answer (b)), so a phase
+# whose open work is finished reads `done`; a phase of only dropped tasks still shows its drop.
 ROLLUP_ORDER = ("blocked", "retrying", "running", "held", "paused", "queued",
-                "moved", "wontfix", "superseded", "done")
+                "done", "moved", "wontfix", "superseded")
 
 # sdd-tasks.py hold tags that become the parked status `held` (data-model.md §2).
 PERSON_HOLD_TAGS = ("manual", "decision", "dep", "download")
@@ -1808,8 +1809,9 @@ def build_html():
     }
 
     // Phase rollup (data-model.md §1, FR-004), most urgent first; same list as ROLLUP_ORDER in Python.
+    // Dropped statuses rank after done (T062), so done plus dropped tasks reads done.
     var ROLLUP_ORDER = ['blocked', 'retrying', 'running', 'held', 'paused', 'queued',
-                        'moved', 'wontfix', 'superseded', 'done'];
+                        'done', 'moved', 'wontfix', 'superseded'];
 
     // Transient states from the selected run's events (data-model.md §4.6): the newest event per
     // task id decides. Returns {taskId: {key, vars}}; a task whose newest event maps to nothing

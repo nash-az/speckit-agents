@@ -166,7 +166,8 @@ class TaskStatusTest(unittest.TestCase):
         self.assertEqual((tasks["T020"]["status"], tasks["T020"]["status_tag"]), ("superseded", "Phase 2"))
         self.assertEqual(tasks["T021"]["status"], "done")
         self.assertIsNone(tasks["T090"]["status"])
-        self.assertEqual([p["status"] for p in result["phases"]], ["superseded", "queued"])
+        # superseded plus done reads done: dropped statuses rank after done (T062 answer (b))
+        self.assertEqual([p["status"] for p in result["phases"]], ["done", "queued"])
 
     def test_missing_tasks_file(self):
         self.assertEqual(dash.project_tasks(self.root / "nope.md", None, None), {"text": "", "phases": []})
@@ -180,7 +181,7 @@ class RollupTest(unittest.TestCase):
     """data-model.md §1: the first key of the priority list that any task has."""
 
     ORDER = ["blocked", "retrying", "running", "held", "paused", "queued",
-             "moved", "wontfix", "superseded", "done"]
+             "done", "moved", "wontfix", "superseded"]
 
     def test_order_is_exact(self):
         self.assertEqual(list(dash.ROLLUP_ORDER), self.ORDER)
@@ -203,6 +204,12 @@ class RollupTest(unittest.TestCase):
 
     def test_all_done(self):
         self.assertEqual(dash.rollup(["done", "done"]), "done")
+
+    def test_done_plus_dropped_reads_done(self):
+        """T062 answer (b): dropped tasks do not keep a finished phase from reading done."""
+        for dropped in ("wontfix", "moved", "superseded"):
+            self.assertEqual(dash.rollup(["done", dropped, "done"]), "done", dropped)
+        self.assertEqual(dash.rollup(["wontfix", "superseded"]), "wontfix")
 
 
 class BlockedEndpointTest(unittest.TestCase):
