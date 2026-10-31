@@ -28,12 +28,13 @@ Arguments (`$ARGUMENTS`): `--phases a,b` runs exactly those phase ids and skips 
    - Otherwise, if the tree is not clean and you are on that run's branch, the changes are its unfinished work: the guard was on, so only the run's agents wrote files. Stash them with `git stash push -u -m "sdd-run <its run id>: unfinished work"`, and say so in the run report. Then remove the file and go on.
    - If you are on another branch, stop and show the files: they may be the user's.
 2. The tasks file from item 1 (`<feature>/tasks.md`) must exist.
-3. `.gitignore` lists all four of these lines (data-model §7):
+3. `.gitignore` lists all five of these lines (data-model §7):
    ```
    .sdd/run.json
    .sdd/scratch/
    .sdd/runs/*/
    .sdd/plugin-feedback.jsonl
+   .sdd/jobs/
    ```
    If it lacks any of them, or does not exist, stop and say: "Run `/sdd-init` to update `.gitignore`, commit it, then start `/sdd-run` again." Never edit `.gitignore` yourself.
 4. `git status --porcelain` is empty: no uncommitted or untracked files that are not ignored.

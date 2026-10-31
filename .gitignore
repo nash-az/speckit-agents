@@ -5,3 +5,4 @@ __pycache__/
 .sdd/scratch/
 .sdd/runs/*/
 .sdd/plugin-feedback.jsonl
+.sdd/jobs/

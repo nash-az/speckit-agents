@@ -42,15 +42,16 @@ Once the settings are written, run the checks from step 2 again, because the san
 Explain in two lines that the sandbox and the deny list hold even when nobody is watching, and that the plugin's guard adds a stricter set while a run is active.
 
 ## 5. Ignore files
-Add these four lines to `.gitignore`, each only if it is not there yet:
+Add these five lines to `.gitignore`, each only if it is not there yet:
 ```
 .sdd/run.json
 .sdd/scratch/
 .sdd/runs/*/
 .sdd/plugin-feedback.jsonl
+.sdd/jobs/
 ```
 `.sdd/runs/*/` ignores the per-run directories only. The config and the run reports in `.sdd/runs/` (`.sdd/runs/<id>.md`) stay tracked.
-Ask the user to commit `.gitignore`: `/sdd-run` stops in preflight while any of the four lines is missing.
+Ask the user to commit `.gitignore`: `/sdd-run` stops in preflight while any of the five lines is missing.
 
 ## 6. Next step
 Say `/sdd-run` is ready. It runs `/speckit-converge` first, so it builds only what the code still lacks, and it tags the new tasks itself. `/sdd-tag` is only needed to tag existing tasks for a `--phases` run.
