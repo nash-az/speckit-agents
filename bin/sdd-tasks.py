@@ -3,7 +3,7 @@
 
   sdd-tasks.py parse  <tasks.md> [--blocked BLOCKED.md]
   sdd-tasks.py plan   <tasks.md> [--blocked BLOCKED.md] [--config .sdd/config.toml]
-                      [--phases 7,8] [--max-tasks N]
+                      [--phases 7,8] [--tasks T061,T063] [--max-tasks N]
   sdd-tasks.py tick   <tasks.md> T001 [T002 ...]
   sdd-tasks.py block  <BLOCKED.md> --id T057 --tag manual --reason "..." --question "..."
   sdd-tasks.py config [--config .sdd/config.toml]
@@ -373,13 +373,17 @@ def group_phase(tasks: list[dict]) -> list[list[str]]:
 
 
 def plan(parsed: dict, blocked: dict[str, dict], config: dict,
-         phases: list[str] | None, max_tasks: int | None) -> dict:
+         phases: list[str] | None, max_tasks: int | None,
+         tasks: list[str] | None = None) -> dict:
     """Runnable phases and held tasks.
 
     `blocked` is the entries dict from parse_blocked_entries() (data-model §3.5); a plain
     {id: status} dict is accepted too. A runnable task whose entry is `resolved` with a
     non-empty answer carries `answer` and `question` into `phases[].tasks`.
+    `tasks` keeps only those ids (005 data-model §5); with `phases`, both filters apply.
+    An unknown id is ignored. Holds are still worked out over the whole file.
     """
+    wanted = set(tasks) if tasks else None
     allow = config.get("allow", {})
     entries = {i: e if isinstance(e, dict) else {"status": e} for i, e in blocked.items()}
     statuses = {i: e.get("status", "open") for i, e in entries.items()}
@@ -394,6 +398,8 @@ def plan(parsed: dict, blocked: dict[str, dict], config: dict,
         runnable = []
         for task in phase["tasks"]:
             if task["done"]:
+                continue
+            if wanted is not None and task["id"] not in wanted:
                 continue
             if task["id"] in all_holds:
                 tag, reason = all_holds[task["id"]]
@@ -678,6 +684,7 @@ def main(argv: list[str]) -> int:
     p_plan.add_argument("--config", type=Path, default=Path(".sdd/config.toml"))
     p_plan.add_argument("--phases", help="comma-separated phase ids, e.g. 7,8,9a")
     p_plan.add_argument("--max-tasks", type=int)
+    p_plan.add_argument("--tasks", dest="tasks_filter", help="comma-separated task ids, e.g. T061,T063")
 
     p_tick = sub.add_parser("tick")
     p_tick.add_argument("tasks", type=Path)
@@ -713,8 +720,9 @@ def main(argv: list[str]) -> int:
         result["blocked"] = parse_blocked(args.blocked)
     elif args.cmd == "plan":
         phases = [p.strip() for p in args.phases.split(",")] if args.phases else None
+        ids = [t.strip() for t in args.tasks_filter.split(",") if t.strip()] if args.tasks_filter else None
         result = plan(parse_tasks(args.tasks), parse_blocked_entries(args.blocked),
-                      load_config(args.config), phases, args.max_tasks)
+                      load_config(args.config), phases, args.max_tasks, ids)
     elif args.cmd == "tick":
         result = tick(args.tasks, args.ids)
     elif args.cmd == "block":

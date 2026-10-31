@@ -212,6 +212,51 @@ class PlanTest(unittest.TestCase):
         self.assertEqual([p["id"] for p in out["phases"]], ["3"])
         self.assertEqual(out["runnable"], 1)
 
+    def planned(self, result):
+        return {tid for p in result["phases"] for tid in p["tasks"]}
+
+    def test_task_filter_keeps_only_listed(self):
+        config = sdd.load_config(None)
+        out = sdd.plan(sdd.parse_tasks(TASKS), {}, config, None, None, ["T004", "T007", "T012"])
+        self.assertEqual(self.planned(out), {"T004", "T007", "T012"})
+        self.assertEqual([p["id"] for p in out["phases"]], ["2", "3", "3a"])
+        self.assertEqual(out["held"], [])  # held tasks outside the list are not reported
+
+    def test_task_filter_with_phases(self):
+        config = sdd.load_config(None)
+        out = sdd.plan(sdd.parse_tasks(TASKS), {}, config, ["3"], None, ["T004", "T007", "T011"])
+        self.assertEqual(self.planned(out), {"T007", "T011"})
+
+    def test_task_filter_ignores_unknown_id(self):
+        config = sdd.load_config(None)
+        out = sdd.plan(sdd.parse_tasks(TASKS), {}, config, None, None, ["T002", "T404"])
+        self.assertEqual(self.planned(out), {"T002"})
+        out = sdd.plan(sdd.parse_tasks(TASKS), {}, config, None, None, ["T404"])
+        self.assertEqual(out["phases"], [])
+        self.assertEqual(out["runnable"], 0)
+
+    def test_task_filter_held_stay_held(self):
+        config = sdd.load_config(None)
+        out = sdd.plan(sdd.parse_tasks(TASKS), sdd.parse_blocked(BLOCKED), config, None, None,
+                       ["T006", "T008", "T007"])
+        self.assertEqual({h["id"]: h["tag"] for h in out["held"]}, {"T006": "blocked", "T008": "manual"})
+        self.assertEqual(self.planned(out), {"T007"})
+
+    def test_task_filter_cap_and_groups(self):
+        config = sdd.load_config(None)
+        out = sdd.plan(sdd.parse_tasks(TASKS), {}, config, None, None, ["T002", "T003", "T004"])
+        self.assertEqual(out["phases"][0]["groups"], [["T002", "T003"]])
+        out = sdd.plan(sdd.parse_tasks(TASKS), {}, config, None, 1, ["T003", "T004"])
+        self.assertEqual(self.planned(out), {"T003"})
+
+    def test_plan_command_tasks_option(self):
+        out = subprocess.run([sys.executable, str(SCRIPT), "plan", str(TASKS), "--blocked", str(BLOCKED),
+                              "--phases", "1,2", "--tasks", "T003, T005,T404"],
+                             capture_output=True, text=True, check=True)
+        result = json.loads(out.stdout)
+        self.assertEqual(self.planned(result), {"T003", "T005"})
+        self.assertEqual(result["tasks_file"], str(TASKS))
+
 
 class SupersededTest(unittest.TestCase):
     """data-model §3.4: explicit superseded-by, computed after converge, no propagation."""
