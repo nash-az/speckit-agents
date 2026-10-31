@@ -34,5 +34,5 @@
 - Like 003–005, this spec names the plugin's own files and helpers (`bin/sdd-spec.py`, `.sdd/config.toml`,
   `bin/sdd-tasks.py`). This project is a developer tool built with itself, and its specs follow that
   convention; the names are the user-facing interface (the CLI), not a hidden implementation choice.
-- Four decisions are assumed defaults, not the person's answers (Clarifications, "Defaults assumed"). Run
-  `/speckit-clarify` or confirm them before `/speckit-plan`.
+- The four assumed defaults and one more question were settled by the person in `/speckit-clarify` on
+  2026-10-31 (Clarifications, Session 2026-10-31).
