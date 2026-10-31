@@ -6,7 +6,8 @@ then `os.replace`s it, so a reader never sees half a record; keys this module do
 At most one Job per project is open (state not `merged` or `dropped`); `open_job()` returns it.
 
 Functions so far: `load`, `save`, `list_jobs`, `open_job`, `new_id`, `default_title`, `display_state`,
-`scope_args`, `progress`, `limit_reached`, `merge`, `drop` (these two raise `Refused`, changing nothing).
+`scope_args`, `progress`, `limit_reached`, `merge`, `drop` (these two raise `Refused`, changing nothing),
+`after_settle` (continues a `waiting` Job after a settle; never raises).
 
     bin/sdd-job.py list [project]          -> [record + shown + progress, ...]
     bin/sdd-job.py show <id> [project]     -> record + shown + progress
@@ -380,6 +381,61 @@ def drop(project, job_id: str) -> dict:
     record.update(state="dropped", ended=int(time.time()))
     save(project, record)
     return {"dropped": True}
+
+
+_launcher_module = None
+
+
+def _launcher():
+    """`bin/sdd-launch.py`, loaded on first use (it loads this module itself, so not at import time)."""
+    global _launcher_module
+    if _launcher_module is None:
+        _launcher_module = _load_module("sdd_launch", "sdd-launch.py")
+    return _launcher_module
+
+
+def _scope_runnable(project, record: dict) -> int:
+    """How many tasks in the Job's scope `sdd-tasks.py plan` finds runnable now."""
+    project = Path(project)
+    feature = feature_dir(project, record)
+    scope = record.get("scope") or {}
+    plan = sdd_tasks.plan(sdd_tasks.parse_tasks(feature / "tasks.md"),
+                          sdd_tasks.parse_blocked_entries(feature / "BLOCKED.md"),
+                          sdd_tasks.load_config(project / ".sdd" / "config.toml"),
+                          [str(p) for p in scope.get("phases") or []] or None, None,
+                          [str(t) for t in scope.get("tasks") or []] or None)
+    return plan["runnable"]
+
+
+def after_settle(project) -> dict:
+    """Continue a `waiting` Job after the person settled an item (FR-016, research R8).
+
+    Called by the helpers that commit a settle (`sdd-decide.py`, `sdd-manual.py`, `sdd-unblock.py`). Starts
+    the next run through `sdd-launch.py`'s `continue_job` when the open Job's shown state is `waiting`, no
+    `.sdd/run.json` exists, no supervisor is alive and the scope has a runnable task. Never raises: returns
+    `{"started": True, "reason": None}`, or `{"started": False, "reason": "<why not>"}`."""
+    try:
+        project = Path(project)
+        record = open_job(project)
+        if record is None:
+            return {"started": False, "reason": "no open job"}
+        state = display_state(project, record)["state"]
+        if state != "waiting":
+            return {"started": False, "reason": f"the job is {state}, not waiting"}
+        if (project / ".sdd" / "run.json").exists():
+            return {"started": False, "reason": "a run is active"}
+        if _pid_alive(_status(project)):
+            return {"started": False, "reason": "a supervisor is running"}
+        if _scope_runnable(project, record) == 0:
+            return {"started": False, "reason": "no task in the scope is runnable"}
+        launcher = _launcher()
+        try:
+            launcher.continue_job(project, record["id"])
+        except launcher.Refused as e:
+            return {"started": False, "reason": str(e)}
+        return {"started": True, "reason": None}
+    except Exception as e:  # never raise: the caller's commit has already succeeded
+        return {"started": False, "reason": f"could not continue the job: {e}"}
 
 
 def _with_view(project, record: dict) -> dict:

@@ -483,5 +483,99 @@ class MergeDropTest(unittest.TestCase):
         self.assertEqual(self.branch(), "main")
 
 
+SETTLE_TASKS = """# Tasks
+
+## Phase 1: Work
+
+- [x] T001 Done `a.txt`
+- [ ] T002 Runnable `b.txt`
+- [ ] T003 [manual] Record audio
+"""
+
+
+class AfterSettleTest(unittest.TestCase):
+    """after_settle() (FR-016, research R8) on a temp repo with the launcher's `_spawn` replaced."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve() / "project"
+        self.root.mkdir()
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(self.tmp.name) / "state")})
+        self.env.start()
+        self.feature = self.root / "specs" / "003-plugin-redesign"
+        self.feature.mkdir(parents=True)
+        (self.feature / "tasks.md").write_text(SETTLE_TASKS)
+        (self.root / ".gitignore").write_text(".sdd/\n")
+        for args in (("init", "-q", "-b", "main"), ("config", "user.name", "Test"),
+                     ("config", "user.email", "test@example.com"), ("config", "commit.gpgsign", "false"),
+                     ("add", "."), ("commit", "-q", "-m", "base"), ("switch", "-q", "-c", f"auto/{JOB_ID}")):
+            subprocess.run(["git", *args], cwd=self.root, capture_output=True, check=True)
+        job.save(self.root, record(JOB_ID, state="waiting", reason="only items that need you are left",
+                                   scope={"phases": ["1"]}, scope_tasks=["T001", "T002", "T003"]))
+        self.spawn = mock.patch.object(job._launcher(), "_spawn")
+        self.popen = self.spawn.start()
+        self.popen.return_value.pid = 4444
+
+    def tearDown(self):
+        self.spawn.stop()
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def set(self, **fields):
+        job.save(self.root, {**job.load(self.root, JOB_ID), **fields})
+
+    def not_started(self, reason):
+        before = job.load(self.root, JOB_ID)
+        self.assertEqual(job.after_settle(self.root), {"started": False, "reason": reason})
+        self.popen.assert_not_called()
+        self.assertEqual(job.load(self.root, JOB_ID), before)
+
+    def test_starts_when_a_scope_task_is_runnable(self):
+        self.assertEqual(job.after_settle(self.root), {"started": True, "reason": None})
+        self.popen.assert_called_once()
+        self.assertEqual(self.popen.call_args.args[0][2:], ["--project", str(self.root), "--job", JOB_ID])
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["state"], saved["reason"]), ("working", None))
+
+    def test_no_open_job(self):
+        self.set(state="merged")
+        self.not_started("no open job")
+
+    def test_job_not_waiting(self):
+        for state in ("stopped", "held", "done", "failed"):
+            self.set(state=state)
+            self.not_started(f"the job is {state}, not waiting")
+        self.set(state="working")  # no live supervisor: shown as interrupted
+        self.not_started("the job is interrupted, not waiting")
+
+    def test_run_json_exists(self):
+        (self.root / ".sdd" / "run.json").write_text("{}")
+        self.not_started("a run is active")
+
+    def test_supervisor_alive(self):
+        status = job.sdd_supervise.state_dir(self.root) / "status.json"
+        status.write_text(json.dumps({"state": "done", "pid": os.getpid()}))
+        self.not_started("a supervisor is running")
+        status.write_text(json.dumps({"state": "running", "pid": dead_pid()}))
+        self.assertTrue(job.after_settle(self.root)["started"])
+
+    def test_nothing_runnable_in_scope(self):
+        (self.feature / "tasks.md").write_text(SETTLE_TASKS.replace("- [ ] T002", "- [x] T002"))
+        self.not_started("no task in the scope is runnable")
+
+    def test_a_launcher_refusal_comes_back_as_the_reason(self):
+        (self.root / "stray.txt").write_text("x\n")
+        self.not_started("the working tree has changes; commit or stash them first: stray.txt")
+        (self.root / "stray.txt").unlink()
+        self.set(limits={"max_tasks": 1, "until": None, "max_runs": 20})
+        self.not_started("the limit max_tasks is still reached; give a new value")
+
+    def test_an_unexpected_error_comes_back_as_the_reason(self):
+        with mock.patch.object(job._launcher(), "continue_job", side_effect=RuntimeError("boom")):
+            self.assertEqual(job.after_settle(self.root),
+                             {"started": False, "reason": "could not continue the job: boom"})
+        self.assertEqual(job.after_settle(self.root / "missing"), {"started": False, "reason": "no open job"})
+
+
 if __name__ == "__main__":
     unittest.main()
