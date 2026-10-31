@@ -17,6 +17,12 @@ project is not a git repository, or when no task is runnable. Stdlib only; no mo
 
 `launch_job()` starts a Job (spec 005, data-model §8): it writes `.sdd/jobs/<id>.json`, creates the branch
 `auto/<id>` and starts `bin/sdd-supervise.py --job <id>` detached, which runs the scope run after run.
+
+    bin/sdd-launch.py <project dir> <feature dir> --continue <id> [--max-tasks N|none] [--until EPOCH|none]
+                      [--max-runs N|none]
+
+`continue_job()` continues a `waiting`, `interrupted`, `held` or `stopped` Job on its branch (005 FR-009,
+data-model §3 and §8); a Job stopped by a limit needs a new value for it. Counts are never reset.
 """
 from __future__ import annotations
 
@@ -292,35 +298,171 @@ def launch_job(project: Path, feature: Path, scope: dict | None, limits: dict | 
     return {"job": job_id, "branch": branch, "pid": pid, "log": log}
 
 
+CONTINUABLE_STATES = ("waiting", "interrupted", "held", "stopped")
+
+
+def _limit_in_reason(record: dict) -> str | None:
+    """The limit a `stopped` Job was stopped by, from its reason ("max_tasks 10 reached",
+    "until 18:00 reached", "max_runs 20 reached"; `sdd-supervise.py` `limit_reason`), else None."""
+    reason = record.get("reason")
+    if record.get("state") != "stopped" or not isinstance(reason, str) or not reason.endswith(" reached"):
+        return None
+    name = reason.split(" ", 1)[0]
+    return name if name in sdd_job.LIMIT_NAMES else None
+
+
+def _read_run_json(project: Path) -> dict | None:
+    """`.sdd/run.json` as a dict ({} when unreadable), or None when there is none."""
+    path = project / ".sdd" / "run.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def continue_job(project: Path, job_id: str, new_limits: dict | None = None) -> dict:
+    """Continue a Job (005 FR-009, data-model §3 and §8): from shown `waiting`, `interrupted`, `held` or
+    `stopped`, set `working` and start `sdd-supervise.py --job <id>` detached.
+
+    `new_limits` holds only the limits the person changes (`max_tasks`, `until`, `max_runs`; null = none);
+    the others and every count (runs, ticked scope tasks) are kept. A Job stopped by a limit needs a new value
+    for that limit. Refuses, changing nothing, as `launch_job` does except "another job is open". When
+    resuming (`.sdd/run.json` belongs to the Job's branch) the tree may have changes, but the checkout must
+    already be on the Job's branch; otherwise the tree must be clean and the Job's branch is checked out."""
+    project = Path(project).resolve()
+    record = sdd_job.load(project, job_id)
+    if record is None:
+        raise Refused(f"no such job: {job_id}")
+    shown = sdd_job.display_state(project, record)["state"]
+    if shown not in CONTINUABLE_STATES:
+        raise Refused(f"this job cannot be continued in state {shown}")
+    new_limits = dict(new_limits or {})
+    unknown = sorted(set(new_limits) - set(sdd_job.LIMIT_NAMES))
+    if unknown:
+        raise Refused(f"unknown limit: {', '.join(unknown)}")
+    limits = _check_limits({**(record.get("limits") or {"max_runs": DEFAULT_MAX_RUNS}), **new_limits})
+    stopped_by = _limit_in_reason(record)
+    if stopped_by and stopped_by not in new_limits:
+        raise Refused(f"the limit {stopped_by} is still reached; give a new value")
+    if _supervisor_running(project):
+        raise Refused("a run is active")
+    branch = record.get("branch")
+    run_json = _read_run_json(project)
+    resuming = run_json is not None and bool(branch) and (
+        run_json.get("branch") == branch or (run_json.get("job") == job_id and "branch" not in run_json))
+    if run_json is not None and not resuming:
+        raise Refused("a run is active")
+    code, _ = _git_output(project, "rev-parse", "--is-inside-work-tree")
+    if code != 0:
+        raise Refused("the project is not a git repository")
+    if not branch:
+        raise Refused("the job has no branch")
+    _, current = _git_output(project, "rev-parse", "--abbrev-ref", "HEAD")
+    switched_from = None
+    if resuming:
+        if current != branch:
+            raise Refused("the checkout is not on the Job's branch")
+    else:
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=project, capture_output=True, text=True)
+        dirty = status.stdout.rstrip("\n")  # not .strip(): the first line may start with a space
+        if dirty:
+            files = ", ".join(line[3:] for line in dirty.splitlines()[:5])
+            raise Refused(f"the working tree has changes; commit or stash them first: {files}")
+        if current != branch:
+            switched = subprocess.run(["git", "switch", branch], cwd=project, capture_output=True, text=True)
+            if switched.returncode != 0:
+                raise Refused(f"could not switch to {branch}: {switched.stderr.strip()}")
+            switched_from = current
+
+    # The scope and the limits are read on the Job's branch; a refusal here switches back (the tree is clean).
+    try:
+        updated = {**record, "limits": limits}
+        reached = sdd_job.limit_reached(project, updated)
+        if reached:
+            raise Refused(f"the limit {reached} is still reached; give a new value")
+        if not resuming:
+            feature = sdd_job.feature_dir(project, record)
+            scope = record.get("scope") or {}
+            plan = sdd_tasks.plan(sdd_tasks.parse_tasks(feature / "tasks.md"),
+                                  sdd_tasks.parse_blocked_entries(feature / "BLOCKED.md"),
+                                  sdd_tasks.load_config(project / ".sdd" / "config.toml"),
+                                  [str(p) for p in scope.get("phases") or []] or None, None,
+                                  [str(t) for t in scope.get("tasks") or []] or None)
+            if plan["runnable"] == 0:
+                raise Refused("no task in the scope is runnable")
+    except Refused:
+        if switched_from:
+            subprocess.run(["git", "switch", switched_from], cwd=project, capture_output=True, text=True)
+        raise
+
+    updated.update(state="working", reason=None)
+    sdd_job.save(project, updated)
+    command = [sys.executable, str(HERE / "sdd-supervise.py"), "--project", str(project), "--job", job_id]
+    pid, log = _start_supervisor(project, command)
+    return {"job": job_id, "pid": pid, "log": log, "resumes": run_json.get("run_id") if resuming else None}
+
+
+def _limit_value(kind: type):
+    """An argparse type: a number, or `none` for no limit (returned as the string "none")."""
+    def parse(text: str):
+        if text.strip().lower() == "none":
+            return "none"
+        try:
+            value = float(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"not a number or none: {text}") from None
+        if kind is int:
+            if not value.is_integer():
+                raise argparse.ArgumentTypeError(f"not a whole number or none: {text}")
+            return int(value)
+        return int(value) if value.is_integer() else value
+    return parse
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("project", type=Path)
     parser.add_argument("feature", type=Path)
     parser.add_argument("--phases", default="")
     parser.add_argument("--no-converge", action="store_true")
-    parser.add_argument("--max-tasks", type=int, default=None)
+    parser.add_argument("--max-tasks", type=_limit_value(int), default=None, help="a number, or none")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--job", action="store_true", help="start a Job (spec 005) instead of a single run")
+    parser.add_argument("--continue", dest="continue_id", default=None, metavar="ID",
+                        help="continue the Job with this id (with --max-tasks/--until/--max-runs N|none)")
     parser.add_argument("--tasks", default="", help="with --job: the Job's scope as task ids, T061,T063")
-    parser.add_argument("--until", type=float, default=None, help="with --job: stop by this time (epoch seconds)")
-    parser.add_argument("--max-runs", type=int, default=DEFAULT_MAX_RUNS, help="with --job: the run cap")
+    parser.add_argument("--until", type=_limit_value(float), default=None,
+                        help="with --job or --continue: stop by this time (epoch seconds), or none")
+    parser.add_argument("--max-runs", type=_limit_value(int), default=None,
+                        help=f"with --job or --continue: the run cap (default {DEFAULT_MAX_RUNS}), or none")
     parser.add_argument("--title", default=None, help="with --job: the Job's title (default: the scope in words)")
     args = parser.parse_args(argv)
     phases = [p for p in args.phases.split(",") if p]
     tasks = [t for t in args.tasks.split(",") if t]
-    if not args.job and (tasks or args.until is not None or args.title is not None
-                         or args.max_runs != DEFAULT_MAX_RUNS):
-        parser.error("--tasks, --until, --max-runs and --title need --job")
+    given = {name: value for name, value in (("max_tasks", args.max_tasks), ("until", args.until),
+                                              ("max_runs", args.max_runs)) if value is not None}
+    limits = {name: None if value == "none" else value for name, value in given.items()}
+    continuing = args.continue_id is not None
+    if continuing and (args.job or phases or tasks or args.title is not None or args.dry_run):
+        parser.error("--continue takes only --max-tasks, --until and --max-runs")
+    if not args.job and not continuing and (tasks or args.title is not None or "until" in given
+                                            or "max_runs" in given):
+        parser.error("--tasks and --title need --job; --until and --max-runs need --job or --continue")
     if args.job and phases and tasks:
         parser.error("give --phases or --tasks, not both")
     try:
-        if args.job:
+        if continuing:
+            result = continue_job(args.project, args.continue_id, limits)
+        elif args.job:
             scope = {"phases": phases} if phases else {"tasks": tasks} if tasks else {"all": True}
-            until = int(args.until) if args.until is not None and args.until.is_integer() else args.until
-            limits = {"max_tasks": args.max_tasks, "until": until, "max_runs": args.max_runs}
+            limits = {"max_tasks": None, "until": None, "max_runs": DEFAULT_MAX_RUNS, **limits}
             result = launch_job(args.project, args.feature, scope, limits, args.title, args.dry_run)
         else:
-            result = launch(args.project, args.feature, phases, args.no_converge, args.max_tasks, args.dry_run)
+            result = launch(args.project, args.feature, phases, args.no_converge, limits.get("max_tasks"),
+                            args.dry_run)
     except Refused as e:
         print(f"refused: {e}")
         return 1

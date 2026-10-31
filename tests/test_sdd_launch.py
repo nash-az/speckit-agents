@@ -306,5 +306,224 @@ class LaunchJobTest(unittest.TestCase):
         self.assertEqual(out.returncode, 2)
 
 
+class ContinueJobTest(unittest.TestCase):
+    """continue_job() (005 FR-009, data-model §3 and §8): allowed and refused states, the limit rule,
+    counts kept, and resuming an interrupted run with its work in the tree."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.root = base / "project"
+        self.feature = self.root / "specs" / "001-a"
+        self.feature.mkdir(parents=True)
+        (self.root / ".sdd").mkdir()
+        (self.root / ".gitignore").write_text(".sdd/jobs/\n", encoding="utf-8")
+        (self.feature / "tasks.md").write_text(TASKS, encoding="utf-8")
+        for args in (("init", "-q", "-b", "main"), ("config", "user.email", "t@example.com"),
+                     ("config", "user.name", "T"), ("add", "."), ("commit", "-q", "-m", "init")):
+            git(self.root, *args)
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(base / "state")})
+        self.env.start()
+        self.spawn = mock.patch.object(launch, "_spawn")
+        self.popen = self.spawn.start()
+        self.popen.return_value.pid = 4444
+        self.job = launch.launch_job(self.root, self.feature, {"phases": ["1", "2"]}, None)["job"]
+        self.job_branch = f"auto/{self.job}"
+        self.popen.reset_mock()
+        self.logs = launch.sdd_supervise.state_dir(self.root)
+
+    def tearDown(self):
+        self.spawn.stop()
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def set(self, **fields):
+        record = launch.sdd_job.load(self.root, self.job)
+        record.update(fields)
+        launch.sdd_job.save(self.root, record)
+
+    def record(self):
+        return launch.sdd_job.load(self.root, self.job)
+
+    def branch(self):
+        return git(self.root, "rev-parse", "--abbrev-ref", "HEAD").strip()
+
+    def status(self, **fields):
+        self.logs.mkdir(parents=True, exist_ok=True)
+        (self.logs / "status.json").write_text(json.dumps(fields), encoding="utf-8")
+
+    def refused(self, text, new_limits=None):
+        with self.assertRaises(launch.Refused) as caught:
+            launch.continue_job(self.root, self.job, new_limits)
+        self.assertEqual(str(caught.exception), text)
+        self.popen.assert_not_called()
+
+    def tick(self, task_id):
+        path = self.feature / "tasks.md"
+        path.write_text(path.read_text().replace(f"- [ ] {task_id}", f"- [x] {task_id}"))
+        git(self.root, "commit", "-qam", f"tick {task_id}")
+
+    def test_each_allowed_state_continues_on_the_jobs_branch(self):
+        for state, reason in (("waiting", "only items that need you are left"), ("working", None),
+                              ("held", "kept paused at the usage reset"), ("stopped", "stopped by you")):
+            with self.subTest(state=state):
+                self.set(state=state, reason=reason)
+                git(self.root, "switch", "-q", "main")
+                result = launch.continue_job(self.root, self.job)
+                self.assertEqual((result["job"], result["pid"], result["resumes"]), (self.job, 4444, None))
+                self.assertEqual(self.branch(), self.job_branch)
+                self.assertEqual((self.record()["state"], self.record()["reason"]), ("working", None))
+                cmd = self.popen.call_args.args[0]
+                self.assertEqual(cmd[2:], ["--project", str(self.root), "--job", self.job])
+                self.assertNotIn("--max-wait-hours", cmd)
+                self.assertTrue(self.popen.call_args.kwargs["start_new_session"])
+                self.popen.reset_mock()
+
+    def test_refused_states(self):
+        for state in ("done", "failed", "merged", "dropped"):
+            with self.subTest(state=state):
+                self.set(state=state)
+                self.refused(f"this job cannot be continued in state {state}")
+                self.assertEqual(self.record()["state"], state)
+        self.set(state="working")
+        self.status(state="running", pid=os.getpid())
+        self.refused("this job cannot be continued in state working")
+        self.status(state="waiting", pid=os.getpid(), resets_at=1793450000)
+        self.refused("this job cannot be continued in state paused")
+
+    def test_unknown_job(self):
+        with self.assertRaises(launch.Refused) as caught:
+            launch.continue_job(self.root, "20990101-0000")
+        self.assertEqual(str(caught.exception), "no such job: 20990101-0000")
+
+    def test_refuses_while_a_supervisor_is_running_for_a_stored_state(self):
+        self.set(state="stopped", reason="stopped by you")
+        self.status(state="running", pid=os.getpid())
+        self.refused("a run is active")
+
+    def test_refuses_a_dirty_tree_when_not_resuming(self):
+        self.set(state="stopped", reason="stopped by you")
+        git(self.root, "switch", "-q", "main")
+        (self.root / "stray.txt").write_text("mine")
+        self.refused("the working tree has changes; commit or stash them first: stray.txt")
+        self.assertEqual((self.branch(), self.record()["state"]), ("main", "stopped"))
+
+    def test_refuses_when_no_scope_task_is_runnable_and_switches_back(self):
+        git(self.root, "switch", "-q", self.job_branch)
+        self.tick("T001")
+        self.tick("T003")
+        git(self.root, "switch", "-q", "main")
+        self.set(state="waiting", reason="only items that need you are left")
+        self.refused("no task in the scope is runnable")
+        self.assertEqual((self.branch(), self.record()["state"]), ("main", "waiting"))
+
+    def test_refuses_outside_a_git_repository(self):
+        with tempfile.TemporaryDirectory() as other:
+            project = Path(other).resolve()
+            launch.sdd_job.save(project, {"id": "20261031-0900", "state": "stopped", "reason": "stopped by you",
+                                          "branch": "auto/20261031-0900", "feature": "001-a"})
+            with self.assertRaises(launch.Refused) as caught:
+                launch.continue_job(project, "20261031-0900")
+        self.assertEqual(str(caught.exception), "the project is not a git repository")
+
+    def test_a_run_of_another_branch_is_active(self):
+        self.set(state="waiting")
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"run_id": "x", "branch": "auto/other"}))
+        self.refused("a run is active")
+
+    def test_a_limit_stopped_job_needs_a_new_value_for_that_limit(self):
+        self.tick("T001")
+        self.set(state="stopped", reason="max_tasks 1 reached", limits={"max_tasks": 1, "until": None, "max_runs": 20})
+        self.refused("the limit max_tasks is still reached; give a new value")
+        self.refused("the limit max_tasks is still reached; give a new value", {"max_runs": 30})
+        self.refused("the limit max_tasks is still reached; give a new value", {"max_tasks": 1})
+        self.assertEqual(self.record()["limits"]["max_tasks"], 1)
+        launch.continue_job(self.root, self.job, {"max_tasks": 2})
+        self.assertEqual(self.record()["limits"], {"max_tasks": 2, "until": None, "max_runs": 20})
+        self.assertEqual(self.record()["state"], "working")
+
+    def test_none_removes_the_limit(self):
+        self.set(state="stopped", reason="max_runs 2 reached", runs=["r1", "r2"],
+                 limits={"max_tasks": None, "until": None, "max_runs": 2})
+        launch.continue_job(self.root, self.job, {"max_runs": None})
+        self.assertEqual(self.record()["limits"]["max_runs"], None)
+
+    def test_until_must_be_later_than_now(self):
+        self.set(state="stopped", reason="until 09:00 reached",
+                 limits={"max_tasks": None, "until": 1000, "max_runs": 20})
+        self.refused("the limit until is still reached; give a new value", {"until": 2000})
+        later = int(launch.time.time()) + 3600
+        launch.continue_job(self.root, self.job, {"until": later})
+        self.assertEqual(self.record()["limits"]["until"], later)
+
+    def test_another_reached_limit_is_refused_too(self):
+        self.set(state="stopped", reason="stopped by you", runs=["r1", "r2"],
+                 limits={"max_tasks": None, "until": None, "max_runs": 2})
+        self.refused("the limit max_runs is still reached; give a new value")
+
+    def test_counts_are_not_reset(self):
+        self.tick("T001")
+        before = self.record()["scope_tasks"]
+        self.set(state="stopped", reason="max_runs 2 reached", runs=["r1", "r2"], no_progress_runs=1,
+                 limits={"max_tasks": 3, "until": None, "max_runs": 2})
+        self.refused("the limit max_runs is still reached; give a new value", {"max_runs": 2})
+        launch.continue_job(self.root, self.job, {"max_runs": 3})
+        record = self.record()
+        self.assertEqual((record["runs"], record["no_progress_runs"], record["scope_tasks"]),
+                         (["r1", "r2"], 1, before))
+        self.assertEqual(launch.sdd_job.tasks_done(self.root, record), 1)
+        self.assertEqual(record["limits"], {"max_tasks": 3, "until": None, "max_runs": 3})
+
+    def test_bad_new_limits(self):
+        self.set(state="stopped", reason="stopped by you")
+        for limits, text in (({"max_tasks": 0}, "max tasks must be a whole number from 1 to 500"),
+                             ({"speed": 1}, "unknown limit: speed")):
+            with self.subTest(limits=limits):
+                self.refused(text, limits)
+
+    def test_an_interrupted_job_with_a_dirty_tree_and_run_json_resumes(self):
+        self.set(state="working")
+        (self.root / "half-done.txt").write_text("interrupted work")
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"run_id": "20261031-1100",
+                                                                 "branch": self.job_branch}))
+        result = launch.continue_job(self.root, self.job)
+        self.assertEqual((result["pid"], result["resumes"]), (4444, "20261031-1100"))
+        self.assertEqual(self.branch(), self.job_branch)
+        self.assertTrue((self.root / "half-done.txt").exists())
+        self.assertTrue((self.root / ".sdd" / "run.json").exists())
+        self.assertEqual(self.record()["state"], "working")
+
+    def test_resuming_with_the_checkout_on_another_branch_is_refused(self):
+        self.set(state="held", reason="kept paused at the usage reset")
+        (self.root / "half-done.txt").write_text("interrupted work")
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"run_id": "20261031-1100",
+                                                                 "branch": self.job_branch}))
+        git(self.root, "switch", "-q", "main")
+        self.refused("the checkout is not on the Job's branch")
+        self.assertEqual((self.branch(), self.record()["state"]), ("main", "held"))
+
+    def test_cli_continue(self):
+        script = str(HERE.parent / "bin" / "sdd-launch.py")
+        self.set(state="stopped", reason="max_runs 1 reached", runs=["r1"],
+                 limits={"max_tasks": None, "until": None, "max_runs": 1})
+        out = subprocess.run([sys.executable, script, str(self.root), str(self.feature), "--continue", self.job],
+                             capture_output=True, text=True)
+        self.assertEqual((out.returncode, out.stdout.strip()),
+                         (1, "refused: the limit max_runs is still reached; give a new value"))
+        out = subprocess.run([sys.executable, script, str(self.root), str(self.feature), "--continue", self.job,
+                              "--title", "x"], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 2)
+        out = subprocess.run([sys.executable, script, str(self.root), str(self.feature), "--continue", self.job,
+                              "--max-runs", "many"], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 2)
+
+    def test_cli_passes_only_the_given_limits_and_none(self):
+        with mock.patch.object(launch, "continue_job", return_value={"job": self.job, "pid": 1}) as cont:
+            code = launch.main([str(self.root), str(self.feature), "--continue", self.job,
+                                "--max-runs", "none", "--until", "1793450000"])
+        self.assertEqual(code, 0)
+        self.assertEqual(cont.call_args.args, (self.root, self.job, {"until": 1793450000, "max_runs": None}))
+
+
 if __name__ == "__main__":
     unittest.main()
