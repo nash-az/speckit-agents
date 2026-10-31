@@ -1,6 +1,6 @@
 # Feature Specification: Jobs: start what you want done, let it run across as many runs as it needs
 
-**Feature Branch**: `005-jobs` | **Created**: 2026-10-30 | **Status**: Draft (two questions settled 2026-10-30; not yet clarified or reviewed)
+**Feature Branch**: `005-jobs` | **Created**: 2026-10-30 | **Status**: Draft (clarified 2026-10-30 and 2026-10-31; not yet reviewed)
 
 **Input**: The person thinks in terms of what they asked for ("do Phase 11", "build the 004 MVP"), not in
 terms of runs. A run is one `/sdd-run` session; it ends when usage runs out, when it crashes, or when it hits
@@ -24,6 +24,23 @@ and is used by `specs/004-feedback-chat/`, which will be built as a Job.
   one stable object the person starts and watches and put the executions under it as history: Temporal
   (one Workflow ID, several Run IDs), GitHub Actions (a workflow run with re-run attempts), Airflow (a DAG
   run with task tries), background coding agents (one task, one branch or PR, hidden sessions).
+
+### Session 2026-10-31
+- Q: When a Job has finished (done, stopped or failed) but isn't merged yet, does it still count as the
+  project's one open Job? → A: Yes (user, 2026-10-31). A Job stays **open** until it is merged or dropped: it
+  blocks Start job, the checkout stays on its branch, and dashboard commits go there. A new **Drop** button sets
+  `dropped`, switches back to the base branch and keeps the Job's branch.
+- Q: When a Job stopped by one of its limits is continued, how do the limits count? → A: Counting continues for
+  the whole Job; Continue on a limit-stopped Job asks the person to raise or remove that limit first (user,
+  2026-10-31).
+- Q: When a Job hits the usage limit, does it carry on by itself after the reset, and how long may it wait? →
+  A: It always waits, however long (no maximum, the weekly limit included), and a checkbox "Continue when the
+  limit resets", checked by default, decides what happens at the reset (user, 2026-10-31). The person may flip it
+  any number of times during the pause; only its value at the reset counts. Unchecked, the Job is `held` at the
+  reset and waits for Continue. This is the 003 FR-030 Keep paused / Let it resume control shown as a checkbox.
+- Q: Should Jobs also run more tasks at the same time? → A: Not in 005 (user, 2026-10-31). Worktree parallelism
+  (task groups or independent phases at once) is its own feature, 007, after 005 and 006, reusing 006's worktree
+  handling. Meanwhile, separately from 005, the tasks template and `/sdd-tag` should mark more tasks `[P]`.
 
 ## Terms
 
@@ -53,11 +70,14 @@ after one task); check that three runs happen on one branch without a person, an
    `auto/<job id>` is made from the current branch, the Job is `working`, and its first run starts.
 2. **Given** a run ends and the scope still has runnable tasks, **When** no limit is reached, **Then** the next
    run starts on the same branch without the person, and the Job shows both runs in its history.
-3. **Given** a run is paused for a usage window, **When** the window resets, **Then** the same run resumes (as
-   today) and the Job shows `paused until <time>` meanwhile.
-4. **Given** every task in the scope is done, wontfix or moved, **When** the last run ends, **Then** the Job is
+3. **Given** a run is paused for a usage window, **When** the window resets with "Continue when the limit
+   resets" checked (the default), **Then** the same run resumes (as today) and the Job shows
+   `paused until <time>` meanwhile, however long the wait.
+4. **Given** a paused Job, **When** the person unchecks the box (any number of flips during the pause; the
+   value at the reset counts), **Then** at the reset the Job is `held` and resumes only on Continue.
+5. **Given** every task in the scope is done, wontfix or moved, **When** the last run ends, **Then** the Job is
    `done`.
-5. **Given** only tasks that need the person are left (held, blocked, decisions), **When** the last run ends,
+6. **Given** only tasks that need the person are left (held, blocked, decisions), **When** the last run ends,
    **Then** the Job is `waiting on you` and the dashboard lists those items.
 
 ---
@@ -81,6 +101,9 @@ the checkout is back on the base branch, and the Job shows `merged` with the mer
    aborted), the Job stays as it was, and the dashboard names the conflicting files.
 3. **Given** a run is active or the tree has uncommitted changes, **When** the person presses Merge, **Then** it
    is refused with the reason.
+4. **Given** a `done`, `stopped` or `failed` Job the person does not want to merge, **When** they press **Drop**
+   and confirm, **Then** the checkout switches to the base branch, the Job is `dropped`, its branch is kept, and
+   Start job is enabled again.
 
 ---
 
@@ -108,7 +131,7 @@ on the Job's branch and that Continue starts the next run on that branch.
 ### User Story 4 - A Jobs view instead of a Runs view (Priority: P2)
 
 The Runs view becomes **Jobs**. Each Job is a card with its title, state in words, a progress bar over its
-scope, counts (done, waiting on you, left), its branch and commits, and its buttons (Stop, Continue, Merge).
+scope, counts (done, waiting on you, left), its branch and commits, and its buttons (Stop, Continue, Merge, Drop).
 Opening a card shows the tasks it covered (with outcome and commit) and its runs as history; opening a run
 shows its tasks, events and report, as the Runs view does today.
 
@@ -140,7 +163,8 @@ The run banner and the Overview say what is happening, not which id is running.
 
 1. **Given** a working Job, **When** the Overview shows, **Then** the banner reads like "Working on Phase 11:
    T052, verifying (7 min)" with Stop after this task and Stop now, and no run id.
-2. **Given** a paused Job, **Then** it reads "Paused until 18:05: usage limit; continues by itself".
+2. **Given** a paused Job, **Then** it reads "Paused until 18:05: usage limit; continues by itself" with the box
+   checked, or "Paused until 18:05: usage limit; stays paused" with it unchecked.
 
 ### Edge Cases
 
@@ -154,7 +178,7 @@ The run banner and the Overview say what is happening, not which id is running.
   on the Job's branch"), the Job shows that, and nothing is changed.
 - A plain `/sdd-run` started in a Claude session (no supervisor): it is a run with no Job, shown under
   "Earlier runs" or, when the dashboard started it, under its Job.
-- Two Jobs: only one Job may be open per project at a time; Start job is disabled with the reason while one is
+- Two Jobs: only one Job may be open (not merged or dropped) per project at a time; Start job is disabled with the reason while one is
   open.
 
 ## Requirements *(mandatory)*
@@ -165,28 +189,37 @@ The run banner and the Overview say what is happening, not which id is running.
   `.sdd/`, written only by the plugin's helpers and the supervisor, never by agents). The Job id has the run id
   form (`YYYYMMDD-HHMM`). Fields: id, title, feature, scope, limits, branch, base branch and its commit at the
   start, state, runs (run ids, oldest first), created and ended times, merge commit, and the last reason.
-- **FR-002**: A Job's state MUST be one of `working`, `paused` (usage window), `waiting` (only items that need
+- **FR-002**: A Job's state MUST be one of `working`, `paused` (usage window), `held` (the usage window reset
+  while "Continue when the limit resets" was unchecked), `waiting` (only items that need
   the person are left in scope), `interrupted` (no live supervisor while `working`), `stopped` (by the person,
-  or a limit), `failed`, `done`, `merged`. Only `done`, `stopped` and `failed` Jobs can be merged; `merged` is final.
+  or a limit), `failed`, `done`, `merged`, `dropped`. Only `done`, `stopped` and `failed` Jobs can be merged or
+  dropped; `merged` and `dropped` are final. A Job is **open** in every state except `merged` and `dropped`.
 - **FR-003**: Starting a Job (dashboard Start job, or `bin/sdd-launch.py --job`) MUST create the record and the
   branch `auto/<job id>` from the current branch, and start the supervisor with the Job id. It MUST refuse when
   another Job is open, the tree is dirty, the project is not a git repository, or the scope has no runnable task.
 - **FR-004**: The supervisor MUST, when a run ends, re-read the scope (`bin/sdd-tasks.py plan` with the Job's
   phases or tasks) and: start the next run on the Job's branch when runnable tasks remain and no limit is reached;
-  set `waiting` when only person items remain; set `done` when nothing open remains in scope. Usage-window pauses
-  and resumes stay as today and set `paused` in between.
+  set `waiting` when only person items remain; set `done` when nothing open remains in scope. At a usage limit the
+  supervisor MUST wait for the reset with no maximum (the launcher no longer passes `--max-wait-hours 0`), set
+  `paused` meanwhile, and at the reset read the Job's "Continue when the limit resets" setting (003 FR-030
+  `control.json` hold/release, default release): resume the same run when set, else set `held`.
+- **FR-004a**: The banner MUST show, while a Job is `paused`, a checkbox "Continue when the limit resets
+  (<time>)", checked by default, that the person may change any number of times; each change only records the
+  setting, and only its value at the reset is used. Continue on a `held` Job resumes the same run.
 - **FR-005**: Limits are per Job, not per run: a task cap (tasks committed in the Job), an optional stop-by time,
-  and a maximum number of runs (default 20). Reaching one sets `stopped` with the limit named.
+  and a maximum number of runs (default 20). They count over the whole Job and are never reset. Reaching one
+  sets `stopped` with the limit named.
 - **FR-006**: Two runs in a row with no progress (no task committed and no new BLOCKED.md entry) MUST set
   `failed` with "no progress in two runs".
 - **FR-007**: Every run of a Job MUST run on the Job's branch; `/sdd-run` already stays on an `auto/` branch it
   is started on (SKILL step 1). The run's `workflows.json` MUST record `"job": "<job id>"` beside `feature`.
-- **FR-008**: While a Job is open (not `done`, `stopped`, `failed` or `merged`), the checkout stays on its
+- **FR-008**: While a Job is open (FR-002: not `merged` or `dropped`), the checkout stays on its
   branch, and the dashboard's own commits (decisions FR-033, edits FR-035, manual tasks FR-036, 004 feedback)
   land there. A run MUST refuse to start when the checkout is on another branch.
 - **FR-009**: Continue (dashboard, or `bin/sdd-launch.py --continue <job id>`) MUST start the next run of a
-  `waiting`, `interrupted` or `stopped` Job on its branch, with the same refusals as FR-003 except "another Job
-  is open".
+  `waiting`, `interrupted`, `held` or `stopped` Job on its branch, with the same refusals as FR-003 except "another Job
+  is open". For a Job stopped by a limit, Continue MUST first ask for a new value of that limit (higher, later,
+  or none), record it in the Job, and refuse while the limit would still be reached.
 - **FR-010**: Merge (dashboard, through a helper `bin/sdd-job.py merge <job id>`, with the 003 FR-030 checks)
   MUST merge the Job's branch into its base branch: fast-forward when possible, else one merge commit
   `merge: job <title>`; never force, never push, never rewrite history. It MUST refuse when a run is active, the
@@ -197,9 +230,10 @@ The run banner and the Overview say what is happening, not which id is running.
   its runs, each opening as the run detail does today; runs with no Job under "Earlier runs".
 - **FR-012**: The banner and the Overview MUST describe the open Job in words and never show a run id:
   `working` → "Working on <title>: <task>, <step> (<time>)"; `paused` → "Paused until <time>: usage limit;
-  continues by itself"; `waiting` → "Waiting on you: <n> items"; `interrupted` → "Stopped unexpectedly:
+  continues by itself" (box checked) or "…; stays paused" (unchecked); `held` → "Held after the usage reset:
+  Continue to resume"; `waiting` → "Waiting on you: <n> items"; `interrupted` → "Stopped unexpectedly:
   Continue to resume"; `stopped`/`done`/`failed` → "<title> <state>: <n> tasks done; Merge to bring them into
-  <base>"; no open Job → "No job running" and Start job. Run ids stay in the Jobs view's history.
+  <base>, or Drop"; no open Job → "No job running" and Start job. Run ids stay in the Jobs view's history.
 - **FR-013**: A task card's run chip (003 data-model §4.4 addition) MUST name the Job when the run had one
   ("done in job <title>") and open that Job.
 - **FR-014**: The Job title MUST default to the scope in words ("Phase 11", "Phases 3–5", "T061, T063", "All open
@@ -209,6 +243,9 @@ The run banner and the Overview say what is happening, not which id is running.
 - **FR-016**: When a Job is `waiting` and the person settles an item (FR-033, FR-036, a resolved BLOCKED.md entry, a
   004 feedback apply) so that a task in its scope becomes runnable, the next run MUST start by itself, with the
   FR-003 refusals except "another Job is open". The helper that made the commit triggers it, not the dashboard.
+- **FR-017**: Drop (dashboard, with a confirm, or `bin/sdd-job.py drop <job id>`) MUST set a `done`, `stopped` or
+  `failed` Job to `dropped`, check out its base branch and keep the Job's branch and commits. It MUST refuse when
+  a run is active or the tree is dirty. Nothing is deleted.
 
 ### Key Entities
 
@@ -233,7 +270,7 @@ The run banner and the Overview say what is happening, not which id is running.
 
 ## Out of Scope
 
-- Several open Jobs at once, or Jobs in parallel worktrees.
+- Several open Jobs at once, or Jobs in parallel worktrees (parallel task groups are feature 007).
 - Pushing, pull requests, or deleting branches.
 - Scheduling a Job for later.
 
