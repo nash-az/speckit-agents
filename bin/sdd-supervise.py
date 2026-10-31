@@ -31,6 +31,9 @@ run it checks that the checkout is on the Job's branch and that no limit is reac
 appends the run id, re-reads the scope and sets the Job `done`, `waiting` (only items that need the
 person), `failed` (no progress in two runs) or starts the next run. A stop-by time passing mid-run
 stops the run after the current task. --max-cycles then counts per run; status.json names the Job.
+A Job waits for any usage reset (--max-wait-hours does not apply to that wait); at the reset a kept
+pause (`hold`) sets the Job `held` and an operator stop (during a run or the wait) sets it `stopped`,
+and the supervisor exits 0 in both cases instead of holding for Resume.
 """
 from __future__ import annotations
 
@@ -370,9 +373,10 @@ def hold(args: argparse.Namespace, logs: Path, status: Path, cycle_no: int, reas
     return False
 
 
-def wait_for_reset(args: argparse.Namespace, logs: Path, status: Path, target: float, fields: dict) -> bool:
+def wait_for_reset(args: argparse.Namespace, logs: Path, status: Path, target: float, fields: dict) -> str:
     """Sleep until the usage window resets, in steps of --poll, reading operator requests.
-    Returns keep_paused: True when the operator asked to stay paused after the reset."""
+    Returns `go` (resume after the reset), `hold` (the operator asked to stay paused after it; only the
+    last hold/release counts) or, with --job only, `stop` (an operator stop ends the wait at once, 005 R7)."""
     keep_paused = False
     while (left := target - time.time()) > 0:
         time.sleep(min(left, args.poll))
@@ -385,9 +389,12 @@ def wait_for_reset(args: argparse.Namespace, logs: Path, status: Path, target: f
             say("the operator asked to stay paused after the reset" if keep_paused
                 else "the operator let the run resume after the reset")
             write_status(status, **fields, keep_paused=keep_paused)
+        elif command == "stop" and args.job:
+            say("stop requested by the operator while waiting for the usage window")
+            return "stop"
         elif command not in ("hold", "release"):
             say(f"ignoring operator request {command!r} while waiting for the usage window")
-    return keep_paused
+    return "hold" if keep_paused else "go"
 
 
 def thresholds(text: str) -> dict[str, float]:
@@ -481,8 +488,9 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
 
     Returns (how it ended, exit code, the run id seen in .sdd/run.json or None). How it ended:
     `finished`, `cut-off` (ended with .sdd/run.json still there), `operator` (only with --job: an
-    operator stop, or the Job's stop-by time; without --job an operator stop holds), `held-too-long`,
-    `no-reset`, `too-late` or `max-cycles`."""
+    operator stop, also during the usage wait, or the Job's stop-by time; without --job an operator stop
+    holds), `held` (only with --job: kept paused at the usage reset), `held-too-long`, `no-reset`,
+    `too-late` (never with --job: a Job waits for any reset) or `max-cycles`."""
     run_id = None
     for cycle_no in range(1, args.max_cycles + 1):
         log_path = logs / f"{time.strftime('%Y%m%d-%H%M%S')}-cycle{cycle_no}.jsonl"
@@ -521,7 +529,8 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
             write_status(status, state="stopped", reason="no reset time", cycle=cycle_no)
             return "no-reset", 1, run_id
         wait = max(0, resets_at + RESET_MARGIN_S - time.time())
-        if wait > args.max_wait_hours * 3600:
+        # A Job waits for any reset: --max-wait-hours does not apply to its usage wait (005 R7).
+        if not args.job and wait > args.max_wait_hours * 3600:
             say(f"{window} resets at {time.strftime('%a %H:%M', time.localtime(resets_at))}, beyond --max-wait-hours: stopping")
             write_status(status, state="stopped", reason=f"{window} resets too late", resets_at=resets_at, cycle=cycle_no)
             return "too-late", 3, run_id
@@ -530,7 +539,13 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
                    "usage": cycle.usage.windows}
         write_status(status, **waiting, keep_paused=False)
         # --no-sleep (tests) skips the wait and so ignores `hold`.
-        if not args.no_sleep and wait_for_reset(args, logs, status, time.time() + wait, waiting):
+        after = "go" if args.no_sleep else wait_for_reset(args, logs, status, time.time() + wait, waiting)
+        if after == "stop":
+            return "operator", 0, run_id
+        if after == "hold" and args.job:
+            say("kept paused: the usage window has reset")
+            return "held", 0, run_id
+        if after == "hold":
             if not hold(args, logs, status, cycle_no, "kept paused; the usage window has reset"):
                 say("held longer than --max-wait-hours: stopping")
                 write_status(status, state="stopped", reason="held too long", cycle=cycle_no)
@@ -642,6 +657,8 @@ def run_job(args: argparse.Namespace, logs: Path, status: Path) -> int:
             if until is not None and time.time() >= until:
                 return end_job(sdd_job, project, status, job_id, "stopped", limit_reason("until", record["limits"]))
             return end_job(sdd_job, project, status, job_id, "stopped", "stopped by you")
+        if outcome == "held":
+            return end_job(sdd_job, project, status, job_id, "held", "kept paused at the usage reset")
         if outcome not in ("finished", "cut-off", "max-cycles"):
             return code  # the usage wait gave up; the Job stays working and shows as interrupted
         # 5. Re-plan the scope; tasks added inside scoped phases join the Job (research R4).

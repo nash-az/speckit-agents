@@ -192,6 +192,14 @@ class SuperviseTest(unittest.TestCase):
         status = json.loads(next((self.dir / "state").rglob("status.json")).read_text())
         self.assertEqual(status["state"], "stopped")
 
+    def test_without_a_job_max_wait_hours_still_limits_the_usage_wait(self):
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), rate(utilization=0.95, resets_in=60),
+                  {"sleep": 0.3}, finished("a"), {"sleep": 30}, *DONE]
+        out, calls, _ = self.supervise([cycle1, [*DONE]], "--max-wait-hours", "0")
+        self.assertEqual(out.returncode, 3, out.stdout)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("beyond --max-wait-hours: stopping", out.stdout)
+
     def test_cut_off_without_a_limit_is_not_reported_as_finished(self):
         (self.project / ".sdd" / "run.json").write_text("{}")
         out, calls, _ = self.supervise([[{"transcript": True}, *DONE]])
@@ -622,6 +630,126 @@ class JobTest(unittest.TestCase):
         out, calls, _ = self.supervise([job_run("r1", "T001")])
         self.assertEqual(out.returncode, 2, out.stdout)
         self.assertEqual(calls, [])
+
+    # The usage wait and operator requests with --job (research R7).
+
+    MARGIN = 120  # sdd-supervise.RESET_MARGIN_S
+
+    def paused_run(self, resets_in):
+        """The first cycle of run r1: pauses at a safe point for a five-hour window resetting in `resets_in`."""
+        return [{"transcript": True}, {"run": "r1"}, started("a", "impl:T001"),
+                rate(utilization=0.95, resets_in=resets_in), {"sleep": 0.3}, finished("a"), {"sleep": 30}, *DONE]
+
+    def start(self, cycles, *extra):
+        """The supervisor without --no-sleep, so it really waits for the reset and reads requests meanwhile."""
+        (self.dir / "scenario.json").write_text(json.dumps({"cycles": cycles}))
+        env = dict(os.environ, FAKE_DIR=str(self.dir), XDG_STATE_HOME=str(self.dir / "state"),
+                   FAKE_TASKS=str(self.tasks), FAKE_CONTROL=str(self.logs / "control.json"))
+        proc = subprocess.Popen([sys.executable, str(SCRIPT), "--project", str(self.project), "--claude", str(FAKE),
+                                 "--poll", "0.1", "--job", JOB_ID, *extra], env=env, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: proc.poll() is None and (proc.kill(), proc.wait()))
+        return proc
+
+    def finish(self, proc):
+        out, _ = proc.communicate(timeout=60)
+        calls = (self.dir / "calls").read_text().splitlines() if (self.dir / "calls").exists() else []
+        return out, calls
+
+    def status(self):
+        try:
+            return json.loads((self.logs / "status.json").read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def wait_for(self, predicate, what, timeout=20):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate(self.status()):
+                return self.status()
+            time.sleep(0.05)
+        self.fail(f"timed out waiting for {what}; status {self.status()}")
+
+    def control(self, command, **fields):
+        """Write a request like the dashboard does, then wait until the supervisor has consumed it."""
+        path = self.logs / "control.json"
+        tmp = self.logs / "control.json.tmp"
+        tmp.write_text(json.dumps({"id": "x", "command": command, "requested_at": int(time.time()), **fields}))
+        os.replace(tmp, path)
+        deadline = time.time() + 10
+        while path.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(path.exists(), f"the supervisor did not consume {command}")
+
+    def test_a_reset_beyond_max_wait_hours_resumes_the_same_run(self):
+        self.save_job()
+        resume = [{"transcript": True}, {"run": "r1"}, {"tick": "T001"}, {"tick": "T002"}, {"tick": "T003"},
+                  {"finish": True}, *DONE]
+        out, calls, _ = self.supervise([self.paused_run(60), resume], "--max-wait-hours", "0")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 2, "the paused run was resumed after the reset")
+        self.assertNotIn("beyond --max-wait-hours", out.stdout)
+        record = self.job()
+        self.assertEqual(record["state"], "done")
+        self.assertEqual(record["runs"], ["r1"])
+
+    def test_hold_release_hold_during_the_wait_ends_held(self):
+        self.save_job()
+        proc = self.start([self.paused_run(6 - self.MARGIN), job_run("r1", "T001")], "--max-wait-hours", "0")
+        self.wait_for(lambda s: s.get("state") == "waiting", "waiting")
+        self.control("hold")
+        self.wait_for(lambda s: s.get("keep_paused") is True, "held")
+        self.control("release")
+        self.wait_for(lambda s: s.get("keep_paused") is False, "released")
+        self.control("hold")
+        self.wait_for(lambda s: s.get("keep_paused") is True, "held again")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 1, "a kept pause starts no cycle at the reset")
+        self.assertNotIn("waiting for Resume", out, "a Job does not hold for Resume")
+        record = self.job()
+        self.assertEqual(record["state"], "held")
+        self.assertEqual(record["runs"], ["r1"])
+
+    def test_release_last_during_the_wait_resumes(self):
+        self.save_job()
+        resume = [{"transcript": True}, {"run": "r1"}, {"tick": "T001"}, {"tick": "T002"}, {"tick": "T003"},
+                  {"finish": True}, *DONE]
+        proc = self.start([self.paused_run(4 - self.MARGIN), resume])
+        self.wait_for(lambda s: s.get("state") == "waiting", "waiting")
+        self.control("hold")
+        self.wait_for(lambda s: s.get("keep_paused") is True, "held")
+        self.control("release")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.job()["state"], "done")
+
+    def test_operator_stop_during_a_run_stops_the_job(self):
+        self.save_job()
+        run = [{"transcript": True}, {"run": "r1"}, started("a", "impl:T001"),
+               {"control": {"command": "stop", "mode": "now"}}, {"sleep": 30}, *DONE]
+        out, calls, took = self.supervise([run, job_run("r2", "T002")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 1)
+        self.assertLess(took, 25)
+        self.assertNotIn("waiting for Resume", out.stdout, "a Job does not hold for Resume")
+        record = self.job()
+        self.assertEqual(record["state"], "stopped")
+        self.assertEqual(record["reason"], "stopped by you")
+        self.assertEqual(record["runs"], ["r1"])
+
+    def test_operator_stop_during_the_wait_stops_the_job(self):
+        self.save_job()
+        proc = self.start([self.paused_run(3600), job_run("r1", "T001")])
+        self.wait_for(lambda s: s.get("state") == "waiting", "waiting")
+        self.control("stop", mode="after-task")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 1)
+        record = self.job()
+        self.assertEqual(record["state"], "stopped")
+        self.assertEqual(record["reason"], "stopped by you")
+        self.assertEqual(record["runs"], ["r1"])
 
 
 if __name__ == "__main__":
