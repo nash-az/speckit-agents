@@ -1,9 +1,11 @@
 """bin/sdd-manual.py (FR-036): settle an open [manual] task and commit just the files it touched."""
 import importlib.util
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("sdd_manual", HERE.parent / "bin" / "sdd-manual.py")
@@ -84,6 +86,71 @@ class SettleTest(unittest.TestCase):
         manual.settle(self.root, self.feature, "T001", "done")
         with self.assertRaises(manual.Refused):
             manual.settle(self.root, self.feature, "T001", "done")
+
+    def test_job_key_without_an_open_job(self):
+        for task, action, note in (("T001", "done", ""), ("T002", "skip", "no microphone")):
+            result = manual.settle(self.root, self.feature, task, action, note)
+            self.assertEqual(result["job"], {"started": False, "reason": "no open job"})
+
+
+JOB_ID = "20261031-1012"
+
+
+class JobTest(unittest.TestCase):
+    """With an open Job (spec 005): the settle commit lands on `auto/<id>` (FR-008) and the helper calls
+    `sdd_job.after_settle` (FR-016, data-model §10); the launcher's `_spawn` is replaced."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve() / "project"
+        self.feature = self.root / "specs" / "001-a"
+        self.feature.mkdir(parents=True)
+        (self.feature / "tasks.md").write_text(TASKS, encoding="utf-8")
+        (self.root / ".gitignore").write_text(".sdd/\n")
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(self.tmp.name) / "state")})
+        self.env.start()
+        for args in (("init", "-q", "-b", "main"), ("config", "user.email", "t@example.com"),
+                     ("config", "user.name", "T"), ("config", "commit.gpgsign", "false"),
+                     ("add", "."), ("commit", "-q", "-m", "init"), ("switch", "-q", "-c", f"auto/{JOB_ID}")):
+            git(self.root, *args)
+        manual.sdd_job.save(self.root, {
+            "id": JOB_ID, "title": "Phase 1", "feature": "001-a", "scope": {"phases": ["1"]},
+            "scope_tasks": ["T001", "T002", "T003", "T004"], "blocked_at_start": 0,
+            "limits": {"max_tasks": None, "until": None, "max_runs": 20},
+            "branch": f"auto/{JOB_ID}", "base": {"branch": "main", "commit": "0000000"}, "state": "waiting",
+            "reason": "only items that need you are left", "runs": [], "no_progress_runs": 0,
+            "created": 1793450000, "ended": None, "merge_commit": None})
+        self.spawn = mock.patch.object(manual.sdd_job._launcher(), "_spawn")
+        self.popen = self.spawn.start()
+        self.popen.return_value.pid = 4444
+
+    def tearDown(self):
+        self.spawn.stop()
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_done_commits_on_the_job_branch_and_continues_the_job(self):
+        result = manual.settle(self.root, self.feature, "T001", "done")
+        self.assertEqual(result["job"], {"started": True, "reason": None})
+        self.popen.assert_called_once()
+        self.assertEqual(git(self.root, "branch", "--show-current").strip(), f"auto/{JOB_ID}")
+        self.assertIn(f"auto/{JOB_ID}", git(self.root, "branch", "--contains", result["commit"]))
+        self.assertNotIn("main", git(self.root, "branch", "--contains", result["commit"]))
+        self.assertEqual(manual.sdd_job.load(self.root, JOB_ID)["state"], "working")
+
+    def test_skip_reports_why_the_job_did_not_continue(self):
+        manual.sdd_job.save(self.root, {**manual.sdd_job.load(self.root, JOB_ID), "state": "stopped"})
+        result = manual.settle(self.root, self.feature, "T002", "skip", "no microphone here")
+        self.assertEqual(result["job"], {"started": False, "reason": "the job is stopped, not waiting"})
+        self.popen.assert_not_called()
+        self.assertIn(f"auto/{JOB_ID}", git(self.root, "branch", "--contains", result["commit"]))
+
+    def test_without_a_commit_after_settle_is_not_called(self):
+        with mock.patch.object(manual.sdd_job, "after_settle") as after:
+            result = manual.settle(self.root, self.feature, "T001", "done", commit=False)
+        after.assert_not_called()
+        self.assertFalse(result["job"]["started"])
+        self.popen.assert_not_called()
 
 
 if __name__ == "__main__":

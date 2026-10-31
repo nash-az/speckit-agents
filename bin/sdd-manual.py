@@ -14,15 +14,22 @@ just the files it touched as `chore(manual): <task id> ...`.
 It refuses, and changes nothing, when a run is active (`.sdd/run.json`), when a file it would touch
 already has uncommitted changes, when the project is not a git repository, when the task is not an open
 `[manual]` task, or (skip) when the reason is empty. If the commit fails the files are put back.
+
+After the commit it calls `sdd_job.after_settle(project)` (spec 005 FR-016, data-model §10): a `waiting`
+Job whose scope now has a runnable task continues by itself. Its result is the `"job"` key of the output.
 Stdlib only; no model.
 """
 from __future__ import annotations
 
+import importlib.util
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location("sdd_job", Path(__file__).with_name("sdd-job.py"))
+sdd_job = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_job)
 
 TASK_LINE = r"^- \[ \] {id}\b(?P<rest>.*)$"
 
@@ -43,7 +50,8 @@ def _one_line(text: str) -> str:
 
 
 def settle(project: Path, feature: Path, task_id: str, action: str, note: str = "", commit: bool = True) -> dict:
-    """`action` is "done" or "skip"; returns `{task, action, commit, files}`."""
+    """`action` is "done" or "skip"; returns `{task, action, commit, files, job}`, where `job` is
+    `sdd_job.after_settle`'s `{started, reason}` (not called when nothing was committed)."""
     project, feature = Path(project).resolve(), Path(feature).resolve()
     if action not in ("done", "skip"):
         raise Refused(f"unknown action {action}")
@@ -120,8 +128,9 @@ def settle(project: Path, feature: Path, task_id: str, action: str, note: str = 
             subprocess.run(["git", "reset", "-q", "--", *[str(p.relative_to(project)) for p in touched]],
                            cwd=project, capture_output=True)
         raise
+    job = sdd_job.after_settle(project) if commit else {"started": False, "reason": "nothing was committed"}
     return {"task": task_id, "action": action, "commit": sha,
-            "files": [str(p.relative_to(project)) for p in touched]}
+            "files": [str(p.relative_to(project)) for p in touched], "job": job}
 
 
 def main(argv: list[str]) -> int:
@@ -136,6 +145,11 @@ def main(argv: list[str]) -> int:
         print(f"refused: {e}")
         return 1
     print(f"{result['task']} {result['action']}" + (f" in {result['commit']}" if result["commit"] else ""))
+    job = result["job"]
+    if job["started"]:
+        print("the job continues: its next run started")
+    elif job["reason"] not in ("no open job", "nothing was committed"):
+        print(f"the job did not continue: {job['reason']}")
     return 0
 
 
