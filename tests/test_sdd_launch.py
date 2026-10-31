@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -133,6 +134,176 @@ class LaunchTest(unittest.TestCase):
     def test_run_args(self):
         self.assertEqual(launch.build_run_args(None, False, None), "")
         self.assertEqual(launch.build_run_args(["1", "2"], True, 5), "--no-converge --phases 1,2 --max-tasks 5")
+
+
+class LaunchJobTest(unittest.TestCase):
+    """launch_job() (005 FR-003, data-model §8): the refusals, the record, the branch, the command line."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.root = base / "project"
+        self.feature = self.root / "specs" / "001-a"
+        self.feature.mkdir(parents=True)
+        (self.root / ".sdd").mkdir()
+        (self.root / ".gitignore").write_text(".sdd/jobs/\n", encoding="utf-8")
+        (self.feature / "tasks.md").write_text(TASKS, encoding="utf-8")
+        (self.feature / "BLOCKED.md").write_text("## T009\n- status: resolved\n- reason: old\n", encoding="utf-8")
+        for args in (("init", "-q", "-b", "main"), ("config", "user.email", "t@example.com"),
+                     ("config", "user.name", "T"), ("add", "."), ("commit", "-q", "-m", "init")):
+            git(self.root, *args)
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(base / "state")})
+        self.env.start()
+        self.spawn = mock.patch.object(launch, "_spawn")
+        self.popen = self.spawn.start()
+        self.popen.return_value.pid = 4343
+
+    def tearDown(self):
+        self.spawn.stop()
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def start(self, scope=None, limits=None, title=None, dry_run=False):
+        return launch.launch_job(self.root, self.feature, scope, limits, title, dry_run)
+
+    def branch(self):
+        return git(self.root, "rev-parse", "--abbrev-ref", "HEAD").strip()
+
+    def test_creates_the_record_the_branch_and_starts_the_supervisor(self):
+        head = git(self.root, "rev-parse", "--short", "HEAD").strip()
+        result = self.start({"phases": ["2"]}, {"max_tasks": 3})
+        job_id = result["job"]
+        self.assertEqual((result["branch"], result["pid"]), (f"auto/{job_id}", 4343))
+        self.assertEqual(self.branch(), f"auto/{job_id}")
+        record = launch.sdd_job.load(self.root, job_id)
+        self.assertEqual(record["state"], "working")
+        self.assertEqual(record["title"], "Phase 2")
+        self.assertEqual(record["feature"], "001-a")
+        self.assertEqual(record["scope"], {"phases": ["2"]})
+        self.assertEqual(record["scope_tasks"], ["T003", "T004"])
+        self.assertEqual(record["blocked_at_start"], 1)
+        self.assertEqual(record["limits"], {"max_tasks": 3, "until": None, "max_runs": 20})
+        self.assertEqual(record["branch"], f"auto/{job_id}")
+        self.assertEqual(record["base"], {"branch": "main", "commit": head})
+        self.assertEqual((record["runs"], record["reason"], record["ended"], record["merge_commit"]),
+                         ([], None, None, None))
+        self.assertIsInstance(record["created"], int)
+        self.assertEqual(launch.sdd_job.open_job(self.root)["id"], job_id)
+
+    def test_the_command_line_has_the_job_and_no_wait_cap(self):
+        self.start()
+        cmd = self.popen.call_args.args[0]
+        job_id = launch.sdd_job.open_job(self.root)["id"]
+        self.assertTrue(cmd[1].endswith("sdd-supervise.py"))
+        self.assertEqual(cmd[2:], ["--project", str(self.root), "--job", job_id])
+        self.assertNotIn("--max-wait-hours", cmd)
+        kwargs = self.popen.call_args.kwargs
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertEqual(kwargs["cwd"], str(self.root.parent))
+
+    def test_title_and_limits_given_by_the_person(self):
+        result = self.start({"tasks": ["T001", "T003"]}, {"until": 1793450000, "max_runs": None}, title="Mine")
+        record = launch.sdd_job.load(self.root, result["job"])
+        self.assertEqual(record["title"], "Mine")
+        self.assertEqual(record["scope"], {"tasks": ["T001", "T003"]})
+        self.assertEqual(record["scope_tasks"], ["T001", "T003"])
+        self.assertEqual(record["limits"], {"max_tasks": None, "until": 1793450000, "max_runs": None})
+
+    def test_default_scope_is_all_open_tasks(self):
+        record = launch.sdd_job.load(self.root, self.start()["job"])
+        self.assertEqual((record["scope"], record["title"]), ({"all": True}, "All open tasks"))
+        self.assertEqual(sorted(record["scope_tasks"]), ["T001", "T003", "T004"])
+
+    def test_dry_run_changes_nothing(self):
+        result = self.start({"phases": ["1"]}, None, dry_run=True)
+        self.assertIsNone(result["pid"])
+        self.assertEqual(result["command"][-2:], ["--job", result["job"]])
+        self.assertEqual(result["record"]["state"], "working")
+        self.assertEqual(self.branch(), "main")
+        self.assertIsNone(launch.sdd_job.open_job(self.root))
+        self.popen.assert_not_called()
+
+    def test_refuses_when_another_job_is_open(self):
+        launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Phase 9", "state": "waiting"})
+        with self.assertRaises(launch.Refused) as caught:
+            self.start()
+        self.assertEqual(str(caught.exception), "another job is open: Phase 9")
+        self.assertEqual(self.branch(), "main")
+        self.popen.assert_not_called()
+
+    def test_a_merged_or_dropped_job_does_not_block(self):
+        launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Old", "state": "merged"})
+        launch.sdd_job.save(self.root, {"id": "20261030-0901", "title": "Older", "state": "dropped"})
+        self.assertEqual(self.start()["pid"], 4343)
+
+    def test_refuses_a_dirty_tree(self):
+        (self.root / "stray.txt").write_text("mine")
+        with self.assertRaises(launch.Refused) as caught:
+            self.start()
+        self.assertEqual(str(caught.exception), "the working tree has changes; commit or stash them first: stray.txt")
+        self.assertEqual(self.branch(), "main")
+        self.assertEqual(launch.sdd_job.list_jobs(self.root), [])
+
+    def test_refuses_outside_a_git_repository(self):
+        with tempfile.TemporaryDirectory() as other:
+            feature = Path(other).resolve() / "f"
+            feature.mkdir()
+            (feature / "tasks.md").write_text(TASKS)
+            with self.assertRaises(launch.Refused) as caught:
+                launch.launch_job(Path(other), feature, None, None)
+        self.assertEqual(str(caught.exception), "the project is not a git repository")
+
+    def test_refuses_when_no_task_in_the_scope_is_runnable(self):
+        for scope in ({"tasks": ["T002", "T004"]}, {"phases": ["9"]}):
+            with self.assertRaises(launch.Refused) as caught:
+                self.start(scope)
+            self.assertEqual(str(caught.exception), "no task in the scope is runnable")
+        self.assertEqual(self.branch(), "main")
+        self.popen.assert_not_called()
+
+    def test_refuses_while_a_run_is_active(self):
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"run_id": "20261031-0800"}))
+        with self.assertRaises(launch.Refused) as caught:
+            self.start()
+        self.assertEqual(str(caught.exception), "a run is active")
+
+    def test_rejects_bad_limits_and_two_scopes(self):
+        for limits in ({"max_tasks": 0}, {"max_runs": 0}, {"until": "soon"}):
+            with self.assertRaises(launch.Refused):
+                self.start(None, limits)
+        with self.assertRaises(launch.Refused):
+            self.start({"phases": ["1"], "tasks": ["T001"]})
+
+    def test_the_id_skips_a_taken_branch(self):
+        job_id = launch.sdd_job.new_id(self.root)
+        git(self.root, "branch", f"auto/{job_id}")
+        result = self.start()
+        self.assertNotEqual(result["job"], job_id)
+        self.assertEqual(self.branch(), result["branch"])
+
+    def test_cli_job_flags(self):
+        out = subprocess.run(
+            [sys.executable, str(HERE.parent / "bin" / "sdd-launch.py"), str(self.root), str(self.feature),
+             "--job", "--tasks", "T001,T003", "--max-runs", "5", "--until", "1793450000", "--title", "Two",
+             "--dry-run"], capture_output=True, text=True, env=dict(os.environ))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        result = json.loads(out.stdout)
+        self.assertIsNone(result["pid"])
+        record = result["record"]
+        self.assertEqual((record["title"], record["scope"]), ("Two", {"tasks": ["T001", "T003"]}))
+        self.assertEqual(record["limits"], {"max_tasks": None, "until": 1793450000, "max_runs": 5})
+
+    def test_cli_refusal_and_flags_without_job(self):
+        script = str(HERE.parent / "bin" / "sdd-launch.py")
+        (self.root / "stray.txt").write_text("mine")
+        out = subprocess.run([sys.executable, script, str(self.root), str(self.feature), "--job", "--dry-run"],
+                             capture_output=True, text=True)
+        self.assertEqual(out.returncode, 1)
+        self.assertEqual(out.stdout.strip(),
+                         "refused: the working tree has changes; commit or stash them first: stray.txt")
+        out = subprocess.run([sys.executable, script, str(self.root), str(self.feature), "--tasks", "T001"],
+                             capture_output=True, text=True)
+        self.assertEqual(out.returncode, 2)
 
 
 if __name__ == "__main__":
