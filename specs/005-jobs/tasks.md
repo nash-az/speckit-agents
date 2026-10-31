@@ -73,7 +73,7 @@ push, never delete a branch, never rewrite history. Tests use temporary git repo
 - [x] T012 [US3] In `bin/sdd-job.py` add `after_settle(project)` (research R8): when `open_job` is `waiting`, no `.sdd/run.json` exists, no supervisor is alive, and the scope has a runnable task, call `sdd-launch.py`'s `continue_job`; return `{"started": bool, "reason": str|None}`; never raise. Tests in `tests/test_sdd_job.py` with `_spawn` replaced: starts when runnable, does not start for each blocking condition, a launcher error comes back as a reason.
 - [x] T013 [P] [US3] In `bin/sdd-decide.py`, after the apply commit succeeds, call `sdd_job.after_settle(project)` and add its result as `"job"` to the JSON output (data-model.md §10). Tests in `tests/test_sdd_decide.py`: the key is present; with no open Job it says not started; with an open Job the decision commit is on `auto/<id>` (FR-008).
 - [x] T014 [P] [US3] In `bin/sdd-manual.py`, after the `done` or `skip` commit succeeds, call `sdd_job.after_settle(project)` and add `"job"` to the JSON output (data-model.md §10). Tests in `tests/test_sdd_manual.py` as in T013.
-- [ ] T015 [P] [US3] In `bin/sdd-unblock.py`, after the `done`, `answer` or `drop` commit succeeds, call `sdd_job.after_settle(project)` and add `"job"` to the JSON output (data-model.md §10). Tests in `tests/test_sdd_unblock.py` as in T013.
+- [x] T015 [P] [US3] In `bin/sdd-unblock.py`, after the `done`, `answer` or `drop` commit succeeds, call `sdd_job.after_settle(project)` and add `"job"` to the JSON output (data-model.md §10). Tests in `tests/test_sdd_unblock.py` as in T013.
 
 ---
 

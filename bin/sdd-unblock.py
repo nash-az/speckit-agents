@@ -11,7 +11,8 @@ Used by the dashboard's buttons on a blocked task and usable from the shell:
 with the note as its answer. `answer`: the entry becomes `resolved` with the answer, so the next `/sdd-run`
 runs the task again with it (FR-023). `drop`: the entry becomes `wontfix` with the reason. The task's last
 entry is rewritten in place; the other entries stay as they are. Each commits just the files it touched as
-`chore(unblock): <task id> ...`.
+`chore(unblock): <task id> ...`. After the commit, a waiting Job continues when nothing blocks it
+(spec 005 FR-016, `sdd-job.py after_settle`); its result is the `job` key of the output.
 
 It refuses, and changes nothing, when a run is active (`.sdd/run.json`), when a file it would touch already
 has uncommitted changes, when the project is not a git repository, when the task has no open entry, or when
@@ -19,11 +20,16 @@ the answer or reason is empty. If the commit fails the files are put back. Stdli
 """
 from __future__ import annotations
 
+import importlib.util
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location("sdd_job", Path(__file__).with_name("sdd-job.py"))
+sdd_job = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(sdd_job)
 
 ACTIONS = ("done", "answer", "drop")
 HEAD_RE = re.compile(r"^## (T\d+)\b")
@@ -85,7 +91,8 @@ def _rewrite(block: list[str], status: str, answer: str) -> list[str]:
 
 
 def settle(project: Path, feature: Path, task_id: str, action: str, text: str = "", commit: bool = True) -> dict:
-    """`action` is "done", "answer" or "drop"; returns `{task, action, commit, files}`."""
+    """`action` is "done", "answer" or "drop"; returns `{task, action, commit, files, job}`, where `job` is
+    `sdd-job.py`'s `after_settle` result once the commit succeeded (005 FR-016)."""
     project, feature = Path(project).resolve(), Path(feature).resolve()
     if action not in ACTIONS:
         raise Refused(f"unknown action {action}")
@@ -166,8 +173,10 @@ def settle(project: Path, feature: Path, task_id: str, action: str, text: str = 
             subprocess.run(["git", "reset", "-q", "--", *[str(p.relative_to(project)) for p in touched]],
                            cwd=project, capture_output=True)
         raise
+    # 005 FR-016: a settled item may let a waiting Job go on (data-model §10); never raises.
+    job = sdd_job.after_settle(project) if commit else {"started": False, "reason": "nothing was committed"}
     return {"task": task_id, "action": action, "commit": sha,
-            "files": [str(p.relative_to(project)) for p in touched]}
+            "files": [str(p.relative_to(project)) for p in touched], "job": job}
 
 
 def main(argv: list[str]) -> int:
@@ -182,6 +191,8 @@ def main(argv: list[str]) -> int:
         print(f"refused: {e}")
         return 1
     print(f"{result['task']} {result['action']}" + (f" in {result['commit']}" if result["commit"] else ""))
+    job = result["job"]
+    print("job: continued" if job["started"] else f"job: not started ({job['reason']})")
     return 0
 
 
