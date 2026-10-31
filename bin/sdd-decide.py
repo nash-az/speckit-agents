@@ -14,15 +14,22 @@ It records the answer and commits just the files it touched:
 
 It refuses, and changes nothing, when a run is active (`.sdd/run.json`), when the working tree has any
 other change, when the project is not a git repository, or when the task is not an open decision.
-If the commit fails, the files are put back. Stdlib only; no model.
+If the commit fails, the files are put back. After the commit succeeds, `sdd-job.py`'s `after_settle` may
+continue a waiting Job (spec 005 FR-016); its result is the `"job"` key of `apply`'s result (data-model §10).
+The commit lands on the checked-out branch, which is the open Job's `auto/<id>` (FR-008). Stdlib only; no model.
 """
 from __future__ import annotations
 
+import importlib.util
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location("sdd_job", Path(__file__).resolve().with_name("sdd-job.py"))
+sdd_job = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(sdd_job)
 
 TASK_LINE = r"^- \[ \] {id}\b(?P<rest>.*)$"
 RESEARCH_HEADING = re.compile(r"under\s+`(##+ [^`]+)`\s+in\s+`research\.md`")
@@ -137,7 +144,9 @@ def apply(project: Path, feature: Path, task_id: str, answer: str, commit: bool 
         raise
     if remove_after is not None:
         Path(remove_after).unlink(missing_ok=True)
-    return {"task": task_id, "commit": sha, "files": [str(p.relative_to(project)) for p in touched]}
+    # FR-016: only a committed settle may continue a Job (after_settle never raises).
+    job = sdd_job.after_settle(project) if sha else {"started": False, "reason": "nothing was committed"}
+    return {"task": task_id, "commit": sha, "files": [str(p.relative_to(project)) for p in touched], "job": job}
 
 
 def main(argv: list[str]) -> int:
@@ -151,6 +160,8 @@ def main(argv: list[str]) -> int:
         print(f"refused: {e}")
         return 1
     print(f"applied {result['task']}" + (f" in {result['commit']}" if result["commit"] else ""))
+    job = result["job"]
+    print("job: continued" if job["started"] else f"job: not continued ({job['reason']})")
     return 0
 
 

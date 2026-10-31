@@ -1,9 +1,11 @@
 """bin/sdd-decide.py (FR-033): apply a decision answer and commit exactly the decision files."""
 import importlib.util
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("sdd_decide", HERE.parent / "bin" / "sdd-decide.py")
@@ -117,6 +119,73 @@ class ApplyTest(unittest.TestCase):
             (feature / "tasks.md").write_text(TASKS)
             with self.assertRaisesRegex(decide.Refused, "not a git repository"):
                 decide.apply(Path(other), feature, "T001", "(b)")
+
+    def test_result_has_a_job_key_not_started_without_an_open_job(self):
+        result = decide.apply(self.root, self.feature, "T002", "(a) red")
+        self.assertEqual(result["job"], {"started": False, "reason": "no open job"})
+
+    def test_without_a_commit_the_job_is_not_continued(self):
+        result = decide.apply(self.root, self.feature, "T002", "(a) red", commit=False)
+        self.assertEqual(result["job"], {"started": False, "reason": "nothing was committed"})
+
+
+JOB_ID = "20261031-1012"
+
+
+class OpenJobTest(unittest.TestCase):
+    """With an open Job (spec 005): the decision commit lands on `auto/<id>` (FR-008) and the result carries
+    `after_settle`'s answer (FR-016, data-model §10)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve() / "project"
+        self.feature = self.root / "specs" / "001-a"
+        self.feature.mkdir(parents=True)
+        (self.feature / "tasks.md").write_text(TASKS, encoding="utf-8")
+        (self.feature / "research.md").write_text("# Research\n", encoding="utf-8")
+        (self.root / ".gitignore").write_text(".sdd/\n")
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(self.tmp.name) / "state")})
+        self.env.start()
+        for args in (("init", "-q", "-b", "main"), ("config", "user.email", "t@example.com"),
+                     ("config", "user.name", "T"), ("config", "commit.gpgsign", "false"),
+                     ("add", "."), ("commit", "-q", "-m", "init"), ("switch", "-q", "-c", f"auto/{JOB_ID}")):
+            git(self.root, *args)
+        self.base = git(self.root, "rev-parse", "main").strip()
+        decide.sdd_job.save(self.root, {
+            "id": JOB_ID, "title": "Phase 1", "feature": "001-a", "scope": {"phases": ["1"]},
+            "scope_tasks": ["T001", "T002", "T003", "T004"], "blocked_at_start": 0,
+            "limits": {"max_tasks": None, "until": None, "max_runs": 20}, "branch": f"auto/{JOB_ID}",
+            "base": {"branch": "main", "commit": self.base}, "state": "waiting",
+            "reason": "only items that need you are left", "runs": [], "no_progress_runs": 0,
+            "created": 1793450000, "ended": None, "merge_commit": None})
+        self.spawn = mock.patch.object(decide.sdd_job._launcher(), "_spawn")
+        self.popen = self.spawn.start()
+        self.popen.return_value.pid = 4444
+
+    def tearDown(self):
+        self.spawn.stop()
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_decision_commit_is_on_the_job_branch(self):
+        result = decide.apply(self.root, self.feature, "T002", "(b) blue")
+        self.assertEqual(git(self.root, "branch", "--show-current").strip(), f"auto/{JOB_ID}")
+        self.assertEqual(git(self.root, "rev-parse", "--short", f"auto/{JOB_ID}").strip(), result["commit"])
+        self.assertIn("chore(decisions): T002", git(self.root, "log", "-1", "--format=%s", f"auto/{JOB_ID}"))
+        self.assertEqual(git(self.root, "rev-parse", "main").strip(), self.base)  # main untouched
+
+    def test_a_waiting_job_with_a_runnable_task_is_continued(self):
+        result = decide.apply(self.root, self.feature, "T002", "(b) blue")
+        self.assertEqual(result["job"], {"started": True, "reason": None})
+        self.popen.assert_called_once()
+        self.assertEqual(decide.sdd_job.load(self.root, JOB_ID)["state"], "working")
+
+    def test_a_job_that_is_not_waiting_is_not_continued(self):
+        record = decide.sdd_job.load(self.root, JOB_ID)
+        decide.sdd_job.save(self.root, {**record, "state": "stopped"})
+        result = decide.apply(self.root, self.feature, "T002", "(b) blue")
+        self.assertEqual(result["job"], {"started": False, "reason": "the job is stopped, not waiting"})
+        self.popen.assert_not_called()
 
 
 if __name__ == "__main__":
