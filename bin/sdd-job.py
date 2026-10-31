@@ -6,8 +6,14 @@ then `os.replace`s it, so a reader never sees half a record; keys this module do
 At most one Job per project is open (state not `merged` or `dropped`); `open_job()` returns it.
 
 Functions so far: `load`, `save`, `list_jobs`, `open_job`, `new_id`, `default_title`, `display_state`,
-`scope_args`, `progress`, `limit_reached`.
-Stdlib only; no model.
+`scope_args`, `progress`, `limit_reached`, `merge`, `drop` (these two raise `Refused`, changing nothing).
+
+    bin/sdd-job.py list [project]          -> [record + shown + progress, ...]
+    bin/sdd-job.py show <id> [project]     -> record + shown + progress
+    bin/sdd-job.py merge <id> [project]    -> {"merged": true, "commit": "<sha>", "fast_forward": bool}
+    bin/sdd-job.py drop <id> [project]     -> {"dropped": true}
+
+A refusal prints `refused: <reason>` and exits 1. Stdlib only; no model.
 """
 from __future__ import annotations
 
@@ -15,6 +21,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -285,9 +292,139 @@ def limit_reached(project, record: dict, now: float | None = None) -> str | None
     return None
 
 
+class Refused(Exception):
+    """The action cannot be done now; nothing was changed."""
+
+
+def _git(project, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=project, capture_output=True, text=True)
+
+
+def _run_active(project) -> bool:
+    """`.sdd/run.json` exists, or the supervisor in `status.json` is alive and not `done` or `stopped`
+    (as `sdd-launch.py`'s `_supervisor_running`)."""
+    if (Path(project) / ".sdd" / "run.json").exists():
+        return True
+    status = _status(project)
+    return bool(status) and status.get("state") not in (None, "done", "stopped") and _pid_alive(status)
+
+
+def _dirty_files(project) -> str:
+    """The first five changed paths of `git status --porcelain`, joined, or "" for a clean tree."""
+    dirty = _git(project, "status", "--porcelain").stdout.rstrip("\n")  # the first line may start with a space
+    return ", ".join(line[3:] for line in dirty.splitlines()[:5]) if dirty else ""
+
+
+def _closable(project, job_id: str, verb: str) -> dict:
+    """The record, after the refusals shared by Merge and Drop (research R9); raises `Refused`."""
+    record = load(project, job_id)
+    if record is None:
+        raise Refused(f"no such job: {job_id}")
+    state = record.get("state")
+    if state not in ("done", "stopped", "failed"):
+        raise Refused(f"this job cannot be {verb} in state {state}")
+    if _run_active(project):
+        raise Refused("a run is active")
+    if _git(project, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        raise Refused("the project is not a git repository")
+    files = _dirty_files(project)
+    if files:
+        raise Refused(f"the working tree has changes; commit or stash them first: {files}")
+    return record
+
+
+def _switch(project, branch: str) -> None:
+    switched = _git(project, "switch", branch)
+    if switched.returncode != 0:
+        raise Refused(f"could not switch to {branch}: {switched.stderr.strip()}")
+
+
+def merge(project, job_id: str) -> dict:
+    """Merge the Job's branch into its base branch (FR-010, research R9): switch to the base, fast-forward
+    when possible, else one merge commit "merge: job <title>". On a conflict the merge is aborted, the checkout
+    goes back to where it was (the Job's branch) and `Refused` names the files. Never forces, pushes or
+    deletes a branch. Returns `{"merged": true, "commit": sha, "fast_forward": bool}`."""
+    project = Path(project)
+    record = _closable(project, job_id, "merged")
+    branch, base = record.get("branch"), (record.get("base") or {}).get("branch")
+    if not branch or not base:
+        raise Refused("the job has no branch or base branch")
+    current = _git(project, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    back = current if current and current != "HEAD" else branch
+    _switch(project, base)
+    fast_forward = _git(project, "merge", "--ff-only", branch).returncode == 0
+    if not fast_forward:
+        merged = _git(project, "merge", "--no-ff", "-m", f"merge: job {record.get('title') or job_id}", branch)
+        if merged.returncode != 0:
+            conflicted = _git(project, "diff", "--name-only", "--diff-filter=U").stdout.split()
+            _git(project, "merge", "--abort")
+            _git(project, "switch", back)
+            if conflicted:
+                raise Refused(f"the merge conflicts in: {', '.join(conflicted)}")
+            raise Refused(f"the merge failed: {(merged.stderr or merged.stdout).strip()}")
+    commit = _git(project, "rev-parse", "HEAD").stdout.strip()
+    record.update(state="merged", merge_commit=commit, ended=int(time.time()))
+    save(project, record)
+    return {"merged": True, "commit": commit, "fast_forward": fast_forward}
+
+
+def drop(project, job_id: str) -> dict:
+    """Drop the Job (FR-017): switch to its base branch and set `dropped`; the Job's branch and commits are
+    kept. Same refusals as `merge`. Returns `{"dropped": true}`."""
+    project = Path(project)
+    record = _closable(project, job_id, "dropped")
+    base = (record.get("base") or {}).get("branch")
+    if not base:
+        raise Refused("the job has no base branch")
+    _switch(project, base)
+    record.update(state="dropped", ended=int(time.time()))
+    save(project, record)
+    return {"dropped": True}
+
+
+def _with_view(project, record: dict) -> dict:
+    """The record plus `shown` (display_state) and `progress` (None when tasks.md cannot be read)."""
+    try:
+        counts = progress(project, record)
+    except (OSError, ValueError, KeyError):
+        counts = None
+    return {**record, "shown": display_state(project, record), "progress": counts}
+
+
+USAGE = "usage: sdd-job.py list [project] | show <id> [project] | merge <id> [project] | drop <id> [project]"
+
+
 def main(argv: list[str]) -> int:
-    print(__doc__)
-    return 2
+    if not argv or argv[0] not in ("list", "show", "merge", "drop"):
+        print(USAGE, file=sys.stderr)
+        return 2
+    command, rest = argv[0], argv[1:]
+    if command == "list":
+        if len(rest) > 1:
+            print(USAGE, file=sys.stderr)
+            return 2
+        project = Path(rest[0] if rest else ".")
+        print(json.dumps([_with_view(project, r) for r in list_jobs(project)], ensure_ascii=False))
+        return 0
+    if not 1 <= len(rest) <= 2:
+        print(USAGE, file=sys.stderr)
+        return 2
+    job_id, project = rest[0], Path(rest[1] if len(rest) > 1 else ".")
+    try:
+        if command == "show":
+            record = load(project, job_id)
+            if record is None:
+                raise Refused(f"no such job: {job_id}")
+            result = _with_view(project, record)
+        elif command == "merge":
+            result = merge(project, job_id)
+        else:
+            result = drop(project, job_id)
+    except Refused as e:
+        print(f"refused: {e}")
+        return 1
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":

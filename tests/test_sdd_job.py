@@ -1,4 +1,5 @@
-"""bin/sdd-job.py (spec 005, data-model §1 and §7): the Job record, its id and its default title."""
+"""bin/sdd-job.py (spec 005, data-model §1 and §7): the Job record, its id, its default title, Merge, Drop
+and the CLI."""
 import importlib.util
 import json
 import os
@@ -286,6 +287,200 @@ class ProgressAndLimitsTest(unittest.TestCase):
         self.assertEqual(job.limit_reached(self.root, r, now=2), "max_tasks")
         r["limits"]["max_tasks"] = None
         self.assertEqual(job.limit_reached(self.root, r, now=2), "until")
+
+
+JOB_ID = "20261031-1012"
+JOB_TASKS = """# Tasks
+
+## Phase 1: Work
+
+- [ ] T001 One `a.txt`
+"""
+
+
+class MergeDropTest(unittest.TestCase):
+    """merge() and drop() on temp repos (research R9, FR-010, FR-017, SC-005)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve() / "project"
+        self.root.mkdir()
+        self.state_home = str(Path(self.tmp.name) / "state")
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": self.state_home})
+        self.env.start()
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.name", "Test")
+        self.git("config", "user.email", "test@example.com")
+        self.git("config", "commit.gpgsign", "false")
+        (self.root / ".gitignore").write_text(".sdd/jobs/\n.sdd/run.json\n")
+        feature = self.root / "specs" / "003-plugin-redesign"
+        feature.mkdir(parents=True)
+        (feature / "tasks.md").write_text(JOB_TASKS)
+        self.git("add", ".gitignore", "specs")
+        self.write_commit("a.txt", "base\n", "base")
+        self.base_commit = self.head()
+        self.git("switch", "-q", "-c", f"auto/{JOB_ID}")
+        self.write_commit("b.txt", "job\n", "T001 job work")
+        self.job_commit = self.head()
+        job.save(self.root, record(JOB_ID, state="done", feature="003-plugin-redesign",
+                                   scope={"phases": ["1"]}, scope_tasks=["T001"],
+                                   base={"branch": "main", "commit": self.base_commit[:7]}))
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True, check=True).stdout
+
+    def head(self, ref="HEAD"):
+        return self.git("rev-parse", ref).strip()
+
+    def branch(self):
+        return self.git("rev-parse", "--abbrev-ref", "HEAD").strip()
+
+    def write_commit(self, name, text, message):
+        (self.root / name).write_text(text)
+        self.git("add", name)
+        self.git("commit", "-q", "-m", message)
+
+    def snapshot(self):
+        return (self.branch(), self.head("main"), self.head(f"auto/{JOB_ID}"),
+                self.git("status", "--porcelain"), job.load(self.root, JOB_ID))
+
+    def assertRefused(self, call, message):
+        before = self.snapshot()
+        with self.assertRaises(job.Refused) as caught:
+            call(self.root, JOB_ID)
+        self.assertEqual(str(caught.exception), message)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_fast_forward(self):
+        result = job.merge(self.root, JOB_ID)
+        self.assertEqual(result, {"merged": True, "commit": self.job_commit, "fast_forward": True})
+        self.assertEqual(self.branch(), "main")
+        self.assertEqual(self.head("main"), self.job_commit)
+        self.assertEqual(self.head(f"auto/{JOB_ID}"), self.job_commit)  # branch kept
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual(saved["state"], "merged")
+        self.assertEqual(saved["merge_commit"], self.job_commit)
+        self.assertIsInstance(saved["ended"], int)
+
+    def test_merge_commit_after_the_base_moved(self):
+        self.git("switch", "-q", "main")
+        self.write_commit("c.txt", "elsewhere\n", "base moved")
+        moved = self.head()
+        self.git("switch", "-q", f"auto/{JOB_ID}")
+        job.save(self.root, {**job.load(self.root, JOB_ID), "state": "stopped"})
+        result = job.merge(self.root, JOB_ID)
+        self.assertFalse(result["fast_forward"])
+        self.assertEqual(self.branch(), "main")
+        self.assertEqual(result["commit"], self.head("main"))
+        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "merge: job Phase 11")
+        parents = self.git("log", "-1", "--format=%P").split()
+        self.assertEqual(parents, [moved, self.job_commit])
+        # SC-002: every Job commit is on the base branch now.
+        self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", self.job_commit, "main"],
+                                        cwd=self.root).returncode, 0)
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["state"], saved["merge_commit"]), ("merged", result["commit"]))
+
+    def test_conflict_leaves_base_branch_and_tree_unchanged(self):
+        self.git("switch", "-q", "main")
+        self.write_commit("b.txt", "other\n", "base edits b")
+        self.write_commit("d.txt", "x\n", "base adds d")
+        self.git("switch", "-q", f"auto/{JOB_ID}")
+        job.save(self.root, {**job.load(self.root, JOB_ID), "state": "failed"})
+        self.assertRefused(job.merge, "the merge conflicts in: b.txt")
+        self.assertEqual(self.branch(), f"auto/{JOB_ID}")
+        self.assertEqual((self.root / "b.txt").read_text(), "job\n")
+        self.assertFalse((self.root / ".git" / "MERGE_HEAD").exists())
+
+    def test_refuses_states_that_cannot_close(self):
+        for state in ("working", "waiting", "held", "merged", "dropped"):
+            job.save(self.root, {**job.load(self.root, JOB_ID), "state": state})
+            self.assertRefused(job.merge, f"this job cannot be merged in state {state}")
+            self.assertRefused(job.drop, f"this job cannot be dropped in state {state}")
+
+    def test_refuses_an_unknown_job(self):
+        for call in (job.merge, job.drop):
+            with self.assertRaises(job.Refused) as caught:
+                call(self.root, "20261031-0000")
+            self.assertEqual(str(caught.exception), "no such job: 20261031-0000")
+
+    def test_refuses_while_a_run_is_active(self):
+        run_json = self.root / ".sdd" / "run.json"
+        run_json.write_text("{}")
+        self.assertRefused(job.merge, "a run is active")
+        self.assertRefused(job.drop, "a run is active")
+        run_json.unlink()
+        status = job.sdd_supervise.state_dir(self.root) / "status.json"
+        status.write_text(json.dumps({"state": "running", "pid": os.getpid()}))
+        self.assertRefused(job.merge, "a run is active")
+        self.assertRefused(job.drop, "a run is active")
+        status.write_text(json.dumps({"state": "stopped", "pid": os.getpid()}))
+        self.assertTrue(job.drop(self.root, JOB_ID)["dropped"])
+
+    def test_refuses_a_dirty_tree(self):
+        (self.root / "b.txt").write_text("edited\n")
+        (self.root / "new.txt").write_text("new\n")
+        message = "the working tree has changes; commit or stash them first: b.txt, new.txt"
+        self.assertRefused(job.merge, message)
+        self.assertRefused(job.drop, message)
+
+    def test_drop_keeps_the_branch(self):
+        self.assertEqual(job.drop(self.root, JOB_ID), {"dropped": True})
+        self.assertEqual(self.branch(), "main")
+        self.assertEqual(self.head("main"), self.base_commit)
+        self.assertEqual(self.head(f"auto/{JOB_ID}"), self.job_commit)
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual(saved["state"], "dropped")
+        self.assertIsNone(saved["merge_commit"])
+        self.assertIsInstance(saved["ended"], int)
+
+    def cli(self, *args):
+        env = {**os.environ, "XDG_STATE_HOME": self.state_home}
+        return subprocess.run([sys.executable, str(HERE.parent / "bin" / "sdd-job.py"), *args],
+                              capture_output=True, text=True, env=env)
+
+    def test_cli_json_output(self):
+        listed = self.cli("list", str(self.root))
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        jobs = json.loads(listed.stdout)
+        self.assertEqual([j["id"] for j in jobs], [JOB_ID])
+        self.assertEqual(jobs[0]["shown"], {"state": "done"})
+        self.assertEqual(jobs[0]["progress"], {"done": 0, "total": 1, "waiting_on_you": 0, "left": 1})
+
+        shown = self.cli("show", JOB_ID, str(self.root))
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        one = json.loads(shown.stdout)
+        self.assertEqual((one["id"], one["runs"], one["shown"]["state"]), (JOB_ID, [], "done"))
+
+        missing = self.cli("show", "20261031-0000", str(self.root))
+        self.assertEqual((missing.returncode, missing.stdout.strip()), (1, "refused: no such job: 20261031-0000"))
+
+        (self.root / "b.txt").write_text("edited\n")
+        dirty = self.cli("merge", JOB_ID, str(self.root))
+        self.assertEqual(dirty.returncode, 1)
+        self.assertEqual(dirty.stdout.strip(),
+                         "refused: the working tree has changes; commit or stash them first: b.txt")
+        self.git("checkout", "--", "b.txt")
+
+        merged = self.cli("merge", JOB_ID, str(self.root))
+        self.assertEqual(merged.returncode, 0, merged.stdout + merged.stderr)
+        self.assertEqual(json.loads(merged.stdout),
+                         {"merged": True, "commit": self.job_commit, "fast_forward": True})
+
+        again = self.cli("drop", JOB_ID, str(self.root))
+        self.assertEqual((again.returncode, again.stdout.strip()),
+                         (1, "refused: this job cannot be dropped in state merged"))
+        self.assertEqual(self.cli().returncode, 2)
+
+    def test_cli_drop(self):
+        dropped = self.cli("drop", JOB_ID, str(self.root))
+        self.assertEqual(dropped.returncode, 0, dropped.stdout + dropped.stderr)
+        self.assertEqual(json.loads(dropped.stdout), {"dropped": True})
+        self.assertEqual(self.branch(), "main")
 
 
 if __name__ == "__main__":
