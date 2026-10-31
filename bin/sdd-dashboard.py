@@ -1249,7 +1249,7 @@ def build_html():
   /* Layout */
   .app { display: flex; height: 100vh; }
   .sidebar { width: 260px; min-width: 0; overflow: hidden; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; z-index: 10; }
-  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
   .header { height: 56px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 1.25rem; flex-shrink: 0; }
   .brand { font-weight: 700; font-size: 1.125rem; color: var(--text); display: flex; align-items: center; gap: 0.5rem; }
   .sidebar .brand { height: 56px; padding: 0 1.25rem; border-bottom: 1px solid var(--border); flex-shrink: 0; }
@@ -1268,7 +1268,7 @@ def build_html():
   .doc-edit-error { color: var(--danger); font-size: 0.8125rem; flex-basis: 100%; }
   .doc-editor { width: 100%; min-height: 60vh; resize: vertical; padding: 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: 'JetBrains Mono', 'SF Mono', Monaco, monospace; font-size: 0.8125rem; line-height: 1.5; }
   .doc-editor:focus { outline: none; border-color: var(--accent); }
-  .content { flex: 1; overflow-y: auto; padding: 1.5rem; background: var(--bg); }
+  .content { flex: 1; overflow-y: auto; padding: 1.5rem; background: var(--bg); overflow-wrap: anywhere; }
 
   /* The project this dashboard was started in */
   .project-bar { padding: 0.625rem 1.25rem; border-bottom: 1px solid var(--border); flex-shrink: 0; min-width: 0; }
@@ -1294,7 +1294,20 @@ def build_html():
   .grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
   .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
   @media (max-width: 1024px) { .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  @media (max-width: 768px) { .grid-2, .grid-3 { grid-template-columns: minmax(0, 1fr); } .app { flex-direction: column; } .sidebar { width: 100%; height: auto; } .main { height: 100vh; } }
+  @media (max-width: 768px) {
+    .grid-2, .grid-3 { grid-template-columns: minmax(0, 1fr); }
+    /* Phone and narrow windows: the sidebar becomes a top bar with the nav as one scrolling row. */
+    .app { flex-direction: column; }
+    .sidebar { width: 100%; height: auto; flex-direction: row; align-items: center; border-right: none; border-bottom: 1px solid var(--border); }
+    .sidebar .brand { height: 48px; padding: 0 0.75rem 0 1rem; border-bottom: none; font-size: 1rem; }
+    .project-bar { display: none; }
+    .nav { display: flex; flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: 0; }
+    .nav-item { flex-shrink: 0; gap: 0.375rem; padding: 0 0.75rem; height: 48px; font-size: 0.875rem; border-left: none; border-bottom: 3px solid transparent; }
+    .nav-item.active { border-bottom-color: var(--accent); }
+    .main { flex: 1; min-height: 0; }
+    .header { height: 44px; padding: 0 1rem; }
+    .content { padding: 1rem; }
+  }
 
   /* Stat */
   .stat { display: flex; flex-direction: column; gap: 0.25rem; }
@@ -1398,7 +1411,7 @@ def build_html():
   .raw-doc { margin-top: 0.75rem; }
 
   /* Task board */
-  .task-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; cursor: pointer; transition: all 0.15s; }
+  .task-card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; cursor: pointer; transition: all 0.15s; }
   .task-card.log-open { border-color: var(--accent); }
   .task-card:hover { border-color: var(--accent); background: var(--surface-hover); }
   .task-id { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 700; color: var(--accent); margin-bottom: 0.25rem; display: block; }
@@ -1418,12 +1431,12 @@ def build_html():
   .done-fold > summary::before { content: '▸'; display: inline-block; width: 1rem; transition: transform 0.15s; }
   .done-fold[open] > summary::before { transform: rotate(90deg); }
   .done-fold > summary:hover { background: var(--surface-hover); color: var(--text); }
-  .done-fold > .done-list { display: grid; gap: 0.5rem; margin-top: 0.5rem; }
+  .done-fold > .done-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; margin-top: 0.5rem; }
   .task-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
   .task-head .task-id { margin-bottom: 0; }
   .phase-heading { display: flex; align-items: center; gap: 0.75rem; font-size: 0.8125rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.5rem; }
   .phase-heading .status { text-transform: none; letter-spacing: normal; }
-  .phase-tasks { display: grid; gap: 0.5rem; margin-bottom: 1rem; }
+  .phase-tasks { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; margin-bottom: 1rem; }
   /* Live output of a running task (data-model.md §4.6) */
   .live-output { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.5rem; cursor: default; }
   .live-output-title { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; margin-bottom: 0.25rem; }
@@ -2240,6 +2253,8 @@ def build_html():
         document.querySelectorAll('.nav-item').forEach(function(el) { el.classList.remove('active'); });
         var target = document.querySelector('.nav-item[data-section="' + (DOC_GROUP.indexOf(name) >= 0 ? 'docs' : name) + '"]');
         if (target) target.classList.add('active');
+        // On a phone the nav is one scrolling row: keep the current section's tab in view.
+        if (target && target.scrollIntoView) target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         document.querySelectorAll('section').forEach(function(el) { el.style.display = 'none'; });
         var isDoc = DOC_TITLES[name] && !RAW_DOCS[name];
         var sec = document.getElementById(isDoc ? 'section-doc' : 'section-' + name);
