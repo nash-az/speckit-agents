@@ -22,7 +22,9 @@ bin/sdd-tasks.py plan <tasks> [--phases …] [--tasks T061,T063] [--max-tasks N]
 
 Refusal reasons (exact words, tests compare them):
 - "another job is open: <title>"
-- "the working tree has changes; commit or stash them first: <files>"
+- "the working tree has changes; commit or stash them first: <files>" (not for Continue while resuming an
+  interrupted or held run, data-model §8)
+- "the checkout is not on the Job's branch"
 - "the project is not a git repository"
 - "no task in the scope is runnable"
 - "a run is active"

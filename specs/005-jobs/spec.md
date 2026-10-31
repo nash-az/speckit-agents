@@ -94,7 +94,7 @@ the checkout is back on the base branch, and the Job shows `merged` with the mer
 
 **Acceptance Scenarios**:
 
-1. **Given** a `done` or `stopped` Job and no active run, **When** the person presses Merge, **Then** the base
+1. **Given** a `done`, `stopped` or `failed` Job and no active run, **When** the person presses Merge, **Then** the base
    branch is fast-forwarded when possible, else gets one merge commit `merge: job <title>`, the checkout
    switches to the base branch, and the Job is `merged`.
 2. **Given** the merge would conflict, **When** the person presses Merge, **Then** nothing changes (the merge is
@@ -193,7 +193,8 @@ The run banner and the Overview say what is happening, not which id is running.
   while "Continue when the limit resets" was unchecked), `waiting` (only items that need
   the person are left in scope), `interrupted` (no live supervisor while `working`), `stopped` (by the person,
   or a limit), `failed`, `done`, `merged`, `dropped`. Only `done`, `stopped` and `failed` Jobs can be merged or
-  dropped; `merged` and `dropped` are final. A Job is **open** in every state except `merged` and `dropped`.
+  dropped; `merged` and `dropped` are final. A Job is **open** in every state except `merged` and `dropped`. `paused` and `interrupted` are
+  shown states derived from the supervisor's status and liveness, not stored (plan research R3).
 - **FR-003**: Starting a Job (dashboard Start job, or `bin/sdd-launch.py --job`) MUST create the record and the
   branch `auto/<job id>` from the current branch, and start the supervisor with the Job id. It MUST refuse when
   another Job is open, the tree is dirty, the project is not a git repository, or the scope has no runnable task.
@@ -208,7 +209,8 @@ The run banner and the Overview say what is happening, not which id is running.
   setting, and only its value at the reset is used. Continue on a `held` Job resumes the same run.
 - **FR-005**: Limits are per Job, not per run: a task cap (tasks committed in the Job), an optional stop-by time,
   and a maximum number of runs (default 20). They count over the whole Job and are never reset. Reaching one
-  sets `stopped` with the limit named.
+  sets `stopped` with the limit named. A run is never let past the task cap (it gets the tasks left as its own
+  cap), and a stop-by time passing mid-run stops it after the current task.
 - **FR-006**: Two runs in a row with no progress (no task committed and no new BLOCKED.md entry) MUST set
   `failed` with "no progress in two runs".
 - **FR-007**: Every run of a Job MUST run on the Job's branch; `/sdd-run` already stays on an `auto/` branch it
@@ -243,15 +245,16 @@ The run banner and the Overview say what is happening, not which id is running.
 - **FR-016**: When a Job is `waiting` and the person settles an item (FR-033, FR-036, a resolved BLOCKED.md entry, a
   004 feedback apply) so that a task in its scope becomes runnable, the next run MUST start by itself, with the
   FR-003 refusals except "another Job is open". The helper that made the commit triggers it, not the dashboard.
+  (004's apply helper does not exist yet; when 004 is built, its apply task calls the same function.)
 - **FR-017**: Drop (dashboard, with a confirm, or `bin/sdd-job.py drop <job id>`) MUST set a `done`, `stopped` or
   `failed` Job to `dropped`, check out its base branch and keep the Job's branch and commits. It MUST refuse when
   a run is active or the tree is dirty. Nothing is deleted.
 
 ### Key Entities
 
-- **Job**: id, title, feature, scope (`{"phases": [...]} | {"tasks": [...]} | {"all": true}`), limits
-  (`max_tasks`, `until`, `max_runs`), branch, base (`{branch, commit}`), state, runs, created, ended, merge
-  commit, reason.
+- **Job**: id, title, feature, scope (`{"phases": [...]} | {"tasks": [...]} | {"all": true}`), the open tasks in
+  scope (`scope_tasks`) and the BLOCKED.md entry count at start, limits (`max_tasks`, `until`, `max_runs`),
+  branch, base (`{branch, commit}`), state, runs, runs without progress, created, ended, merge commit, reason.
 - **Run**: as in 003, plus `job` in its `workflows.json`.
 
 ## Success Criteria *(mandatory)*

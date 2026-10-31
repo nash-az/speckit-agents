@@ -85,10 +85,15 @@ increments `no_progress_runs`; progress sets it to 0; reaching 2 sets `failed`, 
 
 `main()` with `--job <id>` loops runs; inside a run the existing usage cycles apply. Per run:
 1. checks (§5 branch, limits §3); 2. snapshot progress (§4); 3. cycles of `/sdd-run --yes --no-converge
-   <scope args> --job <id>` until the run finishes (`.sdd/run.json` gone) or the Job stops; 4. append the run id;
-   5. re-plan the scope (`sdd-tasks.py plan`) and apply the table in §2.
-Usage wait: no maximum (R7); at the reset `keep_paused` → `held`, exit 0. Operator `stop` → `stopped`, exit 0.
-`status.json` gains `"job": "<id>"`.
+   <scope args> --job <id>`, plus `--max-tasks <max_tasks − tasks_done>` when `max_tasks` is set, until the run
+   finishes (`.sdd/run.json` gone) or the Job stops; 4. append the run id; 5. re-plan the scope
+   (`sdd-tasks.py plan`) and apply the table in §2.
+- `--max-cycles` counts per run with `--job` (the cycle counter restarts at each new run), so a long Job is never
+  ended by it.
+- Stop-by time: while a run is live and `limits.until` passes, the supervisor sends itself the 003 "stop after
+  the current task" request; when the run has stopped, the Job is `stopped` with reason "until <HH:MM> reached".
+- Usage wait: no maximum (R7); at the reset `keep_paused` → `held`, exit 0. Operator `stop` → `stopped`, exit 0.
+- `status.json` gains `"job": "<id>"`.
 
 ## 7. `bin/sdd-job.py` (functions and CLI)
 
@@ -110,8 +115,12 @@ CLI: `sdd-job.py list|show <id>|merge <id>|drop <id> [project]`, printing JSON; 
 - `launch_job(project, feature, scope, limits, title=None, dry_run=False)`: refuse (FR-003) when a Job is open,
   the tree is dirty, not a git repo, or no runnable task in scope; create the record and `git switch -c
   auto/<id>`; start `sdd-supervise.py --job <id>` detached (no `--max-wait-hours 0`).
-- `continue_job(project, id, new_limits=None)`: FR-009 refusals; check out the Job's branch if needed (clean
-  tree only); set `working`; start the supervisor.
+- `continue_job(project, id, new_limits=None)`: FR-009 refusals; set `working`; start the supervisor.
+  - **Resuming**: when `.sdd/run.json` exists and its `branch` is the Job's branch (an `interrupted` or `held`
+    Job, cut off mid-step), the clean-tree refusal is skipped: the unfinished work is in the tree on purpose and
+    the next `/sdd-run` resumes it (003 `preview()` `resumes`). The checkout must already be on the Job's branch;
+    otherwise refuse "the checkout is not on the Job's branch".
+  - Otherwise the tree must be clean, and the Job's branch is checked out if needed.
 - CLI: `--job` (with `--phases`/`--tasks`/`--max-tasks`/`--until`/`--max-runs`/`--title`) and
   `--continue <id>`. The 003 plain `launch()` stays for runs without a Job.
 
