@@ -5,11 +5,13 @@ A Job lives in `.sdd/jobs/<id>.json`. Every write goes through `save()`, which w
 then `os.replace`s it, so a reader never sees half a record; keys this module does not know are kept.
 At most one Job per project is open (state not `merged` or `dropped`); `open_job()` returns it.
 
-Functions so far: `load`, `save`, `list_jobs`, `open_job`, `new_id`, `default_title`.
+Functions so far: `load`, `save`, `list_jobs`, `open_job`, `new_id`, `default_title`, `display_state`,
+`scope_args`, `progress`, `limit_reached`.
 Stdlib only; no model.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -17,8 +19,27 @@ import sys
 import time
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
+
+
+def _load_module(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, HERE / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+sdd_tasks = _load_module("sdd_tasks", "sdd-tasks.py")
+sdd_supervise = _load_module("sdd_supervise", "sdd-supervise.py")
+
 ID_RE = re.compile(r"^\d{8}-\d{4}(?:-(\d+))?$")
 CLOSED_STATES = ("merged", "dropped")
+# sdd-tasks.py hold tags for dropped work (not counted in progress). Of the other holds, `held` (behind a
+# held dependency) waits on another task; every other tag (manual, decision, dep, download, blocked, or an
+# unknown one) waits on the person, as the dashboard's "Waiting on you" counts them.
+DEPENDENCY_HOLD_TAG = "held"
+DROPPED_HOLD_TAGS = ("wontfix", "moved", "superseded")
+LIMIT_NAMES = ("max_tasks", "until", "max_runs")
 
 
 def jobs_dir(project) -> Path:
@@ -124,6 +145,144 @@ def default_title(scope: dict) -> str:
     if tasks:
         return ", ".join(tasks)
     return "All open tasks"
+
+
+def _status(project) -> dict | None:
+    """The supervisor's `status.json` (in `sdd-supervise.py`'s `state_dir`), or None."""
+    try:
+        path = sdd_supervise.state_dir(Path(project)) / "status.json"
+        status = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # missing, unreadable, or the state directory cannot be made
+        return None
+    return status if isinstance(status, dict) else None
+
+
+def _pid_alive(status) -> bool:
+    """As the dashboard's `supervisor_alive`: signal 0 on `status.json`'s pid; `PermissionError` is alive."""
+    pid = status.get("pid") if isinstance(status, dict) else None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def display_state(project, record: dict) -> dict:
+    """The shown state (data-model §2), first rule wins:
+    1. stored `working`, `status.json` state `waiting` and a live pid -> `paused` (with `resets_at`, `keep_paused`);
+    2. stored `working` and no live supervisor -> `interrupted`;
+    3. otherwise the stored state.
+    Returns `{"state": ...}`, plus `resets_at` and `keep_paused` for `paused`."""
+    stored = record.get("state")
+    if stored == "working":
+        status = _status(project)
+        alive = _pid_alive(status)
+        if alive and status.get("state") == "waiting":
+            return {"state": "paused", "resets_at": status.get("resets_at"),
+                    "keep_paused": bool(status.get("keep_paused"))}
+        if not alive:
+            return {"state": "interrupted"}
+    return {"state": stored}
+
+
+def scope_args(record: dict) -> str:
+    """The run's scope arguments: `--phases a,b`, `--tasks a,b`, or "" for all open tasks."""
+    scope = record.get("scope") or {}
+    phases = [str(p) for p in scope.get("phases") or []]
+    tasks = [str(t) for t in scope.get("tasks") or []]
+    if phases:
+        return "--phases " + ",".join(phases)
+    if tasks:
+        return "--tasks " + ",".join(tasks)
+    return ""
+
+
+def feature_dir(project, record: dict) -> Path:
+    """`specs/<feature>`; a feature given as a path (with a `/`) is taken relative to the project."""
+    feature = str(record.get("feature") or "")
+    return Path(project) / feature if "/" in feature else Path(project) / "specs" / feature
+
+
+def _parsed(project, record: dict) -> dict:
+    return sdd_tasks.parse_tasks(feature_dir(project, record) / "tasks.md")
+
+
+def _ticked(parsed: dict) -> set[str]:
+    return {t["id"] for p in parsed["phases"] for t in p["tasks"] if t["done"]}
+
+
+def progress(project, record: dict) -> dict:
+    """`{done, total, waiting_on_you, left}` over the Job's scope (data-model §3–§4, FR-006, FR-012).
+
+    The scope's tasks are `scope_tasks` plus the open tasks the scope matches now (`sdd-tasks.py plan` with
+    the scope, runnable and held), so tasks added inside scoped phases count. `done` = those ticked in
+    `tasks.md`; `waiting_on_you` = open ones held for the person (a tag or an open BLOCKED.md entry);
+    `left` = the other open ones (runnable, or held behind a dependency). Dropped work (wontfix, moved,
+    superseded) is not counted; `total = done + waiting_on_you + left`.
+    """
+    project = Path(project)
+    feature = feature_dir(project, record)
+    parsed = sdd_tasks.parse_tasks(feature / "tasks.md")
+    blocked = sdd_tasks.parse_blocked_entries(feature / "BLOCKED.md")
+    config = sdd_tasks.load_config(project / ".sdd" / "config.toml")
+    scope = record.get("scope") or {}
+    phases = [str(p) for p in scope.get("phases") or []] or None
+    tasks = [str(t) for t in scope.get("tasks") or []] or None
+    plan = sdd_tasks.plan(parsed, blocked, config, phases, None, tasks)
+
+    matched = [i for p in plan["phases"] for i in p["tasks"]] + [h["id"] for h in plan["held"]]
+    scoped = [str(i) for i in record.get("scope_tasks") or []]
+    scoped += [i for i in matched if i not in scoped]
+    ticked = _ticked(parsed)
+    # The whole file's holds, worked out as plan() does, so a scope task outside the filters is classed too.
+    all_holds = sdd_tasks.propagate_holds(parsed, sdd_tasks.direct_holds(
+        parsed, {i: e.get("status", "open") for i, e in blocked.items()}, config.get("allow", {})))
+    known = {t["id"] for p in parsed["phases"] for t in p["tasks"]}
+
+    done = waiting = left = 0
+    for task_id in dict.fromkeys(scoped):
+        if task_id not in known:
+            continue  # removed from tasks.md
+        if task_id in ticked:
+            done += 1
+            continue
+        tag = (all_holds.get(task_id) or (None,))[0]
+        if tag in DROPPED_HOLD_TAGS:
+            continue
+        if tag is None or tag == DEPENDENCY_HOLD_TAG:
+            left += 1
+        else:
+            waiting += 1
+    return {"done": done, "total": done + waiting + left, "waiting_on_you": waiting, "left": left}
+
+
+def tasks_done(project, record: dict) -> int:
+    """Ids in `scope_tasks` now ticked in `tasks.md` (data-model §3; counting never resets)."""
+    ticked = _ticked(_parsed(project, record))
+    return sum(1 for i in dict.fromkeys(record.get("scope_tasks") or []) if i in ticked)
+
+
+def limit_reached(project, record: dict, now: float | None = None) -> str | None:
+    """The first reached limit (data-model §3) as its name, or None: `max_tasks` when tasks_done >= max_tasks,
+    `until` when now >= until, `max_runs` when len(runs) >= max_runs. A null limit is never reached."""
+    limits = record.get("limits") or {}
+    now = time.time() if now is None else now
+    max_tasks = limits.get("max_tasks")
+    if max_tasks is not None and tasks_done(project, record) >= max_tasks:
+        return "max_tasks"
+    until = limits.get("until")
+    if until is not None and now >= until:
+        return "until"
+    max_runs = limits.get("max_runs")
+    if max_runs is not None and len(record.get("runs") or []) >= max_runs:
+        return "max_runs"
+    return None
 
 
 def main(argv: list[str]) -> int:
