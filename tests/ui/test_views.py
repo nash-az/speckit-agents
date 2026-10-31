@@ -241,7 +241,7 @@ class FeaturePickerTest(harness.UITestCase):
     def test_picker_lists_both_features_and_choosing_one_loads_its_tasks(self):
         with urllib.request.urlopen(self.dashboard.url + "api/features", timeout=10) as res:
             features = json.loads(res.read().decode("utf-8"))
-        self.assertEqual(features, {"features": sorted(PICKER_FEATURES), "active": None})
+        self.assertEqual(features, {"features": sorted(PICKER_FEATURES), "active": None, "runs": None})
         with harness.browser_page(self.dashboard.url + "#tasks", name=self.id(), ignore=PICKER_IGNORE) as ui:
             picker = ui.page.locator("#feature-picker")
             picker.wait_for(state="visible", timeout=TIMEOUT_MS)
@@ -260,9 +260,23 @@ class FeaturePickerTest(harness.UITestCase):
             self.assertEqual([c.get_attribute("data-task-card") for c in cards.all()], ["T201"])
             self.assertIn("Beta only", ui.page.locator("#tasks-list").inner_text())
             self.assertNotIn("Alpha", ui.page.locator("#tasks-list").inner_text())
+            # The header picker shows the choice, on every section, and no document tab has its own.
+            header = ui.page.locator("#header-feature #feature-select")
+            header.wait_for(state="visible", timeout=TIMEOUT_MS)
+            ui.page.wait_for_function("document.getElementById('feature-select').value === '002-beta'",
+                                      timeout=TIMEOUT_MS)
+            for section in ("overview", "spec", "runs"):
+                ui.page.goto(self.dashboard.url + "#" + section)
+                header.wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertEqual(ui.page.locator("#doc-edit-bar select").count(), 0, "the Spec tab has its own picker")
+            ui.page.goto(self.dashboard.url + "#tasks")
+            header.select_option("001-alpha")
+            cards.first.wait_for(state="attached", timeout=TIMEOUT_MS)
+            ui.page.wait_for_function("!document.getElementById('tasks-list').innerText.includes('Beta only')",
+                                      timeout=TIMEOUT_MS)
             ui.page.wait_for_load_state("networkidle")
         with urllib.request.urlopen(self.dashboard.url + "api/features", timeout=10) as res:
-            self.assertEqual(json.loads(res.read().decode("utf-8"))["active"], "002-beta")
+            self.assertEqual(json.loads(res.read().decode("utf-8"))["active"], "001-alpha")
         self.assertFalse((self.dashboard.project / ".specify").exists(), "choosing a feature wrote a file")
 
 

@@ -1060,9 +1060,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_doc(DOC_ALIASES[path])
             return
         if path == "/api/features":
-            feature = self._feature_dir()
+            # active: what this dashboard shows (the person's choice, else what runs use); runs: what
+            # `/sdd-run` and the launcher use (`.sdd/config.toml` run.feature, else `.specify/feature.json`).
+            feature, runs = self._feature_dir(), active_feature(DashboardHandler.project)
             self._send_json({"features": feature_names(DashboardHandler.project),
-                             "active": feature.name if feature else None})
+                             "active": feature.name if feature else None,
+                             "runs": runs.name if runs else None})
             return
         if path == "/api/doc/state":
             names = urllib.parse.parse_qs(query).get("name", [])
@@ -1262,6 +1265,10 @@ def build_html():
   .doc-tab.active { background: rgba(59,130,246,0.1); border-color: var(--accent); color: var(--text); }
   .doc-edit-bar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
   .doc-edit-bar:empty { display: none; }
+  .header-feature { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; min-width: 0; font-size: 0.8125rem; color: var(--text-muted); }
+  .header-feature select { max-width: 16rem; padding: 0.3rem 0.5rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem; }
+  .header-feature-note { color: var(--warning); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 768px) { .header-feature label { display: none; } .header-feature select { max-width: 10rem; } }
   .doc-edit-bar select, .doc-edit-bar input[type=text] { padding: 0.375rem 0.625rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.875rem; }
   .doc-edit-bar input[type=text] { flex: 1; min-width: 14rem; }
   .doc-edit-note { color: var(--text-muted); font-size: 0.8125rem; flex-basis: 100%; }
@@ -1575,6 +1582,12 @@ def build_html():
       <div class="brand">
         <div class="brand-dot"></div>
         <span id="page-title">Overview</span>
+      </div>
+      <!-- The feature every view shows (memory only, FR-027); the note says when runs use another one -->
+      <div class="header-feature" id="header-feature" style="display:none;">
+        <label for="feature-select">Feature</label>
+        <select id="feature-select" title="The feature every view shows"></select>
+        <span id="feature-runs-note" class="header-feature-note"></span>
       </div>
     </div>
     <div class="content">
@@ -2211,12 +2224,35 @@ def build_html():
       if (list) list.removeAttribute('data-features');
     }
 
+    // The header's feature picker: every view shows the chosen feature. Redrawn only when the list,
+    // the choice or the runs' feature changes, so an open dropdown is not reset by the 3 s refresh.
+    function loadFeatureSelect() {
+      fetchJSON('/api/features', 'GET').then(function(f) {
+        var box = document.getElementById('header-feature');
+        if (!f || !f.features || !f.features.length) { box.style.display = 'none'; return; }
+        var key = JSON.stringify(f);
+        if (box._key === key) return;
+        box._key = key;
+        var sel = document.getElementById('feature-select');
+        sel.innerHTML = (f.active ? '' : '<option value="" selected>Choose…</option>') + f.features.map(function(name) {
+          return '<option value="' + escapeHtml(name) + '"' + (name === f.active ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
+        }).join('');
+        var note = document.getElementById('feature-runs-note');
+        var differs = f.runs && f.active && f.runs !== f.active;
+        note.textContent = differs ? 'runs use ' + f.runs : '';
+        note.title = differs ? 'You are looking at ' + f.active + '; /sdd-run and Start run use ' + f.runs + ' (.specify/feature.json).' : '';
+        box.style.display = '';
+      }).catch(function(e) { console.error('loadFeatureSelect error', e); });
+    }
+
     // Choose a feature for this dashboard session (memory only, FR-027), then reload the views.
     function chooseFeature(name) {
       fetchJSON('/api/project/select', 'POST', { feature: name }).then(function(result) {
         if (!result || !result.ok) { toast('Failed to choose feature ' + name); return; }
         hideFeaturePicker();
         toast('Feature: ' + name);
+        editNote = ''; editError = '';
+        loadFeatureSelect();
         reloadViews();
       }).catch(function(e) { console.error('chooseFeature error', e); toast('Error choosing feature'); });
     }
@@ -2292,7 +2328,7 @@ def build_html():
       return name === 'spec' ? 'docs(spec): update ' + (feature || 'feature') + ' spec' : 'docs(constitution): update constitution';
     }
 
-    // The bar above an editable document: feature picker (spec), Edit, and the Commit row while the file has edits.
+    // The bar above an editable document: Edit, and the Commit row while the file has edits.
     function renderEditBar(name) {
       var bar = document.getElementById('doc-edit-bar');
       if (EDITABLE_DOCS.indexOf(name) < 0) { bar.innerHTML = ''; return Promise.resolve(); }
@@ -2305,11 +2341,6 @@ def build_html():
             '<button type="button" class="btn" data-edit="cancel">Cancel</button>' +
             '<span class="doc-edit-note">Editing ' + escapeHtml(st.path) + '</span>';
         } else {
-          if (feats && feats.features.length) {
-            html += '<select id="spec-feature" title="Which spec to show">' + feats.features.map(function(f) {
-              return '<option value="' + escapeHtml(f) + '"' + (f === feats.active ? ' selected' : '') + '>' + escapeHtml(f) + '</option>';
-            }).join('') + '</select>';
-          }
           html += '<button type="button" class="btn" data-edit="open"' + (st.locked ? ' disabled title="' + escapeHtml(st.locked) + '"' : '') + '>Edit</button>';
           if (st.locked) html += '<span class="doc-edit-note">' + escapeHtml(st.locked) + '</span>';
           if (st.dirty) {
@@ -2324,10 +2355,6 @@ def build_html():
         bar.innerHTML = html;
         bar.querySelectorAll('[data-edit]').forEach(function(b) {
           b.addEventListener('click', function() { editAction(name, b.getAttribute('data-edit'), st); });
-        });
-        var sel = document.getElementById('spec-feature');
-        if (sel) sel.addEventListener('change', function() {
-          fetchJSON('/api/project/select', 'POST', { feature: sel.value }).then(function() { editNote = ''; editError = ''; reloadViews(); });
         });
       });
     }
@@ -3244,6 +3271,7 @@ def build_html():
 
     function refreshAll() {
       loadRunState();
+      loadFeatureSelect();
       loadOverview();
       if (selectedSection === 'tasks') loadTasks();
       if (selectedSection === 'blocked') loadBlocked();
@@ -3309,8 +3337,13 @@ def build_html():
 
       showSection(sectionFromHash());
       window.addEventListener('popstate', function() { showSection(sectionFromHash()); });
+      document.getElementById('feature-select').addEventListener('change', function(ev) {
+        if (ev.target.value) chooseFeature(ev.target.value);
+      });
+
       loadProject();
       loadRunState();
+      loadFeatureSelect();
       setInterval(refreshAll, 3000);
     });
   })();

@@ -909,8 +909,18 @@ class DocEditRouteTest(unittest.TestCase):
         dash.DashboardHandler.project, dash.DashboardHandler.feature = self.saved
         self.tmp.cleanup()
 
+    def test_features_says_which_feature_runs_use(self):
+        # The person looks at another feature than the one runs use: both are named, nothing is written.
+        (self.root / "specs" / "002-other").mkdir()
+        (self.root / ".specify").mkdir(exist_ok=True)
+        (self.root / ".specify" / "feature.json").write_text('{"feature_directory": "specs/001-only"}')
+        dash.DashboardHandler.feature = "002-other"
+        self.assertEqual(request(self, "GET", "/api/features"),
+                         {"features": ["001-only", "002-other"], "active": "002-other", "runs": "001-only"})
+
     def test_features_and_state(self):
-        self.assertEqual(request(self, "GET", "/api/features"), {"features": ["001-only"], "active": "001-only"})
+        self.assertEqual(request(self, "GET", "/api/features"),
+                         {"features": ["001-only"], "active": "001-only", "runs": "001-only"})
         st = request(self, "GET", "/api/doc/state?name=spec")
         self.assertEqual((st["path"], st["dirty"], st["locked"]), ("specs/001-only/spec.md", False, None))
         request(self, "GET", "/api/doc/state?name=plan", status=404)
