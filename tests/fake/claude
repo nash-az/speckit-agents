@@ -6,9 +6,12 @@ $FAKE_DIR/scenario.json: {"cycles": [[step, ...], ...]}. Steps: {"emit": event},
 Each invocation appends its arguments to $FAKE_DIR/calls and writes its environment to $FAKE_DIR/env<n>.json.
 {"transcript": "<name>"} launches another workflow in $FAKE_DIR/<name>; later journal steps go there.
 {"control": request} writes a dashboard request to $FAKE_CONTROL (the supervisor's control.json), atomically.
+{"tick": "T001"} changes `- [ ] T001` to `- [x] T001` in the file named by $FAKE_TASKS.
+{"finish": true} removes .sdd/run.json in the project (the current directory), as a finished run does.
 """
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -41,6 +44,13 @@ for step in steps:
         tmp = target.with_name("control.json.tmp")
         tmp.write_text(json.dumps(step["control"]))
         os.replace(tmp, target)
+    elif "tick" in step:
+        tasks = Path(os.environ["FAKE_TASKS"])
+        tid = step["tick"]
+        tasks.write_text(re.sub(rf"^(\s*- )\[ \]( {re.escape(tid)}\b)", r"\1[x]\2",
+                                tasks.read_text(), count=1, flags=re.M))
+    elif "finish" in step:
+        (Path.cwd() / ".sdd" / "run.json").unlink(missing_ok=True)
     elif "sleep" in step:
         time.sleep(step["sleep"])
     elif "exit" in step:
