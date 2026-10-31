@@ -24,6 +24,13 @@ The dashboard can stop and resume a supervised run (data-model §12): it writes 
 <state dir>/control.json, which this script reads and deletes. `stop` (after the current task, or
 now) ends the cycle and holds until `resume`; while waiting for a usage window, `hold` keeps the
 run paused after the reset and `release` undoes that. Held longer than --max-wait-hours ends it.
+
+--job ID carries out the Job in .sdd/jobs/ID.json (spec 005, data-model §6) as a series of runs of
+`/sdd-run --yes --no-converge <scope> --job ID [--max-tasks <tasks left under the cap>]`. Before each
+run it checks that the checkout is on the Job's branch and that no limit is reached; after each run it
+appends the run id, re-reads the scope and sets the Job `done`, `waiting` (only items that need the
+person), `failed` (no progress in two runs) or starts the next run. A stop-by time passing mid-run
+stops the run after the current task. --max-cycles then counts per run; status.json names the Job.
 """
 from __future__ import annotations
 
@@ -120,6 +127,8 @@ class Cycle:
         self.stop_reason: str | None = None
         self.pause_window: str | None = None  # the window that crossed the threshold
         self.operator = False  # an operator asked to stop after the current task (data-model §12.2)
+        self.run_id: str | None = None  # the run's id, read from .sdd/run.json while it is live (005 R5)
+        self.until_sent = False  # the Job's stop-by time passed and the stop request was sent (005 §6)
         self.lock = threading.Lock()
 
     def command(self) -> list[str]:
@@ -210,6 +219,15 @@ class Cycle:
                 hard = self.usage.over(self.args.hard_stops)
                 rejected = self.usage.status == "rejected"
             started, finished = self.journal_counts()
+            self.run_id = read_run_id(self.args.project) or self.run_id
+            # A Job's stop-by time (005 data-model §6): send ourselves the "stop after the current task"
+            # request; the operator path below then stops the run at the next safe point.
+            until = getattr(self.args, "until", None)
+            if until is not None and not self.until_sent and time.time() >= until:
+                self.until_sent = True
+                say(f"the job's stop-by time {time.strftime('%H:%M', time.localtime(until))} has passed")
+                send_control(self.log_path.parent, {"id": "until", "command": "stop", "mode": "after-task",
+                                                    "requested_at": int(time.time())})
             if rejected:
                 self.stop_reason = "limit"
                 say("stopping now: the limit was hit before a safe point")
@@ -290,10 +308,32 @@ def sleep_until(target: float) -> None:
         time.sleep(min(left, 30))
 
 
+JOB_ID: str | None = None  # set by --job; every status.json then names the Job (005 data-model §6)
+
+
 def write_status(path: Path, **fields) -> None:
+    if JOB_ID:
+        fields.setdefault("job", JOB_ID)
     fields["pid"] = os.getpid()  # the dashboard checks that the supervisor is alive (data-model §12.1)
     fields["updated"] = int(time.time())
     path.write_text(json.dumps(fields, indent=2) + "\n", encoding="utf-8")
+
+
+def send_control(logs: Path, request: dict) -> None:
+    """Write a request to <state dir>/control.json atomically, as the dashboard does (data-model §12.1)."""
+    tmp = logs / "control.json.tmp"
+    tmp.write_text(json.dumps(request), encoding="utf-8")
+    os.replace(tmp, logs / "control.json")
+
+
+def read_run_id(project: Path) -> str | None:
+    """The `run_id` in the project's .sdd/run.json, or None when there is no live run."""
+    try:
+        data = json.loads((project / ".sdd" / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    run_id = data.get("run_id") if isinstance(data, dict) else None
+    return run_id if isinstance(run_id, str) and run_id else None
 
 
 def read_control(logs: Path) -> dict | None:
@@ -375,12 +415,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--max-cycles", type=int, default=20)
     parser.add_argument("--profile", default="",
                         help="run with [profiles.NAME] from .sdd/config.toml: its model and env for claude")
+    parser.add_argument("--job", default="",
+                        help="carry out the Job .sdd/jobs/ID.json as a series of runs (spec 005); --run-args is "
+                             "then ignored and --max-cycles counts per run")
     parser.add_argument("--claude", default="claude", help=argparse.SUPPRESS)
     parser.add_argument("--poll", type=float, default=2.0, help=argparse.SUPPRESS)
     parser.add_argument("--no-sleep", action="store_true", help=argparse.SUPPRESS)  # tests
     parser.add_argument("--pause-after", type=int, default=0, help=argparse.SUPPRESS)  # e2e tests
     args = parser.parse_args(argv)
     args.project = args.project.resolve()
+    args.until = None  # a Job's stop-by time (epoch seconds), set per run by run_job()
     # Per window (data-model §10): an explicit --hard-stop for all, else each window's threshold + 1 point.
     args.hard_stops = {name: min(1.0, args.hard_stop if args.hard_stop is not None else round(t + 0.01, 2))
                        for name, t in args.threshold.items()}
@@ -427,28 +471,44 @@ def main(argv: list[str]) -> int:
             f"{time.strftime('%H:%M', time.localtime(target))}")
         if not args.no_sleep:
             sleep_until(target)
+    if args.job:
+        return run_job(args, logs, status)
+    return run_cycles(args, logs, status)[1]
+
+
+def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str, int, str | None]:
+    """One /sdd-run, cycle after cycle across usage resets, until it ends.
+
+    Returns (how it ended, exit code, the run id seen in .sdd/run.json or None). How it ended:
+    `finished`, `cut-off` (ended with .sdd/run.json still there), `operator` (only with --job: an
+    operator stop, or the Job's stop-by time; without --job an operator stop holds), `held-too-long`,
+    `no-reset`, `too-late` or `max-cycles`."""
+    run_id = None
     for cycle_no in range(1, args.max_cycles + 1):
         log_path = logs / f"{time.strftime('%Y%m%d-%H%M%S')}-cycle{cycle_no}.jsonl"
         say(f"cycle {cycle_no}: starting /sdd-run")
         cycle = Cycle(args, log_path, status, cycle_no)
         write_status(status, state="running", cycle=cycle_no, stream=str(log_path), threshold=args.threshold)
         outcome = cycle.run()
+        run_id = cycle.run_id or read_run_id(args.project) or run_id
         if outcome == "operator":
-            say(f"cycle {cycle_no}: stopped by the operator")
+            say(f"cycle {cycle_no}: stopped by the operator" + (" (the job's stop-by time)" if cycle.until_sent else ""))
+            if args.job:
+                return "operator", 0, run_id
             if not hold(args, logs, status, cycle_no, "stopped by operator"):
                 say("held longer than --max-wait-hours: stopping")
                 write_status(status, state="stopped", reason="held too long", cycle=cycle_no)
-                return 3
+                return "held-too-long", 3, run_id
             continue
         if outcome == "finished" and (args.project / ".sdd" / "run.json").exists():
             say(f"cycle {cycle_no}: the run ended but .sdd/run.json is still there, so it was cut off by "
                 "something other than the usage limit: read its report, then start /sdd-run or this script again to resume")
             write_status(status, state="stopped", reason="interrupted, not by the usage limit", cycle=cycle_no)
-            return 1
+            return "cut-off", 1, run_id
         if outcome == "finished":
             say(f"cycle {cycle_no}: the run finished" + ("" if cycle.result_seen else " (no result line: check the log)"))
             write_status(status, state="done", cycle=cycle_no, stream=str(log_path))
-            return 0 if cycle.result_seen else 1
+            return "finished", 0 if cycle.result_seen else 1, run_id
         # Wait only for the window that stopped the run: the one that hit the limit, or the one that
         # crossed the threshold. A test pause (--pause-after) has none and starts again at once.
         window = cycle.usage.limit_type if outcome == "limit" else cycle.pause_window
@@ -459,12 +519,12 @@ def main(argv: list[str]) -> int:
         if not resets_at:
             say("stopped, but no reset time is known: start again by hand")
             write_status(status, state="stopped", reason="no reset time", cycle=cycle_no)
-            return 1
+            return "no-reset", 1, run_id
         wait = max(0, resets_at + RESET_MARGIN_S - time.time())
         if wait > args.max_wait_hours * 3600:
             say(f"{window} resets at {time.strftime('%a %H:%M', time.localtime(resets_at))}, beyond --max-wait-hours: stopping")
             write_status(status, state="stopped", reason=f"{window} resets too late", resets_at=resets_at, cycle=cycle_no)
-            return 3
+            return "too-late", 3, run_id
         say(f"{outcome}: waiting until {time.strftime('%H:%M', time.localtime(resets_at + RESET_MARGIN_S))} for the {window} window to reset")
         waiting = {"state": "waiting", "window": window, "resets_at": resets_at, "cycle": cycle_no,
                    "usage": cycle.usage.windows}
@@ -474,10 +534,134 @@ def main(argv: list[str]) -> int:
             if not hold(args, logs, status, cycle_no, "kept paused; the usage window has reset"):
                 say("held longer than --max-wait-hours: stopping")
                 write_status(status, state="stopped", reason="held too long", cycle=cycle_no)
-                return 3
+                return "held-too-long", 3, run_id
     say(f"stopping after {args.max_cycles} cycles")
     write_status(status, state="stopped", reason="max cycles")
-    return 4
+    return "max-cycles", 4, run_id
+
+
+def load_sdd_job():
+    """bin/sdd-job.py, loaded only for --job (it loads this script itself, so not at import time)."""
+    spec = importlib.util.spec_from_file_location("sdd_job", Path(__file__).with_name("sdd-job.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def git_branch(project: Path) -> str | None:
+    """`git rev-parse --abbrev-ref HEAD` in the project, or None when git cannot say."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=project, capture_output=True,
+                             text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def limit_reason(name: str, limits: dict) -> str:
+    """The reason in words for a reached limit: "max_tasks 10 reached", "until 18:00 reached"."""
+    if name == "until":
+        return f"until {time.strftime('%H:%M', time.localtime(limits['until']))} reached"
+    return f"{name} {limits.get(name)} reached"
+
+
+def scope_plan(sdd_job, project: Path, record: dict) -> dict:  # noqa: ANN001
+    """`sdd-tasks.py plan` over the Job's scope (its phases or tasks; everything for `all`)."""
+    feature = sdd_job.feature_dir(project, record)
+    scope = record.get("scope") or {}
+    return sdd_tasks.plan(sdd_tasks.parse_tasks(feature / "tasks.md"),
+                          sdd_tasks.parse_blocked_entries(feature / "BLOCKED.md"),
+                          sdd_tasks.load_config(project / ".sdd" / "config.toml"),
+                          [str(p) for p in scope.get("phases") or []] or None, None,
+                          [str(t) for t in scope.get("tasks") or []] or None)
+
+
+def progress_snapshot(sdd_job, project: Path, record: dict) -> tuple[int, int]:  # noqa: ANN001
+    """(ticked tasks, BLOCKED.md entries) in the Job's feature (005 data-model §4)."""
+    feature = sdd_job.feature_dir(project, record)
+    parsed = sdd_tasks.parse_tasks(feature / "tasks.md")
+    ticked = sum(1 for p in parsed["phases"] for t in p["tasks"] if t["done"])
+    return ticked, len(sdd_tasks.parse_blocked_entries(feature / "BLOCKED.md"))
+
+
+def end_job(sdd_job, project: Path, status: Path, job_id: str, state: str, reason: str | None) -> int:  # noqa: ANN001
+    """Record the Job's new state and reason, tell status.json, and give the supervisor's exit code."""
+    record = sdd_job.load(project, job_id) or {"id": job_id}
+    record["state"] = state
+    record["reason"] = reason
+    sdd_job.save(project, record)
+    say(f"job {job_id}: {state}" + (f" ({reason})" if reason else ""))
+    write_status(status, state="done" if state == "done" else "stopped", reason=reason or state, job_state=state)
+    return 1 if state == "failed" else 0
+
+
+def run_job(args: argparse.Namespace, logs: Path, status: Path) -> int:
+    """The Job loop (005 data-model §6, the table in §2): run after run until the Job stops needing us."""
+    global JOB_ID
+    sdd_job = load_sdd_job()
+    project, job_id = args.project, args.job
+    record = sdd_job.load(project, job_id)
+    if record is None:
+        say(f"no job {job_id} in {project / '.sdd' / 'jobs'}")
+        return 2
+    if record.get("state") != "working":
+        say(f"job {job_id} is {record.get('state')}, not working: Continue it to start it again")
+        return 2
+    JOB_ID = job_id
+    if args.run_args:
+        say("--run-args is ignored with --job: the Job's scope and limits make the run's arguments")
+    while True:
+        # 1. Checks: the branch (§5) and the limits (§3).
+        record = sdd_job.load(project, job_id) or record
+        if git_branch(project) != record.get("branch"):
+            return end_job(sdd_job, project, status, job_id, "stopped", "the checkout is not on the Job's branch")
+        limits = record.get("limits") or {}
+        reached = sdd_job.limit_reached(project, record)
+        if reached:
+            return end_job(sdd_job, project, status, job_id, "stopped", limit_reason(reached, limits))
+        # 2. Snapshot progress (§4).
+        before = progress_snapshot(sdd_job, project, record)
+        # 3. The run, cycle after cycle (--max-cycles counts per run).
+        run_args = ["--no-converge", sdd_job.scope_args(record), "--job", job_id]
+        if limits.get("max_tasks") is not None:
+            run_args += ["--max-tasks", str(limits["max_tasks"] - sdd_job.tasks_done(project, record))]
+        args.run_args = " ".join(a for a in run_args if a)
+        args.until = limits.get("until")
+        say(f"job {job_id}: run {len(record.get('runs') or []) + 1} with /sdd-run --yes {args.run_args}")
+        outcome, code, run_id = run_cycles(args, logs, status)
+        # 4. Append the run id.
+        record = sdd_job.load(project, job_id) or record
+        runs = record.setdefault("runs", [])
+        if run_id and run_id not in runs:
+            runs.append(run_id)
+        elif not run_id:
+            say("the run's id is unknown (no .sdd/run.json was seen)")
+        sdd_job.save(project, record)
+        if outcome == "operator":
+            until = (record.get("limits") or {}).get("until")
+            if until is not None and time.time() >= until:
+                return end_job(sdd_job, project, status, job_id, "stopped", limit_reason("until", record["limits"]))
+            return end_job(sdd_job, project, status, job_id, "stopped", "stopped by you")
+        if outcome not in ("finished", "cut-off", "max-cycles"):
+            return code  # the usage wait gave up; the Job stays working and shows as interrupted
+        # 5. Re-plan the scope; tasks added inside scoped phases join the Job (research R4).
+        plan = scope_plan(sdd_job, project, record)
+        scoped = record.setdefault("scope_tasks", [])
+        for task_id in [i for p in plan["phases"] for i in p["tasks"]] + [h["id"] for h in plan["held"]]:
+            if task_id not in scoped:
+                scoped.append(task_id)
+        after = progress_snapshot(sdd_job, project, record)
+        progressed = after[0] > before[0] or after[1] > before[1]
+        record["no_progress_runs"] = 0 if progressed else int(record.get("no_progress_runs") or 0) + 1
+        sdd_job.save(project, record)
+        counts = sdd_job.progress(project, record)
+        if counts["waiting_on_you"] == 0 and counts["left"] == 0:
+            return end_job(sdd_job, project, status, job_id, "done", None)
+        if plan["runnable"] == 0:
+            return end_job(sdd_job, project, status, job_id, "waiting", "only items that need you are left")
+        if record["no_progress_runs"] >= 2:
+            return end_job(sdd_job, project, status, job_id, "failed", "no progress in two runs")
+        say(f"job {job_id}: {counts['done']} of {counts['total']} done; starting the next run")
 
 
 if __name__ == "__main__":

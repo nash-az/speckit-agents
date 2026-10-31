@@ -442,5 +442,187 @@ class RunControlTest(unittest.TestCase):
         self.assertEqual(self.status()["state"], "done")
 
 
+JOB_ID = "20261031-1012"
+
+
+def job_run(run_id, tick=None):
+    """One run of a Job as the fake plays it: run.json appears, a task may be ticked, the run finishes."""
+    steps = [{"transcript": True}, {"run": run_id}, {"sleep": 0.4}]
+    if tick:
+        steps.append({"tick": tick})
+    return [*steps, {"finish": True}, *DONE]
+
+
+class JobTest(unittest.TestCase):
+    """--job: the Job loop over runs (spec 005, data-model §2 and §6)."""
+
+    TASKS = ("# Tasks\n\n## Phase 1: Work\n\n"
+             "- [ ] T001 First `a.py`\n- [ ] T002 Second `b.py`\n- [ ] T003 Third `c.py`\n")
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.project = self.dir / "project"
+        (self.project / ".sdd").mkdir(parents=True)
+        (self.project / ".sdd" / "config.toml").write_text("")
+        self.tasks = self.project / "specs" / "005-jobs" / "tasks.md"
+        self.tasks.parent.mkdir(parents=True)
+        self.tasks.write_text(self.TASKS)
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", str(self.project.resolve())).strip("-")
+        self.logs = self.dir / "state" / "speckit-agents" / slug
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "specs")
+        self.git("commit", "-q", "-m", "init")
+        self.git("switch", "-q", "-c", f"auto/{JOB_ID}")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def git(self, *args):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], cwd=self.project,
+                       check=True, capture_output=True)
+
+    def save_job(self, **extra):
+        record = {"id": JOB_ID, "title": "Phase 1", "feature": "005-jobs", "scope": {"phases": ["1"]},
+                  "scope_tasks": ["T001", "T002", "T003"], "blocked_at_start": 0,
+                  "limits": {"max_tasks": None, "until": None, "max_runs": 20}, "branch": f"auto/{JOB_ID}",
+                  "base": {"branch": "main", "commit": "x"}, "state": "working", "reason": None, "runs": [],
+                  "no_progress_runs": 0, "created": int(time.time()), "ended": None, "merge_commit": None}
+        record.update(extra)
+        (self.project / ".sdd" / "jobs").mkdir(exist_ok=True)
+        (self.project / ".sdd" / "jobs" / f"{JOB_ID}.json").write_text(json.dumps(record))
+
+    def job(self):
+        return json.loads((self.project / ".sdd" / "jobs" / f"{JOB_ID}.json").read_text())
+
+    def supervise(self, cycles, *extra):
+        (self.dir / "scenario.json").write_text(json.dumps({"cycles": cycles}))
+        env = dict(os.environ, FAKE_DIR=str(self.dir), XDG_STATE_HOME=str(self.dir / "state"),
+                   FAKE_TASKS=str(self.tasks), FAKE_CONTROL=str(self.logs / "control.json"))
+        t0 = time.time()
+        out = subprocess.run([sys.executable, str(SCRIPT), "--project", str(self.project), "--claude", str(FAKE),
+                              "--poll", "0.1", "--no-sleep", "--job", JOB_ID, *extra],
+                             env=env, capture_output=True, text=True, timeout=90)
+        calls = (self.dir / "calls").read_text().splitlines() if (self.dir / "calls").exists() else []
+        return out, [json.loads(c) for c in calls], time.time() - t0
+
+    def test_three_runs_end_done_with_three_run_ids(self):
+        self.save_job()
+        out, calls, _ = self.supervise([job_run("r1", "T001"), job_run("r2", "T002"), job_run("r3", "T003")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 3)
+        for argv in calls:
+            self.assertEqual(argv[1], f"/sdd-run --yes --no-converge --phases 1 --job {JOB_ID}")
+        record = self.job()
+        self.assertEqual(record["state"], "done")
+        self.assertEqual(record["runs"], ["r1", "r2", "r3"])
+        status = json.loads((self.logs / "status.json").read_text())
+        self.assertEqual(status["job"], JOB_ID)
+        self.assertEqual(status["state"], "done")
+
+    def test_only_person_items_left_is_waiting(self):
+        self.tasks.write_text(self.TASKS.replace("T002 Second", "T002 [manual] Second")
+                              .replace("T003 Third `c.py`", "T003 Third, after T002 `c.py`"))
+        self.save_job()
+        out, calls, _ = self.supervise([job_run("r1", "T001"), job_run("r2")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 1)
+        record = self.job()
+        self.assertEqual(record["state"], "waiting")
+        self.assertEqual(record["runs"], ["r1"])
+
+    def test_two_runs_without_progress_fail(self):
+        self.save_job()
+        out, calls, _ = self.supervise([job_run("r1"), job_run("r2"), job_run("r3")])
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertEqual(len(calls), 2)
+        record = self.job()
+        self.assertEqual(record["state"], "failed")
+        self.assertEqual(record["reason"], "no progress in two runs")
+        self.assertEqual(record["no_progress_runs"], 2)
+
+    def test_progress_resets_the_no_progress_count(self):
+        self.save_job()
+        out, calls, _ = self.supervise([job_run("r1"), job_run("r2", "T001"), job_run("r3", "T002"),
+                                        job_run("r4", "T003")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(self.job()["state"], "done")
+
+    def test_max_runs_stops_the_job(self):
+        self.save_job(limits={"max_tasks": None, "until": None, "max_runs": 2})
+        out, calls, _ = self.supervise([job_run("r1", "T001"), job_run("r2", "T002"), job_run("r3", "T003")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 2)
+        record = self.job()
+        self.assertEqual(record["state"], "stopped")
+        self.assertEqual(record["reason"], "max_runs 2 reached")
+        self.assertEqual(record["runs"], ["r1", "r2"])
+
+    def test_checkout_on_another_branch_stops_and_runs_nothing(self):
+        self.save_job()
+        self.git("switch", "-q", "main")
+        out, calls, _ = self.supervise([job_run("r1", "T001")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(calls, [])
+        record = self.job()
+        self.assertEqual(record["state"], "stopped")
+        self.assertEqual(record["reason"], "the checkout is not on the Job's branch")
+        self.assertEqual(record["runs"], [])
+        self.assertEqual(self.tasks.read_text(), self.TASKS)
+
+    def test_max_tasks_passes_the_tasks_left_to_the_run(self):
+        self.tasks.write_text(self.TASKS.replace("- [ ] T001", "- [x] T001"))
+        self.save_job(limits={"max_tasks": 2, "until": None, "max_runs": 20})
+        out, calls, _ = self.supervise([job_run("r1", "T002"), job_run("r2", "T003")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0][1].endswith(f"--job {JOB_ID} --max-tasks 1"), calls[0][1])
+        record = self.job()
+        self.assertEqual(record["state"], "stopped")
+        self.assertEqual(record["reason"], "max_tasks 2 reached")
+
+    def test_until_passing_mid_run_stops_after_the_current_task(self):
+        until = int(time.time()) + 2
+        self.save_job(limits={"max_tasks": None, "until": until, "max_runs": 20})
+        run = [{"transcript": True}, {"run": "r1"}, started("a", "impl:T001"), {"sleep": 3.5}, finished("a"),
+               started("b", "verify:T001"), {"sleep": 30}, {"tick": "T001"}, {"finish": True}, *DONE]
+        t0 = time.time()
+        out, calls, took = self.supervise([run, job_run("r2", "T002")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 1)
+        self.assertGreaterEqual(time.time() - t0, 3.0, "the running agent was allowed to finish")
+        self.assertLess(took, 25, "the run was stopped at the safe point, not run to its end")
+        self.assertIn("safe point", out.stdout)
+        record = self.job()
+        self.assertEqual(record["state"], "stopped")
+        self.assertEqual(record["reason"], f"until {time.strftime('%H:%M', time.localtime(until))} reached")
+        self.assertEqual(record["runs"], ["r1"])
+
+    def test_max_cycles_counts_per_run(self):
+        self.save_job()
+        out, calls, _ = self.supervise([job_run("r1", "T001"), job_run("r2", "T002"), job_run("r3", "T003")],
+                                       "--max-cycles", "1")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(self.job()["state"], "done")
+
+    def test_tasks_added_to_a_scoped_phase_join_the_job(self):
+        self.save_job()
+        added = [{"transcript": True}, {"run": "r1"}, {"sleep": 0.4}, {"tick": "T001"}, {"finish": True}, *DONE]
+        self.tasks.write_text(self.TASKS + "- [ ] T004 Added `d.py`\n")
+        out, calls, _ = self.supervise([added, job_run("r2", "T002"), job_run("r3", "T003"), job_run("r4", "T004")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 4)
+        record = self.job()
+        self.assertEqual(record["scope_tasks"], ["T001", "T002", "T003", "T004"])
+        self.assertEqual(record["state"], "done")
+
+    def test_a_job_that_is_not_working_is_refused(self):
+        self.save_job(state="waiting")
+        out, calls, _ = self.supervise([job_run("r1", "T001")])
+        self.assertEqual(out.returncode, 2, out.stdout)
+        self.assertEqual(calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()
