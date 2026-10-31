@@ -27,5 +27,42 @@ class JobsIgnoreLineTest(unittest.TestCase):
         self.assertIn(".sdd/jobs/", lines)
 
 
+class SddRunJobArgsTest(unittest.TestCase):
+    """`/sdd-run --tasks` and `--job` (005 data-model §5)."""
+
+    def setUp(self):
+        self.text = read("skills/sdd-run/SKILL.md")
+
+    def argument_hint(self):
+        for line in self.text.splitlines():
+            if line.startswith("argument-hint:"):
+                return line
+        self.fail("no argument-hint line")
+
+    def test_argument_hint_names_tasks_and_job(self):
+        hint = self.argument_hint()
+        self.assertIn("--tasks", hint)
+        self.assertIn("--job", hint)
+
+    def test_tasks_goes_to_plan_and_skips_converge(self):
+        self.assertIn("`--tasks a,b`", self.text)
+        self.assertIn("[--tasks <the --tasks ids>]", self.text)
+        self.assertIn("Skip this step with `--phases`, `--tasks` or `--no-converge`.", self.text)
+
+    def test_job_key_in_run_json_description(self):
+        start = self.text.index("2. Write `.sdd/run.json`")
+        end = self.text.index("3. Call **Workflow**")
+        section = self.text[start:end]
+        self.assertIn("--job <id>", section)
+        self.assertIn('"job": "<id>"', section)
+
+    def test_job_key_in_workflows_json_description(self):
+        start = self.text.index("`.sdd/runs/<run id>/workflows.json`, `{")
+        section = self.text[start:self.text.index("4. Tell the user", start)]
+        self.assertIn("--job <id>", section)
+        self.assertIn('"job": "<id>"', section)
+        self.assertIn("beside `feature`", section)
+
+
 if __name__ == "__main__":
     unittest.main()

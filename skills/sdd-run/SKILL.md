@@ -1,7 +1,7 @@
 ---
 name: sdd-run
 description: Run the open tasks of the current Spec Kit feature unattended with subagents. Each task is implemented, verified and committed on an auto/ branch, and anything that needs a person goes to BLOCKED.md. Use when the user asks to build, implement or finish the feature without supervision.
-argument-hint: "[--phases 7,8] [--no-converge] [--max-tasks N] [--profile NAME] [--yes]"
+argument-hint: "[--phases 7,8] [--tasks T001,T002] [--no-converge] [--max-tasks N] [--profile NAME] [--job ID] [--yes]"
 ---
 
 # /sdd-run
@@ -14,7 +14,7 @@ Paths: this skill's base directory is `<plugin>/skills/sdd-run`, so `<plugin>` i
 - Helper: `python3 <plugin>/bin/sdd-tasks.py`
 - Workflow: the plugin's saved workflow `speckit-agents:sdd-run` (source: `<plugin>/workflows/sdd-run.js`). Call it by `name`, never by `scriptPath`: a session in the user's project cannot read the plugin directory, so the Workflow tool refuses the path.
 
-Arguments (`$ARGUMENTS`): `--phases a,b` runs exactly those phase ids and skips step 2. `--no-converge` skips step 2. `--max-tasks N` caps how many tasks it attempts. `--profile NAME` names the `[profiles.NAME]` table of `.sdd/config.toml` the run was launched with (step 1 checks it; the report records it). `--yes` skips the confirmation.
+Arguments (`$ARGUMENTS`): `--phases a,b` runs exactly those phase ids and skips step 2. `--tasks a,b` keeps only those task ids: pass it to the plan step (step 3) like `--phases` (with both, both apply), and it skips step 2. `--job <id>` says the run belongs to that Job (data-model §5 of `specs/005-jobs/`): step 6 writes `"job": "<id>"` into `.sdd/run.json` and into `.sdd/runs/<run id>/workflows.json`. `--no-converge` skips step 2. `--max-tasks N` caps how many tasks it attempts. `--profile NAME` names the `[profiles.NAME]` table of `.sdd/config.toml` the run was launched with (step 1 checks it; the report records it). `--yes` skips the confirmation.
 
 ## 1. Preflight. Stop and tell the user at the first failure.
 1. `.sdd/config.toml` exists. If it does not, say to run `/sdd-init` first.
@@ -45,7 +45,7 @@ Arguments (`$ARGUMENTS`): `--phases a,b` runs exactly those phase ids and skips 
 
 ## 2. Bring tasks.md up to date with the code
 Unticked boxes are not evidence that work is missing: code often lands without its boxes being ticked. Spec Kit's `/speckit-converge` checks the code against the spec, plan and every task, and appends only the remaining work as a new `## Phase N: Convergence`. Use it; do not judge task completion yourself.
-Skip this step with `--phases` or `--no-converge`.
+Skip this step with `--phases`, `--tasks` or `--no-converge`.
 1. Parse the tasks file: `python3 <helper> parse <tasks>`, and plan the newest phase whose title starts with `Convergence`: `python3 <helper> plan <tasks> --blocked <blocked> --phases <its id>`. If it still has **runnable** tasks, do not converge again (it would add the same gaps twice): go to item 4. Open tasks that are only held (tagged for a person, or `wontfix` in BLOCKED.md) don't count: they may stay open for a long time, and the spec may have changed since that phase was written, so converge again.
 2. Invoke the **Skill** `speckit-converge`. It writes only `tasks.md`.
    If the `speckit-converge` skill is not installed, say that Spec Kit is older than the converge command, and go on to step 3 without converging, running all open tasks.
@@ -55,7 +55,7 @@ Skip this step with `--phases` or `--no-converge`.
 The changed `tasks.md` stays uncommitted until the run branch exists (step 5).
 
 ## 3. Plan
-1. Plan: `python3 <helper> plan <tasks> --blocked <blocked> --phases <the phases from step 2, or --phases> [--max-tasks …]`.
+1. Plan: `python3 <helper> plan <tasks> --blocked <blocked> --phases <the phases from step 2, or --phases> [--tasks <the --tasks ids>] [--max-tasks …]`.
    Without `--phases` and without a Convergence phase (step 2 skipped), plan all open phases.
    If `runnable` is 0, report what is held and stop.
 2. When step 2 did not tag: look for open tasks that are not tagged but plainly need a person: recording, listening, judging by ear or eye, logging in, buying, choosing between options the spec leaves open.
@@ -81,6 +81,7 @@ Remind the user that permission prompts stop an unattended run, and that a headl
 1. `git switch -c <branch_prefix><run id>`. If the current branch already starts with `<branch_prefix>`, a run is being continued: stay on it, and use its name as `branch` in `run.json`.
    If step 2 changed `tasks.md`, commit it on the new branch as `chore(sdd): converge and tag tasks`, with the commit trailer.
 2. Write `.sdd/run.json` with the keys `run_id`, `branch`, `protected_branches` and `protected_paths`, all taken from the config, `phases`: the list of phase ids you planned, and `task_snapshot`: the JSON output of `python3 <helper> snapshot <tasks>`, taken after any converge-and-tag commit (data-model §3.6, §11). A later resume compares the tasks against it.
+   With `--job <id>`, also write the key `"job": "<id>"` (005 data-model §5); without it, leave the key out.
    From here on, the plugin's guard refuses pushes, branch switches, history rewrites, commits on protected branches and edits to protected paths, for every subagent.
 3. Call **Workflow** with `name: "speckit-agents:sdd-run"` and these `args`. Pass them as a JSON object, never as a string, and never pass this skill's own arguments (`--yes`, …) as `args`:
    ```json
@@ -94,7 +95,7 @@ Remind the user that permission prompts stop an unattended run, and that a headl
    ```
    `taskAllow` gives per-task permission overrides (for example a `[dep:ok]` task may add a dependency even when `[allow] dependencies = false`). Build it from the tasks' tags: a task tagged `[dep:ok]` gets `{ dependencies: true }`, one tagged `[download:ok]` gets `{ downloads: true }`.
    The Workflow result names the run's `Transcript dir`. Add it to `.sdd/run.json` as `workflow_dir` right away: if the run is cut off, the next `/sdd-run` reads its journal there and resumes instead of starting the tasks over.
-   At the same moment, record the directory in `.sdd/runs/<run id>/workflows.json`, `{"workflow_dirs": ["<absolute transcript dir>", …], "feature": "<the feature folder name, e.g. 004-feedback-chat>"}`, oldest first: create the file (and its directory) if it is missing, and when resuming, append the new directory to its list. `python3 <helper> events . <run id>` reads the run's events from these directories.
+   At the same moment, record the directory in `.sdd/runs/<run id>/workflows.json`, `{"workflow_dirs": ["<absolute transcript dir>", …], "feature": "<the feature folder name, e.g. 004-feedback-chat>"}`, oldest first: create the file (and its directory) if it is missing, and when resuming, append the new directory to its list. With `--job <id>`, add `"job": "<id>"` beside `feature` (005 data-model §5); without it, leave the key out. `python3 <helper> events . <run id>` reads the run's events from these directories.
 4. Tell the user in one line that the run started, on which branch, and that `/workflows` shows progress. Then end your turn. The workflow notifies you when it finishes.
 
 ## 7. When the workflow finishes
