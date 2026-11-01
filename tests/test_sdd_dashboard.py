@@ -358,6 +358,25 @@ class RunsTest(unittest.TestCase):
         index = request(self, "GET", "/api/runs/tasks")
         self.assertTrue(index)
         self.assertTrue(all(v[0]["run"] == "20261025-1200" for v in index.values()))
+        self.assertTrue(all((v[0]["job"], v[0]["title"]) == (None, None) for v in index.values()))
+
+    def test_runs_tasks_names_the_job_and_its_title(self):
+        """005 FR-013: an entry carries the Job its run's `workflows.json` names and that Job's title."""
+        dash.DashboardHandler.feature = "002-b"
+        listing = lambda job: json.dumps({"workflow_dirs": [str(self.wf)], "feature": "002-b", "job": job})
+        (self.root / ".sdd" / "runs" / "20261025-1200" / "workflows.json").write_text(listing("20261025-1100"), encoding="utf-8")
+        write_run(self.root, "20261026-0900", [self.wf])
+        (self.root / ".sdd" / "runs" / "20261026-0900" / "workflows.json").write_text(listing("20261026-0800"), encoding="utf-8")
+        write_run(self.root, "20261027-0900", [self.wf])
+        (self.root / ".sdd" / "runs" / "20261027-0900" / "workflows.json").write_text(
+            json.dumps({"workflow_dirs": [str(self.wf)], "feature": "002-b"}), encoding="utf-8")
+        dash.sdd_job.save(self.root, {"id": "20261025-1100", "title": "Phase 2", "state": "done"})
+        index = request(self, "GET", "/api/runs/tasks")
+        self.assertEqual([(e["run"], e["job"], e["title"]) for e in index["T1"]],
+                         [("20261027-0900", None, None),
+                          ("20261026-0900", "20261026-0800", "20261026-0800"),  # record gone: the id stands in
+                          ("20261025-1200", "20261025-1100", "Phase 2")])
+        self.assertEqual(set(index["T1"][0]), {"run", "outcome", "commits", "job", "title"})
 
     def test_sorted_by_name_descending_not_mtime(self):
         write_run(self.root, "20261026-0900", [self.wf])
@@ -1226,6 +1245,20 @@ class TransientStateTest(unittest.TestCase):
         self.assertIn("168b8ce", got[0])
         self.assertIn("+1 more", got[0])
         self.assertEqual(got[1], "")
+
+    def test_task_chip_names_the_job_and_opens_it(self):
+        """005 FR-013: a run with a Job makes the chip say "done in job <title>" and open that Job, not the run."""
+        got = self.run_js("(function() { taskRuns = {T1: [{run: '20261031-1530', outcome: 'committed', commits: ['168b8ce'],"
+                          " job: '20261031-1012', title: 'Phase <11>'}], T2: [{run: '20261031-1530', outcome: 'blocked',"
+                          " commits: [], job: '20261031-1012', title: null}]}; return [taskRunChipHtml('T1'), taskRunChipHtml('T2')]; })()")
+        self.assertIn('data-open-job="20261031-1012"', got[0])
+        self.assertNotIn("data-run=", got[0])
+        self.assertIn(">done</span> in job Phase &lt;11&gt;", got[0])
+        self.assertNotIn("in run #", got[0])
+        self.assertIn(">blocked</span> in job 20261031-1012", got[1])
+        self.assertIn("closest('[data-open-job]')", self.html)
+        self.assertIn("expandedJob = chip.getAttribute('data-open-job')", self.html)
+        self.assertIn("[data-run], [data-open-job]')", self.html)  # the chip does not toggle the card's log
 
     def overview_js(self, expr):
         """Run expr with the Overview helpers, which sit after the slice in self.js."""

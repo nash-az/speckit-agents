@@ -40,15 +40,34 @@ JOB_RUNS = ("20261031-1530", "20261031-1012")  # newest first, as /api/runs list
 EARLIER_RUN = "20261030-0800"
 
 
+CHIP_TASK = "T012"  # an open task of the toy that the Job's newest run worked on
+
+# The Job's newest run: the implementer and the verifier of CHIP_TASK (the journal form of RUN_JOURNAL).
+CHIP_JOURNAL = [
+    {"type": "launched"},
+    {"type": "started", "key": "v2:01", "agentId": "a01", "label": "impl:" + CHIP_TASK, "phase": "Build"},
+    {"type": "result", "key": "v2:01", "agentId": "a01",
+     "result": {"status": "done", "summary": "done", "files_changed": ["f.py"]}},
+    {"type": "started", "key": "v2:02", "agentId": "a02", "label": "verify:" + CHIP_TASK, "phase": "Build"},
+    {"type": "result", "key": "v2:02", "agentId": "a02",
+     "result": {"verdict": "approve", "problems": [], "checks_run": []}},
+    {"type": "started", "key": "v2:03", "agentId": "a03", "label": "commit:" + CHIP_TASK, "phase": "Build"},
+    {"type": "result", "key": "v2:03", "agentId": "a03",
+     "result": {"checks_passed": True, "commits": ["c0ffee1"]}},
+]
+
+
 def build_jobs_project(root):
-    """The harness toy plus a `done` Job with two runs and one run without a Job."""
+    """The harness toy plus a `done` Job with two runs and one run without a Job. The Job's newest run
+    worked on CHIP_TASK, so that task's card carries the Job's chip (005 FR-013)."""
     root = harness.build_toy_project(root)
     wf = harness.fixtures.write_workflow_dir(root.resolve().parent / "transcripts" / "wf_jobs")
+    chip_wf = harness.fixtures.write_workflow_dir(root.resolve().parent / "transcripts" / "wf_chip", CHIP_JOURNAL)
     for run_id in JOB_RUNS + (EARLIER_RUN,):
         harness.fixtures.write_run(root, run_id, [wf])
         (root / ".sdd" / "runs" / (run_id + ".md")).write_text("# Run Report\n", encoding="utf-8")
     listing = root / ".sdd" / "runs" / JOB_RUNS[0] / "workflows.json"
-    listing.write_text(json.dumps({"workflow_dirs": [str(wf)], "feature": "001-only", "job": JOB_ID}), encoding="utf-8")
+    listing.write_text(json.dumps({"workflow_dirs": [str(chip_wf)], "feature": "001-only", "job": JOB_ID}), encoding="utf-8")
     sdd_dashboard.sdd_job.save(root, {
         "id": JOB_ID, "title": JOB_TITLE, "feature": "001-only", "scope": {"tasks": ["T001", "T006", "T012"]},
         "scope_tasks": ["T001", "T006", "T012"], "blocked_at_start": 0,
@@ -151,6 +170,22 @@ class JobsViewTest(unittest.TestCase):
             # Merge and Drop are offered for a done Job; Stop and Continue are not.
             for action, enabled in (("stop", False), ("continue", False), ("merge", True), ("drop", True)):
                 self.assertEqual(card.locator('button[data-job-action="%s"]' % action).is_enabled(), enabled, action)
+
+    def test_a_task_chip_names_its_job_and_opens_it(self):
+        """005 FR-013: the chip of a task a Job's run did says "done in job <title>" and opens that Job's card."""
+        with harness.browser_page(self.url + "#tasks", name=self.id()) as ui:
+            chip = ui.page.locator('#tasks-list .task-card[data-task-card="%s"] .run-chip' % CHIP_TASK)
+            chip.wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertIn("done in job " + JOB_TITLE, " ".join(chip.inner_text().split()))
+            self.assertEqual(chip.get_attribute("data-open-job"), JOB_ID)
+            chip.click()
+            ui.page.wait_for_function("location.hash === '#jobs'", timeout=TIMEOUT_MS)
+            card = ui.page.locator('#jobs-list .job-card[data-job="%s"]' % JOB_ID)
+            card.locator(".job-detail").wait_for(state="visible", timeout=TIMEOUT_MS)
+            # The run is one click deeper: the Job's runs are listed, none is opened yet.
+            self.assertEqual(card.locator(".job-detail .run-item").count(), len(JOB_RUNS))
+            self.assertEqual(card.locator(".job-detail .run-detail").count(), 0)
+            ui.page.wait_for_load_state("networkidle")
 
     def test_drop_asks_for_confirmation(self):
         with self.open_job() as ui:

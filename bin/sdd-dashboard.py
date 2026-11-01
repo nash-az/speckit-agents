@@ -20,7 +20,7 @@ Endpoints:
     GET /api/project/decisions    -- alias of /api/doc?name=decisions
     GET /api/project/config       -- alias of /api/doc?name=config
     GET /api/runs                 -- list runs with status, counts and the tasks each touched
-    GET /api/runs/tasks           -- {task id: [{run, outcome, commits}]}, newest run first
+    GET /api/runs/tasks           -- {task id: [{run, outcome, commits, job, title}]}, newest run first
     GET /api/runs/<id>/events     -- event feed for one run
     GET /api/runs/<id>/tasks/<task>/log -- live transcript of the task's agent (data-model.md §4.6)
     GET /api/runs/<id>/report     -- run report markdown (id must look like 20261027-1431)
@@ -243,14 +243,22 @@ def run_feature(project, run_id, listing):
 
 
 def runs_by_task(project, feature):
-    """`GET /api/runs/tasks`: {task id: [{run, outcome, commits}, ...]} for the runs of `feature`, newest
-    run first, so a task card can say which run did it. Task ids repeat across features, hence the filter."""
-    index = {}
+    """`GET /api/runs/tasks`: {task id: [{run, outcome, commits, job, title}, ...]} for the runs of `feature`,
+    newest run first, so a task card can say which run did it. Task ids repeat across features, hence the
+    filter. `job` is the Job the run's `workflows.json` names (else None) and `title` that Job's title (None
+    without a Job, or the Job id when its record is gone), so the chip can say "done in job <title>" (005 FR-013)."""
+    index, titles = {}, {}
     for run in list_runs(project):
         if feature is None or run.get("feature") != feature:
             continue
+        job = run.get("job")
+        if job and job not in titles:
+            record = sdd_job.load(project, job)  # None for a malformed, missing or unreadable record
+            title = record.get("title") if record else None
+            titles[job] = title if isinstance(title, str) and title else job
         for t in run["tasks"]:
-            index.setdefault(t["id"], []).append({"run": run["id"], "outcome": t["outcome"], "commits": t["commits"]})
+            index.setdefault(t["id"], []).append({"run": run["id"], "outcome": t["outcome"], "commits": t["commits"],
+                                                  "job": job, "title": titles.get(job) if job else None})
     return index
 
 
@@ -2166,8 +2174,8 @@ def build_html():
 
     // A card opens its log right under itself when clicked; a running task always shows it.
     var openLogs = {};
-    // {task id: [{run, outcome, commits}]} for the selected feature, newest run first (/api/runs/tasks),
-    // and the task a "Tasks in this run" row asked to show.
+    // {task id: [{run, outcome, commits, job, title}]} for the selected feature, newest run first
+    // (/api/runs/tasks), and the task a "Tasks in this run" row asked to show.
     var taskRuns = {}, pendingTask = null;
 
     var OUTCOME_LABELS = { committed: 'committed', approved: 'approved', blocked: 'blocked', rejected: 'rejected',
@@ -2178,11 +2186,20 @@ def build_html():
     }
 
     // The newest run that touched the task, as a chip that opens that run; the title lists every run.
+    // A run that belonged to a Job names the Job instead ("done in job <title>") and opens that Job;
+    // the run is one click deeper, inside the Job's card (005 FR-013).
     function taskRunChipHtml(id) {
       var runs = taskRuns[id];
       if (!runs || !runs.length) return '';
       var r = runs[0];
       var title = runs.map(function(x) { return '#' + x.run + ': ' + x.outcome + (x.commits.length ? ' (' + x.commits.join(', ') + ')' : ''); }).join('\\n');
+      if (r.job) {
+        var word = r.outcome === 'committed' ? 'done' : (OUTCOME_LABELS[r.outcome] || r.outcome);
+        return '<span class="run-chip" data-open-job="' + escapeHtml(r.job) + '" title="' + escapeHtml(title) + '">' +
+          '<span class="run-outcome o-' + escapeHtml(r.outcome) + '">' + escapeHtml(word) + '</span> in job ' +
+          escapeHtml(r.title || r.job) + (r.commits.length ? ' · <span class="mono">' + escapeHtml(r.commits[0]) + '</span>' : '') +
+          (runs.length > 1 ? ' · +' + (runs.length - 1) + ' more' : '') + '</span>';
+      }
       return '<span class="run-chip" data-run="' + escapeHtml(r.run) + '" title="' + escapeHtml(title) + '">' + outcomeHtml(r.outcome) +
         ' in run #' + escapeHtml(r.run) + (r.commits.length ? ' · <span class="mono">' + escapeHtml(r.commits[0]) + '</span>' : '') +
         (runs.length > 1 ? ' · +' + (runs.length - 1) + ' more' : '') + '</span>';
@@ -3349,7 +3366,7 @@ def build_html():
       if (t.classList.contains('decision-submit')) saveDecision(t.getAttribute('data-task'));
       if (t.classList.contains('decision-apply')) applyDecision(t.getAttribute('data-task'));
       var card = t.closest ? t.closest('[data-task-card]') : null;
-      if (card && !t.closest('.live-output, button, a, textarea, [data-run]') && !(window.getSelection && String(window.getSelection()))) {
+      if (card && !t.closest('.live-output, button, a, textarea, [data-run], [data-open-job]') &&!(window.getSelection && String(window.getSelection()))) {
         var tid = card.getAttribute('data-task-card');
         if (openLogs[tid]) delete openLogs[tid]; else openLogs[tid] = true;
         loadTasks();
@@ -3837,6 +3854,15 @@ def build_html():
         }
         showSection(row.hasAttribute('data-run') ? 'jobs' : row.getAttribute('data-go'));
         if (row.hasAttribute('data-run')) { loadEvents(); loadReport(); }
+      });
+
+      // A task chip naming a Job (005 FR-013) opens that Job's card in Jobs; its runs are inside it.
+      document.addEventListener('click', function(ev) {
+        var chip = ev.target.closest ? ev.target.closest('[data-open-job]') : null;
+        if (!chip) return;
+        expandedJob = chip.getAttribute('data-open-job');
+        revealRun = null;
+        showSection('jobs');
       });
 
       document.querySelectorAll('button[data-raw]').forEach(function(btn) {
