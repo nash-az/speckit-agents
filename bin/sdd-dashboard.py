@@ -42,11 +42,20 @@ Endpoints:
     GET /api/doc/state?name=      -- spec | constitution: its hash, whether it has uncommitted edits, why editing is off
     POST /api/doc/save            -- { "name", "text", "base" } replace spec.md or the constitution (sdd-edit.py, FR-035)
     POST /api/doc/commit          -- { "name", "message" } commit just that file
+    GET /api/jobs                 -- {"jobs": [record + shown + progress, ...]}, open first, then newest (005)
+    GET /api/jobs/<id>            -- one Job plus its runs as /api/runs gives them (404 for a bad or unknown id)
+    GET /api/jobs/plan            -- Start job preview: {phases, runnable, held, can_start, reason}
+    POST /api/jobs/start          -- { "phases"?, "tasks"?, "max_tasks"?, "until"?, "max_runs"?, "title"? }
+                                     start a Job (sdd-launch.py launch_job)
+    POST /api/jobs/<id>/continue  -- { "max_tasks"?, "until"?, "max_runs"? } (number or null) continue a Job
+    POST /api/jobs/<id>/merge     -- {} merge the Job's branch into its base (sdd-job.py merge)
+    POST /api/jobs/<id>/drop      -- {} drop the Job, keeping its branch (sdd-job.py drop)
 Every POST needs an allowed Origin and `Content-Type: application/json` (data-model.md §4.9).
 The control routes write one request to `control.json`, and the answer route one file per answer in
 `answers/` of the supervisor's state directory, both outside the project. Applying an answer calls
-`sdd-decide.py`, which commits the decision files (FR-033), and starting a run calls `sdd-launch.py`
-(FR-034); nothing else is ever written (§4.8).
+`sdd-decide.py`, which commits the decision files (FR-033), starting a run calls `sdd-launch.py`
+(FR-034), and the job routes call `sdd-launch.py` and `sdd-job.py` (005; a refusal is
+`409 {"error"}`); nothing else is ever written (§4.8).
 """
 
 from __future__ import annotations
@@ -77,6 +86,8 @@ _spec = importlib.util.spec_from_file_location("sdd_launch", Path(__file__).with
 sdd_launch = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_launch)
 _spec = importlib.util.spec_from_file_location("sdd_edit", Path(__file__).with_name("sdd-edit.py"))
 sdd_edit = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_edit)
+_spec = importlib.util.spec_from_file_location("sdd_job", Path(__file__).with_name("sdd-job.py"))
+sdd_job = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_job)
 
 # The supervisor's state directory comes from the supervisor itself, so both use the same one
 # (data-model.md §12.3).
@@ -267,8 +278,55 @@ def list_runs(project):
             "stopped": None,
         })
         runs[-1]["tasks"] = run_tasks(events, runs[-1]["finished"])
-        runs[-1]["feature"] = run_feature(project, run_id, read_json(entry / "workflows.json"))
+        listing = read_json(entry / "workflows.json")
+        runs[-1]["feature"] = run_feature(project, run_id, listing)
+        # The Job the run belonged to (005 data-model §5), else None.
+        job = listing.get("job") if isinstance(listing, dict) else None
+        runs[-1]["job"] = job if isinstance(job, str) else None
     return runs
+
+
+def job_view(project, record):
+    """A Job as `/api/jobs` gives it (005 data-model §9): the record plus `shown` (display_state) and
+    `progress` (None when tasks.md cannot be read)."""
+    try:
+        counts = sdd_job.progress(project, record)
+    except (OSError, ValueError, KeyError, TypeError):
+        counts = None
+    return {**record, "shown": sdd_job.display_state(project, record), "progress": counts}
+
+
+def list_job_views(project):
+    """`GET /api/jobs`: every Job, open first, then newest (sdd-job.py lists newest first; the sort is stable)."""
+    records = sorted(sdd_job.list_jobs(project), key=lambda r: r.get("state") in sdd_job.CLOSED_STATES)
+    return [job_view(project, r) for r in records]
+
+
+def get_job(project, job_id):
+    """`GET /api/jobs/<id>`: the Job plus its runs as `/api/runs` gives them (those whose `workflows.json`
+    names the Job, or listed in its `runs`), or None for an id not in the run id form or unknown."""
+    if not RUN_ID_RE.match(job_id):
+        return None
+    record = sdd_job.load(project, job_id)
+    if record is None:
+        return None
+    listed = {str(r) for r in record.get("runs") or []}
+    runs = [r for r in list_runs(project) if r.get("job") == job_id or r["id"] in listed]
+    return {**job_view(project, record), "runs": runs}
+
+
+def job_plan(project, feature):
+    """`GET /api/jobs/plan`: the Start job preview `{phases, runnable, held, can_start, reason}`. The counts
+    come from `sdd-launch.py`'s `preview()`; `can_start` and `reason` from a dry run of `launch_job()` for all
+    open tasks, so the reasons are the launcher's exact refusal texts. Nothing is changed."""
+    info = sdd_launch.preview(project, feature)
+    result = {"phases": info["phases"], "runnable": info["runnable"], "held": info["held"],
+              "can_start": True, "reason": None}
+    try:
+        sdd_launch.launch_job(project, feature, None, None, dry_run=True)
+    except sdd_launch.Refused as e:
+        result.update(can_start=False, reason=str(e))
+    return result
 
 
 def get_events(project, run_id):
@@ -714,6 +772,32 @@ RUN_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{4}[a-z0-9-]*$")
 CONTROL_ROUTES = {"/api/run/stop": "stop", "/api/run/resume": "resume",
                   "/api/run/hold": "hold", "/api/run/release": "release"}
 
+# `POST /api/jobs/<id>/<action>` (005 contracts/jobs-api.md).
+JOB_ACTION_RE = re.compile(r"^/api/jobs/([^/]+)/(continue|merge|drop)$")
+JOB_LIMITS = ("max_tasks", "until", "max_runs")
+
+
+def _whole_or_none(value):
+    return value is None or (isinstance(value, int) and not isinstance(value, bool))
+
+
+def _number_or_none(value):
+    return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool))
+
+
+def _id_list(value):
+    return isinstance(value, list) and all(isinstance(v, (str, int)) and not isinstance(v, bool) for v in value)
+
+
+def job_limits_from(data):
+    """The limits a job body gives (only the keys present), or None when one has the wrong type:
+    `max_tasks` and `max_runs` whole numbers, `until` epoch seconds, each also null for none."""
+    limits = {name: data[name] for name in JOB_LIMITS if name in data}
+    for name, value in limits.items():
+        if not (_number_or_none(value) if name == "until" else _whole_or_none(value)):
+            return None
+    return limits
+
 
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
     project = None
@@ -904,6 +988,79 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         self._send_json({"ok": True, "pid": result["pid"], "run_args": result["run_args"],
                          "resumes": result["resumes"]}, 202, cors)
+
+    def _job_body(self, cors):
+        """The POST body as a JSON object, or None after sending 400."""
+        try:
+            data = self._read_json_body()
+        except ValueError:
+            self._send_json({"error": "body must be JSON"}, 400, cors)
+            return None
+        if not isinstance(data, dict):
+            self._send_json({"error": "body must be a JSON object"}, 400, cors)
+            return None
+        return data
+
+    def _job_start(self):
+        """`POST /api/jobs/start` (005 contracts/jobs-api.md), after the §4.9 checks: 400 for a bad body, 409 when
+        the launcher refuses (its reason in `error`; nothing changed), else `202 {"ok": true, "job"}`."""
+        cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
+        data = self._job_body(cors)
+        if data is None:
+            return
+        phases, tasks, title = data.get("phases", []), data.get("tasks", []), data.get("title")
+        limits = job_limits_from(data)
+        if (not _id_list(phases) or not _id_list(tasks) or (title is not None and not isinstance(title, str))
+                or limits is None):
+            self._send_json({"error": "phases and tasks must be lists, title a string, max_tasks and max_runs "
+                                      "whole numbers or null, until epoch seconds or null"}, 400, cors)
+            return
+        proj = DashboardHandler.project
+        feature = self._feature_dir()
+        if feature is None:
+            self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409, cors)
+            return
+        scope = {"phases": [str(p) for p in phases], "tasks": [str(t) for t in tasks]}
+        try:
+            result = sdd_launch.launch_job(proj, feature, scope, limits, title)
+        except sdd_launch.Refused as e:
+            self._send_json({"error": str(e)}, 409, cors)
+            return
+        self._send_json({"ok": True, "job": result["job"]}, 202, cors)
+
+    def _job_action(self, job_id, action):
+        """`POST /api/jobs/<id>/continue|merge|drop` (005 contracts/jobs-api.md), after the §4.9 checks: 404 for an
+        id not in the run id form or unknown, 400 for a bad body, 409 when refused (the reason in `error`;
+        nothing changed). Continue answers `202 {"ok": true}`, Merge `200 {"ok": true, "commit"}`, Drop
+        `200 {"ok": true}`."""
+        cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
+        proj = DashboardHandler.project
+        if not RUN_ID_RE.match(job_id) or sdd_job.load(proj, job_id) is None:
+            self._send_json({"error": "not found"}, 404, cors)
+            return
+        data = self._job_body(cors)
+        if data is None:
+            return
+        if action == "continue":
+            limits = job_limits_from(data)
+            if limits is None:
+                self._send_json({"error": "max_tasks and max_runs must be whole numbers or null, "
+                                          "until epoch seconds or null"}, 400, cors)
+                return
+            try:
+                sdd_launch.continue_job(proj, job_id, limits)
+            except sdd_launch.Refused as e:
+                self._send_json({"error": str(e)}, 409, cors)
+                return
+            self._send_json({"ok": True}, 202, cors)
+            return
+        try:
+            result = sdd_job.merge(proj, job_id) if action == "merge" else sdd_job.drop(proj, job_id)
+        except sdd_job.Refused as e:
+            self._send_json({"error": str(e)}, 409, cors)
+            return
+        answer = {"ok": True, "commit": result["commit"]} if action == "merge" else {"ok": True}
+        self._send_json(answer, 200, cors)
 
     def _doc_edit(self, action):
         """`POST /api/doc/save` `{name, text, base}` and `POST /api/doc/commit` `{name, message}` (FR-035), after
@@ -1102,6 +1259,24 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/runs":
             self._send_json(list_runs(proj))
             return
+        if path == "/api/jobs":
+            self._send_json({"jobs": list_job_views(proj)})
+            return
+        if path == "/api/jobs/plan":
+            feature = self._feature_dir()
+            if feature is None:
+                self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409)
+                return
+            self._send_json(job_plan(proj, feature))
+            return
+        m = re.match(r"^/api/jobs/([^/]+)$", path)
+        if m:
+            job = get_job(proj, m.group(1))
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            self._send_json(job)
+            return
         if path == "/api/runs/tasks":
             feature = self._feature_dir()
             self._send_json(runs_by_task(proj, feature.name if feature else None))
@@ -1171,6 +1346,13 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/api/run/start":
             self._start_run()
+            return
+        if path == "/api/jobs/start":
+            self._job_start()
+            return
+        m = JOB_ACTION_RE.match(path)
+        if m:
+            self._job_action(m.group(1), m.group(2))
             return
         if path == "/api/project/select":
             try:

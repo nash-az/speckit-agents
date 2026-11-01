@@ -325,7 +325,8 @@ class RunsTest(unittest.TestCase):
         run = runs[0]
         self.assertEqual((run["approved"], run["blocked"], run["events_count"]), (1, 1, 6))
         self.assertEqual(set(run), {"id", "events_count", "approved", "blocked", "interrupted",
-                                    "finished", "stopped", "tasks", "feature"})
+                                    "finished", "stopped", "tasks", "feature", "job"})
+        self.assertIsNone(run["job"])
         self.assertFalse(run["finished"])
         (self.root / ".sdd" / "runs" / "20261025-1200.md").write_text("# Report\n", encoding="utf-8")
         self.assertTrue(request(self, "GET", "/api/runs")[0]["finished"])
@@ -1894,6 +1895,184 @@ class StartRunTest(unittest.TestCase):
         for needle in ('id="start-run-card"', "function loadStartRun", "function startRun",
                        "/api/run/start", "/api/run/plan", "window.confirm"):
             self.assertIn(needle, html)
+
+
+class JobsRouteTest(unittest.TestCase):
+    """005 contracts/jobs-api.md: the job routes through the handler, on a temporary git repository, with the
+    supervisor spawn stubbed."""
+
+    TASKS = "## Phase 1: A\n\n- [ ] T001 Do it\n- [ ] T002 [manual] You\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.root = base / "project"
+        (self.root / ".sdd").mkdir(parents=True)
+        (self.root / "specs" / "001-a").mkdir(parents=True)
+        (self.root / "specs" / "001-a" / "tasks.md").write_text(self.TASKS, encoding="utf-8")
+        (self.root / ".gitignore").write_text(".sdd/\n", encoding="utf-8")
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature,
+                      dash.DashboardHandler.port, dash.DashboardHandler.allow_ports)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, None
+        dash.DashboardHandler.port, dash.DashboardHandler.allow_ports = 8765, ()
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(base / "state")})
+        self.env.start()
+        self.spawn = mock.patch.object(dash.sdd_launch, "_spawn", return_value=mock.Mock(pid=4242))
+        self.spawned = self.spawn.start()
+
+    def tearDown(self):
+        self.spawn.stop()
+        self.env.stop()
+        (dash.DashboardHandler.project, dash.DashboardHandler.feature,
+         dash.DashboardHandler.port, dash.DashboardHandler.allow_ports) = self.saved
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True, check=True).stdout.strip()
+
+    def init_git(self):
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "t@example.com")
+        self.git("config", "user.name", "T")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "init")
+
+    def record(self, job_id, state="working", **fields):
+        record = {"id": job_id, "title": f"Job {job_id}", "feature": "001-a", "scope": {"phases": ["1"]},
+                  "scope_tasks": ["T001", "T002"], "blocked_at_start": 0,
+                  "limits": {"max_tasks": None, "until": None, "max_runs": 20}, "branch": f"auto/{job_id}",
+                  "base": {"branch": "main", "commit": "abc1234"}, "state": state, "reason": None, "runs": [],
+                  "no_progress_runs": 0, "created": 1, "ended": None, "merge_commit": None, **fields}
+        dash.sdd_job.save(self.root, record)
+        return record
+
+    def test_list_open_first_then_newest_with_shown_and_progress(self):
+        self.assertEqual(request(self, "GET", "/api/jobs"), {"jobs": []})
+        self.record("20261030-0900", "merged")
+        self.record("20261031-0900", "dropped")
+        self.record("20261029-0900", "waiting")
+        jobs = request(self, "GET", "/api/jobs")["jobs"]
+        self.assertEqual([j["id"] for j in jobs], ["20261029-0900", "20261031-0900", "20261030-0900"])
+        self.assertEqual(jobs[0]["shown"], {"state": "waiting"})
+        self.assertEqual(jobs[0]["progress"], {"done": 0, "total": 2, "waiting_on_you": 1, "left": 1})
+        self.assertEqual(jobs[0]["title"], "Job 20261029-0900")
+
+    def test_one_job_with_its_runs_and_runs_name_their_job(self):
+        self.record("20261031-1012", "waiting", runs=["20261031-1012"])
+        wf = write_workflow_dir(Path(self.tmp.name).resolve() / "transcripts" / "wf_job")
+        for run_id, job in (("20261031-1012", None), ("20261031-1530", "20261031-1012"), ("20261030-0800", None)):
+            write_run(self.root, run_id, [wf])
+            if job:
+                listing = self.root / ".sdd" / "runs" / run_id / "workflows.json"
+                listing.write_text(json.dumps({"workflow_dirs": [str(wf)], "feature": "001-a", "job": job}),
+                                   encoding="utf-8")
+        runs = {r["id"]: r["job"] for r in request(self, "GET", "/api/runs")}
+        self.assertEqual(runs, {"20261031-1530": "20261031-1012", "20261031-1012": None, "20261030-0800": None})
+        job = request(self, "GET", "/api/jobs/20261031-1012")
+        self.assertEqual(job["id"], "20261031-1012")
+        self.assertEqual(job["shown"], {"state": "waiting"})
+        self.assertEqual([r["id"] for r in job["runs"]], ["20261031-1530", "20261031-1012"])
+        self.assertIn("tasks", job["runs"][0])
+
+    def test_bad_or_unknown_id_is_404(self):
+        self.record("20261031-1012", "done")
+        for bad in ("..", "run-001", "20261031-1012X", "..%2F..%2Fetc", "20261031-0000"):
+            request(self, "GET", f"/api/jobs/{bad}", status=404)
+        with mock.patch.object(dash.sdd_launch, "continue_job") as cont, \
+                mock.patch.object(dash.sdd_job, "merge") as merge:
+            for bad in ("..", "20261031-0000"):
+                request(self, "POST", f"/api/jobs/{bad}/continue", {}, status=404)
+                request(self, "POST", f"/api/jobs/{bad}/merge", {}, status=404)
+                request(self, "POST", f"/api/jobs/{bad}/drop", {}, status=404)
+        cont.assert_not_called()
+        merge.assert_not_called()
+
+    def test_plan_says_whether_a_job_can_start(self):
+        data = request(self, "GET", "/api/jobs/plan")
+        self.assertEqual((data["can_start"], data["reason"]), (False, "the project is not a git repository"))
+        self.init_git()
+        data = request(self, "GET", "/api/jobs/plan")
+        self.assertEqual(set(data), {"phases", "runnable", "held", "can_start", "reason"})
+        self.assertEqual((data["can_start"], data["reason"]), (True, None))
+        self.assertEqual(data["phases"], [{"id": "1", "title": "A", "runnable": 1}])
+        self.assertEqual((data["runnable"], data["held"]), (1, 1))
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")  # the dry run changed nothing
+        self.assertEqual(dash.sdd_job.list_jobs(self.root), [])
+        self.record("20261031-1012", "waiting")
+        data = request(self, "GET", "/api/jobs/plan")
+        self.assertEqual((data["can_start"], data["reason"]), (False, "another job is open: Job 20261031-1012"))
+
+    def test_start_creates_the_job_and_a_second_start_is_refused(self):
+        self.init_git()
+        data = request(self, "POST", "/api/jobs/start", {"phases": ["1"], "max_tasks": 3, "title": "First"},
+                       status=202)
+        self.assertTrue(data["ok"])
+        record = dash.sdd_job.load(self.root, data["job"])
+        self.assertEqual((record["title"], record["scope"], record["limits"]),
+                         ("First", {"phases": ["1"]}, {"max_tasks": 3, "until": None, "max_runs": 20}))
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), f"auto/{data['job']}")
+        command = self.spawned.call_args.args[0]
+        self.assertEqual(command[-2:], ["--job", data["job"]])
+        refused = request(self, "POST", "/api/jobs/start", {}, status=409)
+        self.assertEqual(refused, {"error": "another job is open: First"})
+
+    def test_start_refusal_and_bad_bodies(self):
+        self.init_git()
+        (self.root / "stray.txt").write_text("mine")
+        refused = request(self, "POST", "/api/jobs/start", {"tasks": ["T001"]}, status=409)
+        self.assertEqual(refused["error"], "the working tree has changes; commit or stash them first: stray.txt")
+        with mock.patch.object(dash.sdd_launch, "launch_job") as launch:
+            for body in ({"phases": "1"}, {"tasks": [{}]}, {"title": 5}, {"max_tasks": "3"}, {"max_runs": True},
+                         {"until": "soon"}, ["x"]):
+                request(self, "POST", "/api/jobs/start", body, status=400)
+            request(self, "POST", "/api/jobs/start", raw=b"{nope", status=400)
+            request(self, "POST", "/api/jobs/start", {}, origin="http://evil.example", status=403)
+            request(self, "POST", "/api/jobs/start", {}, content_type="text/plain", status=415)
+        launch.assert_not_called()
+        self.assertEqual(self.spawned.call_count, 0)
+
+    def test_continue_passes_only_the_given_limits(self):
+        self.record("20261031-1012", "waiting")
+        with mock.patch.object(dash.sdd_launch, "continue_job", return_value={"job": "x", "pid": 1}) as cont:
+            data = request(self, "POST", "/api/jobs/20261031-1012/continue", {"max_tasks": None, "until": 1.5e9},
+                           status=202)
+            self.assertEqual(data, {"ok": True})
+            self.assertEqual(cont.call_args.args, (self.root, "20261031-1012", {"max_tasks": None, "until": 1.5e9}))
+            for body in ({"max_tasks": "2"}, {"max_runs": 1.5}, {"until": False}, ["x"]):
+                request(self, "POST", "/api/jobs/20261031-1012/continue", body, status=400)
+            self.assertEqual(cont.call_count, 1)
+
+    def test_continue_refusal_is_409(self):
+        self.init_git()
+        self.record("20261031-1012", "done")
+        data = request(self, "POST", "/api/jobs/20261031-1012/continue", {}, status=409)
+        self.assertEqual(data, {"error": "this job cannot be continued in state done"})
+        self.assertEqual(self.spawned.call_count, 0)
+
+    def test_merge_and_drop(self):
+        self.init_git()
+        self.git("switch", "-q", "-c", "auto/20261031-1012")
+        (self.root / "work.txt").write_text("done\n")
+        self.git("add", "work.txt")
+        self.git("commit", "-q", "-m", "work")
+        self.record("20261031-1012", "working")
+        refused = request(self, "POST", "/api/jobs/20261031-1012/merge", {}, status=409)
+        self.assertEqual(refused, {"error": "this job cannot be merged in state working"})
+        refused = request(self, "POST", "/api/jobs/20261031-1012/drop", {}, status=409)
+        self.assertEqual(refused, {"error": "this job cannot be dropped in state working"})
+        self.record("20261031-1012", "done")
+        data = request(self, "POST", "/api/jobs/20261031-1012/merge", {}, status=200)
+        self.assertEqual(data, {"ok": True, "commit": self.git("rev-parse", "HEAD")})
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertEqual(dash.sdd_job.load(self.root, "20261031-1012")["state"], "merged")
+
+        self.git("switch", "-q", "-c", "auto/20261031-1100")
+        self.record("20261031-1100", "stopped")
+        data = request(self, "POST", "/api/jobs/20261031-1100/drop", {}, status=200)
+        self.assertEqual(data, {"ok": True})
+        self.assertEqual(dash.sdd_job.load(self.root, "20261031-1100")["state"], "dropped")
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertTrue(self.git("branch", "--list", "auto/20261031-1100"))  # the branch is kept
 
 
 class ReadOnlyTest(unittest.TestCase):
