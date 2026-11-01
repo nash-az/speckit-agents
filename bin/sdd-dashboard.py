@@ -1696,8 +1696,29 @@ def build_html():
   .start-reason { padding: 0.5rem 0.75rem; border-left: 3px solid var(--st-held, orange); background: var(--bg); border-radius: 4px; font-size: 0.875rem; }
   .start-phase, .start-option { display: block; margin: 0.35rem 0; font-size: 0.9rem; }
   .start-count { color: var(--text-muted); font-size: 0.8rem; margin-left: 0.4rem; }
-  #start-run-btn { margin-top: 0.5rem; }
-  #start-max-tasks { padding: 0.25rem 0.4rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; }
+  #start-job-btn { margin-top: 0.5rem; }
+  .start-job-body input[type=number], .start-job-body input[type=text], .start-job-body input[type=time] { padding: 0.25rem 0.4rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; max-width: 100%; }
+  .start-scope { margin: 0.25rem 0 0.5rem 1.4rem; }
+  .start-limits { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
+
+  /* Jobs view (005 FR-011) */
+  .job-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.875rem 1rem; margin-bottom: 0.75rem; }
+  .job-card.open-job { border-color: var(--accent); }
+  .job-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; cursor: pointer; }
+  .job-title { font-weight: 600; font-size: 0.9375rem; flex: 1; min-width: 10rem; }
+  .job-state { font-size: 0.75rem; font-weight: 600; padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .job-working, .job-paused { color: var(--st-running); } .job-waiting, .job-held { color: var(--st-held); }
+  .job-interrupted, .job-failed { color: var(--st-blocked); } .job-stopped { color: var(--st-retrying); }
+  .job-done, .job-merged { color: var(--st-done); } .job-dropped { color: var(--st-wontfix); }
+  .job-branch { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted); }
+  .job-reason { font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.375rem; }
+  .job-card .ov-bar { margin: 0.625rem 0 0.375rem; }
+  .job-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.625rem; }
+  .job-actions .btn { padding: 0.375rem 0.75rem; }
+  .job-actions .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .job-detail { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+  .job-detail > .card-title { margin-bottom: 0.5rem; font-size: 0.8125rem; }
+  .job-runs { margin-top: 0.75rem; }
   .manual-actions { margin-top: 0.75rem; }
   .manual-note { width: 100%; margin: 0 0 0.5rem; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; font-size: 0.875rem; box-sizing: border-box; }
   .decision-answer { width: 100%; margin: 0.5rem 0; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; font-size: 0.875rem; box-sizing: border-box; }
@@ -1755,7 +1776,7 @@ def build_html():
       <div class="nav-item" data-section="blocked"><span class="icon">🚫</span>Blocked</div>
       <div class="nav-item" data-section="decisions"><span class="icon">⚖️</span>Decisions</div>
       <div class="nav-item" data-section="config"><span class="icon">⚙️</span>Config</div>
-      <div class="nav-item" data-section="runs"><span class="icon">🔄</span>Runs</div>
+      <div class="nav-item" data-section="jobs"><span class="icon">🔄</span>Jobs</div>
       <div class="nav-item" data-section="status"><span class="icon">⚡</span>Status</div>
     </div>
   </div>
@@ -1844,14 +1865,16 @@ def build_html():
         </div>
       </section>
 
-      <!-- Runs -->
-      <section id="section-runs" class="section" style="display:none;">
-        <div class="card" id="start-run-card">
-          <div class="card-title">Start a run</div>
-          <div id="start-run-body"></div>
+      <!-- Jobs (005 FR-011): one card per Job, open first; runs without a Job under "Earlier runs" -->
+      <section id="section-jobs" class="section" style="display:none;">
+        <div class="card" id="start-job-card">
+          <div class="card-title">Start job</div>
+          <div id="start-job-body"></div>
         </div>
-        <div class="card-title">Run History</div>
-        <div id="runs-list"></div>
+        <div class="section-title">Jobs</div>
+        <div id="jobs-list"></div>
+        <div class="section-title" style="margin-top:1.25rem">Earlier runs</div>
+        <div id="earlier-runs"></div>
       </section>
 
       <!-- Status -->
@@ -2422,7 +2445,7 @@ def build_html():
         var note = document.getElementById('feature-runs-note');
         var differs = f.runs && f.active && f.runs !== f.active;
         note.textContent = differs ? 'runs use ' + f.runs : '';
-        note.title = differs ? 'You are looking at ' + f.active + '; /sdd-run and Start run use ' + f.runs + ' (.specify/feature.json).' : '';
+        note.title = differs ? 'You are looking at ' + f.active + '; /sdd-run and Start job use ' + f.runs + ' (.specify/feature.json).' : '';
         box.style.display = '';
       }).catch(function(e) { console.error('loadFeatureSelect error', e); });
     }
@@ -2454,6 +2477,7 @@ def build_html():
     function sectionFromHash() {
       var name = decodeURIComponent(location.hash.replace(/^#\\/?/, ''));
       if (name === 'docs') return lastDoc;
+      if (name === 'runs') { history.replaceState(null, '', '#jobs'); return 'jobs'; }  // the Runs view became Jobs (005 FR-011)
       var known = DOC_GROUP.indexOf(name) >= 0 || (/^[a-z-]+$/.test(name) && document.querySelector('.nav-item[data-section="' + name + '"]'));
       return known ? name : 'overview';
     }
@@ -2483,7 +2507,7 @@ def build_html():
         if (name === 'tasks') loadTasks();
         if (name === 'blocked') loadBlocked();
         if (name === 'decisions') loadDecisions();
-        if (name === 'runs') { loadRuns(); loadStartRun(); }
+        if (name === 'jobs') { loadJobs(); loadStartJob(); }
         if (name === 'status') loadStatus();
         if (isDoc) loadDoc(name);
       } catch(e) { console.error('showSection error', e); }
@@ -2642,7 +2666,7 @@ def build_html():
 
     function runPillHtml(run) {
       var state = (run && run.state) || 'none';
-      // Words for the person, never the run id (that lives in the Runs view).
+      // Words for the person, never the run id (that lives in the Jobs view).
       var label = { running: 'Working', paused: 'Paused', stale: 'Stopped unexpectedly', none: 'Nothing running' }[state] || 'Nothing running';
       return '<span class="ov-run ' + escapeHtml(state) + '"><span class="dot"></span>' + escapeHtml(label) + '</span>';
     }
@@ -2766,7 +2790,7 @@ def build_html():
         return '<div class="ov-row" data-run="' + escapeHtml(r.id) + '"><span class="id">#' + escapeHtml(r.id) + '</span>' +
           '<span class="txt">' + r.approved + ' approved · ' + r.blocked + ' blocked' + (r.interrupted ? ' · ' + r.interrupted + ' interrupted' : '') + '</span>' +
           '<span class="meta">' + state + '</span></div>';
-      }).join('') + (runs.length > 5 ? '<div class="ov-more">' + (runs.length - 5) + ' older in Runs</div>' : '');
+      }).join('') + (runs.length > 5 ? '<div class="ov-more" data-go="jobs">' + (runs.length - 5) + ' older in Jobs</div>' : '');
     }
 
     // The tasks with the selected run's transient states merged in (as the Tasks view shows them).
@@ -2819,7 +2843,7 @@ def build_html():
       }).catch(function(e) { console.error('loadOverview error', e); });
     }
 
-    // The run whose events give the transient states: the run picked in the Runs view, else the
+    // The run whose events give the transient states: the run picked in the Jobs view, else the
     // run in .sdd/run.json. `paused` (§4.5) applies only when that run is the current one.
     function loadTasks() {
       loadMergedTasks().then(function(m) { renderTasks(m.phases, m.runId); })
@@ -2987,46 +3011,307 @@ def build_html():
       }).catch(function(e) { console.error('loadDecisions error', e); });
     }
 
-    // Start run (FR-034): what a run would do, and a button that starts one under the supervisor.
-    function startRunHtml(plan) {
-      if (!plan) return '<div class="empty"><div>Could not read the run plan.</div></div>';
+    // Jobs view (005 FR-011, data-model.md §9). The helpers from here to "End of the Jobs view helpers" read
+    // nothing but their arguments, so tests/test_sdd_dashboard.py runs them in node.
+    var JOB_STATE_WORDS = { working: 'Working', paused: 'Paused: usage limit', held: 'Held after the usage reset',
+      waiting: 'Waiting on you', interrupted: 'Stopped unexpectedly', stopped: 'Stopped', failed: 'Failed',
+      done: 'Done', merged: 'Merged', dropped: 'Dropped' };
+    var JOB_LIMIT_NAMES = ['max_tasks', 'until', 'max_runs'];
+    var JOB_CLOSED = ['merged', 'dropped'];
+
+    function hhmm(epoch) {
+      var d = new Date(epoch * 1000);
+      return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    }
+
+    // The shown state (sdd-job.py display_state): `paused` and `interrupted` come from the supervisor.
+    function jobShown(job) { return (job && job.shown && job.shown.state) || (job && job.state) || 'unknown'; }
+
+    function jobStateText(job) {
+      var s = jobShown(job);
+      if (s === 'paused' && job.shown.resets_at) return 'Paused until ' + hhmm(job.shown.resets_at) + ': usage limit';
+      return JOB_STATE_WORDS[s] || s;
+    }
+
+    // The limit a stopped Job was stopped by ("max_tasks 10 reached"), as sdd-launch.py reads it; else null.
+    function limitInReason(job) {
+      var reason = job && job.reason;
+      if (!job || job.state !== 'stopped' || typeof reason !== 'string' || !/ reached$/.test(reason)) return null;
+      var name = reason.split(' ')[0];
+      return JOB_LIMIT_NAMES.indexOf(name) >= 0 ? name : null;
+    }
+
+    // Which buttons a Job accepts in its shown state (data-model.md §2): {stop, continue, merge, drop}.
+    function jobActions(job) {
+      var s = jobShown(job);
+      return { stop: s === 'working' || s === 'paused',
+               'continue': ['waiting', 'interrupted', 'held', 'stopped'].indexOf(s) >= 0,
+               merge: ['done', 'stopped', 'failed'].indexOf(s) >= 0,
+               drop: ['done', 'stopped', 'failed'].indexOf(s) >= 0 };
+    }
+
+    function jobButtonHtml(job, action, label, enabled, why) {
+      return '<button type="button" class="btn job-btn" data-job-action="' + action + '" data-job="' + escapeHtml(job.id) + '"' +
+        (enabled ? '' : ' disabled title="' + escapeHtml(why) + '"') + '>' + label + '</button>';
+    }
+
+    // Progress over the Job's scope (sdd-job.py progress): a bar of done, waiting on you and left, and the counts.
+    function jobProgressHtml(p) {
+      if (!p) return '<div class="job-reason">Progress is not available: the tasks file cannot be read.</div>';
+      var total = p.total || 0, pct = function(n) { return total ? (n * 100 / total) : 0; };
+      return '<div class="ov-bar job-bar">' +
+        '<span style="width:' + pct(p.done) + '%;background:var(--st-done)"></span>' +
+        '<span style="width:' + pct(p.waiting_on_you) + '%;background:var(--st-held)"></span>' +
+        '<span style="width:' + pct(p.left) + '%;background:var(--st-queued)"></span></div>' +
+        '<div class="ov-legend job-counts"><span><b>' + p.done + '</b> of ' + total + ' done</span>' +
+        '<span><b>' + p.waiting_on_you + '</b> waiting on you</span><span><b>' + p.left + '</b> left</span></div>';
+    }
+
+    // One Job card: title, shown state in words, branch, the last reason, progress and the buttons.
+    function jobCardHtml(job) {
+      var s = jobShown(job), a = jobActions(job);
+      var closed = JOB_CLOSED.indexOf(job.state) >= 0;
+      var buttons = closed ? '' : '<div class="job-actions">' +
+        jobButtonHtml(job, 'stop', 'Stop', a.stop, 'only a working job can be stopped') +
+        jobButtonHtml(job, 'continue', 'Continue', a['continue'], 'only a waiting, interrupted, held or stopped job can continue') +
+        jobButtonHtml(job, 'merge', 'Merge', a.merge, 'only a done, stopped or failed job can be merged') +
+        jobButtonHtml(job, 'drop', 'Drop', a.drop, 'only a done, stopped or failed job can be dropped') + '</div>';
+      var base = job.base && job.base.branch ? ' from ' + escapeHtml(job.base.branch) : '';
+      var merged = job.state === 'merged' && job.merge_commit ? ' · merged as <span class="mono">' + escapeHtml(String(job.merge_commit).slice(0, 7)) + '</span>' : '';
+      return '<div class="job-head" data-job-toggle="' + escapeHtml(job.id) + '">' +
+        '<span class="job-title">' + escapeHtml(job.title || job.id) + '</span>' +
+        '<span class="job-state job-' + escapeHtml(s) + '">' + escapeHtml(jobStateText(job)) + '</span>' +
+        '<span class="job-branch">' + escapeHtml(job.branch || '') + base + merged + '</span></div>' +
+        (job.reason ? '<div class="job-reason">' + escapeHtml(job.reason) + '</div>' : '') +
+        jobProgressHtml(job.progress) + buttons;
+    }
+
+    // The runs of a Job, as GET /api/jobs/<id> picks them: `job` in workflows.json, or listed in the record.
+    function jobRuns(job, runs) {
+      var listed = (job.runs || []).map(String);
+      return (runs || []).filter(function(r) { return r.job === job.id || listed.indexOf(r.id) >= 0; });
+    }
+
+    // Runs that belong to no Job ("Earlier runs", FR-015).
+    function earlierRuns(jobs, runs) {
+      return (runs || []).filter(function(r) {
+        return !(jobs || []).some(function(j) { return jobRuns(j, [r]).length; });
+      });
+    }
+
+    // The tasks a Job covered, over its runs (newest first, as /api/runs gives them): the newest outcome
+    // per task and every commit, in the order the tasks were first worked on.
+    function jobTasks(runs) {
+      var order = [], byId = {};
+      (runs || []).slice().reverse().forEach(function(run) {
+        (run.tasks || []).forEach(function(t) {
+          if (!byId[t.id]) { byId[t.id] = { id: t.id, outcome: t.outcome, commits: [], runs: [] }; order.push(t.id); }
+          var e = byId[t.id];
+          e.outcome = t.outcome;
+          (t.commits || []).forEach(function(c) { if (e.commits.indexOf(c) < 0) e.commits.push(c); });
+          e.runs.push(run.id);
+        });
+      });
+      return order.map(function(id) { return byId[id]; });
+    }
+
+    // Rows of jobTasks(); a row opens the task in Tasks when the Job's feature is the one shown.
+    function jobTasksHtml(tasks, here, texts) {
+      if (!tasks.length) return '<div class="live-output-empty">No tasks worked on yet.</div>';
+      return tasks.map(function(t) {
+        return '<div class="run-task' + (here ? '' : ' other') + '"' + (here ? ' data-goto-task="' + escapeHtml(t.id) + '"' : '') + '>' +
+          '<span class="id">' + escapeHtml(t.id) + '</span>' + outcomeHtml(t.outcome) +
+          '<span class="txt">' + escapeHtml(here ? shortText((texts || {})[t.id] || '', 110) : '') + '</span>' +
+          (t.commits.length ? '<span class="mono meta">' + escapeHtml(t.commits.join(', ')) + '</span>' : '') + '</div>';
+      }).join('');
+    }
+
+    // "3, 4, 5, 7" -> "3–5, 7" (sdd-job.py _ranges), for the default title.
+    function idRanges(ids) {
+      if (!ids.every(function(i) { return /^[0-9]+$/.test(i); })) return ids.join(', ');
+      var nums = ids.map(Number).filter(function(n, i, a) { return a.indexOf(n) === i; }).sort(function(a, b) { return a - b; });
+      var parts = [], start = nums[0], prev = nums[0];
+      nums.slice(1).concat([null]).forEach(function(n) {
+        if (n !== null && n === prev + 1) { prev = n; return; }
+        parts.push(start === prev ? String(start) : start + '–' + prev);
+        if (n !== null) start = prev = n;
+      });
+      return parts.join(', ');
+    }
+
+    // The default title (FR-014, sdd-job.py default_title): "Phase 11", "Phases 3–5", "T061, T063", "All open tasks".
+    function jobDefaultTitle(scope) {
+      var phases = (scope && scope.phases) || [], tasks = (scope && scope.tasks) || [];
+      if (phases.length) return phases.filter(function(p, i, a) { return a.indexOf(p) === i; }).length === 1 ? 'Phase ' + phases[0] : 'Phases ' + idRanges(phases);
+      if (tasks.length) return tasks.join(', ');
+      return 'All open tasks';
+    }
+
+    // "T061, t063 T64" -> {ids: ['T061', 'T063', 'T64'], bad: []}.
+    function parseTaskIds(text) {
+      var ids = [], bad = [];
+      String(text || '').split(/[\\s,]+/).filter(Boolean).forEach(function(w) {
+        var id = w.toUpperCase();
+        if (/^T[0-9]+$/.test(id)) { if (ids.indexOf(id) < 0) ids.push(id); } else bad.push(w);
+      });
+      return { ids: ids, bad: bad };
+    }
+
+    // "18:30" -> epoch seconds of the next 18:30 after `now` (ms); null for anything else.
+    function untilEpoch(text, now) {
+      var m = /^([0-9]{1,2}):([0-9]{2})$/.exec(String(text || '').trim());
+      if (!m || +m[1] > 23 || +m[2] > 59) return null;
+      var d = new Date(now);
+      d.setHours(+m[1], +m[2], 0, 0);
+      if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+      return Math.floor(d.getTime() / 1000);
+    }
+
+    // A limit typed by the person: "none" -> null; max_tasks and max_runs a whole number >= 1; until a time HH:MM.
+    // Returns {value} or {error}.
+    function parseLimit(name, text, now) {
+      var t = String(text == null ? '' : text).trim().toLowerCase();
+      if (t === 'none') return { value: null };
+      if (name === 'until') {
+        var at = untilEpoch(t, now);
+        return at === null ? { error: 'give a time as HH:MM, or none' } : { value: at };
+      }
+      return /^[0-9]+$/.test(t) && +t >= 1 ? { value: +t } : { error: 'give a whole number of 1 or more, or none' };
+    }
+
+    // The question Continue asks for a Job stopped by a limit (FR-009).
+    function limitPrompt(job, name) {
+      var what = { max_tasks: 'a new task cap (tasks done in the whole job)', until: 'a new stop-by time (HH:MM)',
+                   max_runs: 'a new maximum number of runs' }[name];
+      return job.title + ' stopped: ' + job.reason + '. Give ' + what + ', or none for no limit.';
+    }
+
+    // Start job (005 FR-003, FR-014): the scope (phases or tasks), the limits and a title.
+    function startJobHtml(plan) {
+      if (!plan) return '<div class="empty"><div>Could not read the job plan.</div></div>';
+      var head = '<div class="start-summary">' + plan.runnable + ' runnable, ' + plan.held + ' held.</div>';
+      if (!plan.can_start) return head + '<div class="start-reason">Cannot start: ' + escapeHtml(plan.reason) + '</div>';
       var phases = (plan.phases || []).map(function(p) {
         return '<label class="start-phase"><input type="checkbox" class="start-phase-box" value="' + escapeHtml(p.id) + '" checked> ' +
           'Phase ' + escapeHtml(p.id) + ': ' + escapeHtml(p.title) + ' <span class="start-count">' + p.runnable + ' task' + (p.runnable === 1 ? '' : 's') + '</span></label>';
       }).join('');
-      var head = '<div class="start-summary">' + plan.runnable + ' runnable, ' + plan.held + ' held.' +
-        (plan.resumes ? ' An interrupted run (' + escapeHtml(plan.resumes) + ') will be resumed.' : '') + '</div>';
-      if (!plan.can_start) return head + '<div class="start-reason">Cannot start: ' + escapeHtml(plan.reason) + '</div>';
-      return head + (phases || '<div class="start-reason">Nothing new to run; the interrupted run will be resumed.</div>') +
-        '<label class="start-option"><input type="checkbox" id="start-no-converge" checked> Skip converge</label>' +
+      return head +
+        '<label class="start-option"><input type="radio" name="start-scope" value="phases" checked> Phases</label>' +
+        '<div class="start-scope">' + (phases || '<div class="start-reason">No phase has a runnable task.</div>') + '</div>' +
+        '<label class="start-option"><input type="radio" name="start-scope" value="tasks"> Tasks ' +
+        '<input type="text" id="start-tasks" placeholder="T061, T063" style="width:12rem"></label>' +
+        '<div class="start-limits">' +
         '<label class="start-option">Task cap <input type="number" id="start-max-tasks" min="1" max="500" placeholder="none" style="width:5rem"></label>' +
-        '<div><button class="btn" id="start-run-btn">Start run</button></div>';
+        '<label class="start-option">Stop by <input type="time" id="start-until"></label>' +
+        '<label class="start-option">Max runs <input type="number" id="start-max-runs" min="1" max="500" placeholder="20" style="width:5rem"></label></div>' +
+        '<label class="start-option">Title <input type="text" id="start-title" placeholder="the scope in words" style="width:16rem"></label>' +
+        '<div><button class="btn" id="start-job-btn">Start job</button></div>';
     }
 
-    function loadStartRun() {
-      var el = document.getElementById('start-run-body');
+    // The POST /api/jobs/start body from the form's values ({scope, phases, tasks, max_tasks, until, max_runs,
+    // title}, all text but `phases`), or {error}. `count` is the number of tasks the scope names.
+    function startJobBody(v, now) {
+      var body = {}, count = 0;
+      if (v.scope === 'tasks') {
+        var parsed = parseTaskIds(v.tasks);
+        if (parsed.bad.length) return { error: 'not a task id: ' + parsed.bad.join(', ') };
+        if (!parsed.ids.length) return { error: 'name at least one task, such as T061' };
+        body.tasks = parsed.ids;
+        count = parsed.ids.length;
+      } else {
+        if (!(v.phases || []).length) return { error: 'choose at least one phase' };
+        body.phases = v.phases.map(function(p) { return p.id; });
+        v.phases.forEach(function(p) { count += p.runnable || 0; });
+      }
+      var limits = { max_tasks: v.max_tasks, until: v.until, max_runs: v.max_runs };
+      for (var i = 0; i < JOB_LIMIT_NAMES.length; i++) {
+        var name = JOB_LIMIT_NAMES[i], text = String(limits[name] || '').trim();
+        if (!text) continue;
+        var got = parseLimit(name, text, now);
+        if (got.error) return { error: name.replace('_', ' ') + ': ' + got.error };
+        body[name] = got.value;
+      }
+      var title = String(v.title || '').trim();
+      if (title) body.title = title;
+      return { body: body, count: count, title: title || jobDefaultTitle(body) };
+    }
+    // End of the Jobs view helpers.
+
+    function loadStartJob() {
+      var el = document.getElementById('start-job-body');
       if (!el || (el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT')) return;
-      fetchJSON('/api/run/plan', 'GET').then(function(plan) { el.innerHTML = startRunHtml(plan); });
+      fetchJSON('/api/jobs/plan', 'GET').then(function(plan) {
+        var key = JSON.stringify(plan);
+        if (el._key === key) return;  // keep what the person ticked or typed while nothing changed
+        el._key = key;
+        el._plan = plan;
+        el.innerHTML = startJobHtml(plan);
+      });
     }
 
-    function startRun() {
-      var phases = [].slice.call(document.querySelectorAll('.start-phase-box')).filter(function(b) { return b.checked; })
+    function startJob() {
+      var el = document.getElementById('start-job-body'), plan = el._plan || {};
+      var checked = [].slice.call(el.querySelectorAll('.start-phase-box')).filter(function(b) { return b.checked; })
         .map(function(b) { return b.value; });
-      var cap = document.getElementById('start-max-tasks').value;
-      var body = { phases: phases, no_converge: document.getElementById('start-no-converge').checked };
-      if (cap) body.max_tasks = parseInt(cap, 10);
-      var count = 0;
-      document.querySelectorAll('.start-phase-box').forEach(function(b) {
-        if (b.checked) count += parseInt(b.parentNode.querySelector('.start-count').textContent, 10) || 0;
-      });
-      if (!window.confirm('Start an unattended run of ' + (phases.length ? 'phase ' + phases.join(', ') : 'the open phases') +
-          ' (' + count + ' tasks)? It makes commits on its own auto/ branch and uses your usage.')) return;
-      fetch('/api/run/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-        .then(function(res) { return res.json().then(function(d) { return { ok: res.ok, body: d || {} }; }); })
-        .then(function(r) {
-          toast(r.ok ? 'Run started' : 'Could not start: ' + (r.body.error || 'unknown error'));
-          loadStartRun(); loadRunState();
-        }).catch(function(e) { console.error('startRun error', e); toast('Could not start the run'); });
+      var scope = el.querySelector('input[name="start-scope"]:checked');
+      var made = startJobBody({
+        scope: scope ? scope.value : 'phases',
+        phases: (plan.phases || []).filter(function(p) { return checked.indexOf(p.id) >= 0; }),
+        tasks: document.getElementById('start-tasks').value,
+        max_tasks: document.getElementById('start-max-tasks').value,
+        until: document.getElementById('start-until').value,
+        max_runs: document.getElementById('start-max-runs').value,
+        title: document.getElementById('start-title').value
+      }, Date.now());
+      if (made.error) { toast('Cannot start: ' + made.error); return; }
+      if (!window.confirm('Start the job "' + made.title + '" (' + made.count + ' task' + (made.count === 1 ? '' : 's') + ')? ' +
+          'It runs unattended until its scope is done, waits on you, or reaches a limit; it makes commits on its own auto/ branch and uses your usage.')) return;
+      postJSON('/api/jobs/start', made.body).then(function(r) {
+        toast(r.ok ? 'Job started: ' + made.title : 'Could not start: ' + (r.body.error || 'unknown error'));
+        el._key = null;
+        if (r.ok) expandedJob = r.body.job || null;
+        loadStartJob(); loadJobs(); loadRunState();
+      }).catch(function(e) { console.error('startJob error', e); toast('Could not start the job'); });
+    }
+
+    // POST a JSON body; resolves to {ok, status, body} (a 409's reason is in body.error).
+    function postJSON(url, body) {
+      return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
+        .then(function(res) {
+          return res.json().catch(function() { return {}; }).then(function(d) { return { ok: res.ok, status: res.status, body: d || {} }; });
+        });
+    }
+
+    // The card buttons. Stop asks the supervisor to stop after the current task (/api/run/stop); Continue asks for a
+    // new value first when a limit stopped the Job; Drop asks for confirmation.
+    function jobAction(id, action) {
+      var job = jobsById[id];
+      if (!job) return;
+      var url = '/api/jobs/' + encodeURIComponent(id) + '/' + action, body = {};
+      if (action === 'stop') {
+        url = '/api/run/stop';
+        body = { mode: 'after-task' };
+      } else if (action === 'continue') {
+        var name = limitInReason(job);
+        if (name) {
+          var text = window.prompt(limitPrompt(job, name), '');
+          if (text === null) return;
+          var got = parseLimit(name, text, Date.now());
+          if (got.error) { toast('Not continued: ' + got.error); return; }
+          body[name] = got.value;
+        }
+      } else if (action === 'drop') {
+        var base = (job.base && job.base.branch) || 'its base branch';
+        if (!window.confirm('Drop the job "' + job.title + '"? The checkout goes back to ' + base +
+            '; nothing is merged, and the branch ' + job.branch + ' keeps its commits.')) return;
+      }
+      var done = { stop: 'Stopping after the current task', 'continue': 'Job continues', merge: 'Merged into ' + ((job.base && job.base.branch) || 'the base branch'),
+                   drop: 'Job dropped' };
+      postJSON(url, body).then(function(r) {
+        toast(r.ok ? done[action] + (action === 'merge' && r.body.commit ? ' (' + String(r.body.commit).slice(0, 7) + ')' : '')
+                   : 'Could not ' + action + ': ' + (r.body.error || 'request failed (' + r.status + ')'));
+        loadJobs(); loadStartJob(); loadRunState();
+      }).catch(function(e) { console.error('jobAction error', e); toast('Could not ' + action + ' the job'); });
     }
 
     function applyDecision(task) {
@@ -3080,7 +3365,14 @@ def build_html():
       if (t.classList.contains('unblock-btn')) settleBlocked(t.getAttribute('data-task'), t.getAttribute('data-action'));
       if (t.classList.contains('manual-done')) settleManual(t.getAttribute('data-task'), 'done');
       if (t.classList.contains('manual-skip')) settleManual(t.getAttribute('data-task'), 'skip');
-      if (t.id === 'start-run-btn') startRun();
+      if (t.id === 'start-job-btn') startJob();
+      if (t.hasAttribute('data-job-action') && !t.disabled) { jobAction(t.getAttribute('data-job'), t.getAttribute('data-job-action')); return; }
+      var head = t.closest ? t.closest('[data-job-toggle]') : null;
+      if (head) {
+        var jid = head.getAttribute('data-job-toggle');
+        expandedJob = expandedJob === jid ? null : jid;
+        loadJobs();
+      }
       if (t.classList.contains('decision-option')) {
         var box = document.getElementById('answer-' + t.getAttribute('data-task'));
         if (box) { box.value = '(' + t.getAttribute('data-option') + ') ' + box.value.replace(/^\\([a-z]\\)\\s*/, ''); box.focus(); }
@@ -3129,50 +3421,86 @@ def build_html():
         }).join('');
     }
 
-    function loadRuns() {
-      Promise.all([fetchJSON('/api/runs', 'GET'), fetchJSON('/api/project/tasks', 'GET'), fetchJSON('/api/features', 'GET')]).then(function(r) {
-        var runs = r[0] || [];
-        activeFeature = (r[2] && r[2].active) || null;
+    // One run as a row; a click opens its tasks, events and report right under it (the run detail).
+    function runItemEl(run) {
+      var div = document.createElement('div');
+      div.className = 'run-item' + (selectedRunId === run.id ? ' active' : '');
+      div.addEventListener('click', function() {
+        selectedRunId = run.id;
+        if (expandedRun === run.id) { expandedRun = null; reportRun = null; }
+        else { expandedRun = run.id; reportRun = null; }
+        rd('report-card').style.display = 'none';
+        loadJobs();
+        loadEvents();
+        loadReport();
+      });
+      var statusCls = run.finished ? (run.stopped ? 'status-stopped' : 'status-done') : (run.interrupted > 0 ? 'status-paused' : 'status-running');
+      var finishedText = run.finished ? (run.stopped ? 'stopped' : 'done') : 'running';
+      div.innerHTML = '<div class="run-info"><div class="run-id">#' + escapeHtml(run.id) + '</div><div class="run-meta"><span class="pill ' + statusCls + '"><span class="pill-dot"></span>' + finishedText + '</span> ' + run.approved + ' approved · ' + run.blocked + ' blocked · ' + run.interrupted + ' interrupted · ' + run.events_count + ' events</div></div>';
+      var block = document.createElement('div');
+      block.className = 'run-block';
+      block.appendChild(div);
+      if (expandedRun === run.id) block.appendChild(runDetailEl);
+      return block;
+    }
+
+    // The Job whose card is open, the run an Overview row or task chip asked to show, and the Jobs by id.
+    var expandedJob = null, revealRun = null, jobsById = {};
+
+    // Jobs view (005 FR-011): Job cards from /api/jobs (open first, then newest); an open card lists the tasks
+    // and runs of its Job; runs that belong to no Job are under "Earlier runs".
+    function loadJobs() {
+      Promise.all([fetchJSON('/api/jobs', 'GET'), fetchJSON('/api/runs', 'GET'), fetchJSON('/api/project/tasks', 'GET'),
+                   fetchJSON('/api/features', 'GET')]).then(function(r) {
+        var jobs = (r[0] && r[0].jobs) || [], runs = r[1] || [];
+        activeFeature = (r[3] && r[3].active) || null;
         runTaskText = {};
-        ((r[1] && r[1].phases) || []).forEach(function(p) { (p.tasks || []).forEach(function(t) { runTaskText[t.id] = t.text; }); });
+        ((r[2] && r[2].phases) || []).forEach(function(p) { (p.tasks || []).forEach(function(t) { runTaskText[t.id] = t.text; }); });
+        jobsById = {};
+        jobs.forEach(function(j) { jobsById[j.id] = j; });
+        if (revealRun) {
+          var owner = jobs.filter(function(j) { return jobRuns(j, runs).some(function(x) { return x.id === revealRun; }); })[0];
+          expandedJob = owner ? owner.id : null;
+          revealRun = null;
+        }
         var open = runs.filter(function(x) { return x.id === expandedRun; })[0];
         if (open) setHtml(rd('run-tasks'), runTasksHtml(open));
-        var el = document.getElementById('runs-list');
-        var signature = JSON.stringify([runs.map(function(x) { return [x.id, x.events_count, x.finished]; }), selectedRunId, expandedRun]);
-        if (el._signature === signature) return;
-        el._signature = signature;
-        var top = el.scrollTop;
+        var list = document.getElementById('jobs-list'), earlier = document.getElementById('earlier-runs');
+        var signature = JSON.stringify([jobs, runs.map(function(x) { return [x.id, x.job, x.events_count, x.finished, x.tasks]; }),
+                                        selectedRunId, expandedRun, expandedJob, activeFeature]);
+        if (list._signature === signature) return;
+        list._signature = signature;
+        var content = document.querySelector('.content'), top = content ? content.scrollTop : 0;
         if (runDetailEl.parentNode) runDetailEl.parentNode.removeChild(runDetailEl);  // keep it (and its scroll) across the rebuild
-        el.innerHTML = '';
-        if (runs.length === 0) {
-          el.innerHTML = '<div class="empty"><div class="empty-icon">🔄</div><div>No runs found.</div></div>';
-          return;
-        }
-        runs.forEach(function(run) {
-          var div = document.createElement('div');
-          div.className = 'run-item' + (selectedRunId === run.id ? ' active' : '');
-          (function(runId) {
-            div.addEventListener('click', function() {
-              selectedRunId = runId;
-              if (expandedRun === runId) { expandedRun = null; reportRun = null; }
-              else { expandedRun = runId; reportRun = null; }
-              rd('report-card').style.display = 'none';
-              loadRuns();
-              loadEvents();
-              loadReport();
-            });
-          })(run.id);
-          var statusCls = run.finished ? (run.stopped ? 'status-stopped' : 'status-done') : (run.interrupted > 0 ? 'status-paused' : 'status-running');
-          var finishedText = run.finished ? (run.stopped ? 'stopped' : 'done') : 'running';
-          div.innerHTML = '<div class="run-info"><div class="run-id">#' + escapeHtml(run.id) + '</div><div class="run-meta"><span class="pill ' + statusCls + '"><span class="pill-dot"></span>' + finishedText + '</span> ' + run.approved + ' approved · ' + run.blocked + ' blocked · ' + run.interrupted + ' interrupted · ' + run.events_count + ' events</div></div>';
-          var block = document.createElement('div');
-          block.className = 'run-block';
-          block.appendChild(div);
-          if (expandedRun === run.id) block.appendChild(runDetailEl);
-          el.appendChild(block);
+        list.innerHTML = '';
+        earlier.innerHTML = '';
+        if (!jobs.length) list.innerHTML = '<div class="ov-ok">No jobs yet. Start one above.</div>';
+        jobs.forEach(function(job) {
+          var card = document.createElement('div');
+          card.className = 'job-card' + (JOB_CLOSED.indexOf(job.state) < 0 ? ' open-job' : '');
+          card.setAttribute('data-job', job.id);
+          card.innerHTML = jobCardHtml(job);
+          if (expandedJob === job.id) {
+            var mine = jobRuns(job, runs);
+            var here = !!job.feature && job.feature === activeFeature;
+            var detail = document.createElement('div');
+            detail.className = 'job-detail';
+            detail.innerHTML = '<div class="card-title">Tasks in this job</div>' +
+              (here ? '' : '<div class="live-output-empty">This job is for ' + escapeHtml(job.feature || 'an unknown feature') +
+                '; choose that feature in the header to open its tasks.</div>') +
+              '<div class="run-tasks job-tasks">' + jobTasksHtml(jobTasks(mine), here, runTaskText) + '</div>' +
+              '<div class="card-title job-runs">Runs <span class="badge">' + mine.length + '</span></div>' +
+              (mine.length ? '' : '<div class="live-output-empty">No runs yet.</div>');
+            mine.forEach(function(run) { detail.appendChild(runItemEl(run)); });
+            card.appendChild(detail);
+          }
+          list.appendChild(card);
         });
-        el.scrollTop = top;
-      }).catch(function(e) { console.error('loadRuns error', e); });
+        var early = earlierRuns(jobs, runs);
+        if (!early.length) earlier.innerHTML = '<div class="ov-ok">No earlier runs.</div>';
+        early.forEach(function(run) { earlier.appendChild(runItemEl(run)); });
+        if (content) content.scrollTop = top;
+      }).catch(function(e) { console.error('loadJobs error', e); });
     }
 
     // One event as a short sentence; the full record is the row's tooltip.
@@ -3458,7 +3786,7 @@ def build_html():
       if (selectedSection === 'tasks') loadTasks();
       if (selectedSection === 'blocked') loadBlocked();
       if (selectedSection === 'decisions') loadDecisions();
-      if (selectedSection === 'runs') { loadRuns(); loadEvents(); loadStartRun(); }
+      if (selectedSection === 'jobs') { loadJobs(); loadEvents(); loadStartJob(); }
       if (selectedSection === 'status') loadStatus();
       try { document.getElementById('refresh-time').textContent = new Date().toLocaleTimeString(); } catch(e) {}
     }
@@ -3500,13 +3828,15 @@ def build_html():
         }
       });
 
-      // Overview rows: `data-go` opens a view, `data-run` opens that run in Runs.
+      // Overview rows: `data-go` opens a view, `data-run` opens that run in Jobs, inside its Job when it has one.
       document.addEventListener('click', function(ev) {
         var row = ev.target.closest ? ev.target.closest('[data-go], [data-run]') : null;
         if (!row) return;
-        if (row.hasAttribute('data-run')) { selectedRunId = row.getAttribute('data-run'); expandedRun = selectedRunId; reportRun = null; }
-        showSection(row.hasAttribute('data-run') ? 'runs' : row.getAttribute('data-go'));
-        if (row.hasAttribute('data-run')) { loadRuns(); loadEvents(); loadReport(); }
+        if (row.hasAttribute('data-run')) {
+          selectedRunId = row.getAttribute('data-run'); expandedRun = selectedRunId; reportRun = null; revealRun = selectedRunId;
+        }
+        showSection(row.hasAttribute('data-run') ? 'jobs' : row.getAttribute('data-go'));
+        if (row.hasAttribute('data-run')) { loadEvents(); loadReport(); }
       });
 
       document.querySelectorAll('button[data-raw]').forEach(function(btn) {

@@ -1,4 +1,4 @@
-"""Browser tests of the dashboard's main views (FR-001): Tasks, Blocked, Documents and Runs each open
+"""Browser tests of the dashboard's main views (FR-001): Tasks, Blocked, Documents and Jobs each open
 without a console error and show their content.
 
 The Documents view also renders a table and highlighted code and drops a `<script>`, and a task
@@ -6,7 +6,7 @@ whose text is markup shows as text.
 
 The toy project is the harness's (`specs/001-only` with the status fixture's tasks.md and BLOCKED.md,
 plus one task whose text is an `<img onerror=...>`), a `spec.md` for the Documents view and one run (`.sdd/runs/<id>/workflows.json` pointing at a
-`wf_…` journal, the fixture of `tests/test_sdd_dashboard.py`) for the Runs view. What each view must
+`wf_…` journal, the fixture of `tests/test_sdd_dashboard.py`) for the Jobs view's "Earlier runs". What each view must
 show is read from the dashboard's own API, so the tests follow the fixtures.
 
 `FeaturePickerTest` uses its own toy with two features and no `.specify/feature.json`: the page
@@ -187,11 +187,12 @@ class ViewsTest(harness.UITestCase):
             self.assertEqual(ui.page.locator("#tasks-list img").count(), 0)
             self.assertIsNone(ui.page.evaluate("window.sddImgRan"), "the task text's onerror ran")
 
-    def test_runs_view_lists_the_runs(self):
+    def test_jobs_view_lists_runs_without_a_job_as_earlier_runs(self):
         runs = self.api("/api/runs")
         self.assertEqual([r["id"] for r in runs], [RUN_ID])
-        with self.open_view("runs") as ui:
-            items = ui.page.locator("#runs-list .run-item")
+        self.assertIsNone(runs[0]["job"])
+        with self.open_view("jobs") as ui:
+            items = ui.page.locator("#earlier-runs .run-item")
             items.first.wait_for(state="visible", timeout=TIMEOUT_MS)
             self.assertEqual(items.count(), len(runs))
             self.assertEqual(items.first.locator(".run-id").inner_text().strip(), "#" + RUN_ID)
@@ -265,7 +266,7 @@ class FeaturePickerTest(harness.UITestCase):
             header.wait_for(state="visible", timeout=TIMEOUT_MS)
             ui.page.wait_for_function("document.getElementById('feature-select').value === '002-beta'",
                                       timeout=TIMEOUT_MS)
-            for section in ("overview", "spec", "runs"):
+            for section in ("overview", "spec", "jobs"):
                 ui.page.goto(self.dashboard.url + "#" + section)
                 header.wait_for(state="visible", timeout=TIMEOUT_MS)
             self.assertEqual(ui.page.locator("#doc-edit-bar select").count(), 0, "the Spec tab has its own picker")

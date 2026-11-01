@@ -1,12 +1,13 @@
-"""Browser tests of the Start run panel in the Runs view (FR-034): it lists the runnable phases with
-their task counts, shows the reason when a run cannot start, asks for confirmation, and a confirmed
-click calls `POST /api/run/start` once.
+"""Browser tests of the Start job panel in the Jobs view (005 FR-003, FR-011; it replaced 003's Start run
+panel, FR-034): it lists the runnable phases with their task counts, shows the reason when a Job cannot
+start, asks for confirmation, and a confirmed click calls `POST /api/jobs/start` once.
 
-No run starts. The dashboard runs in this test process (on an OS-chosen port, in a thread) so that
-`sdd_launch.launch` can be replaced by `RecordingLauncher`, a stub that records its arguments and
-answers as the real one would. `sdd_launch.preview` stays real, so the panel shows what
-`GET /api/run/plan` says for the toy: a clean git repository can start, a project that is not a git
-repository cannot. The supervisor's state directory is under a temporary `XDG_STATE_HOME`.
+No Job starts. The dashboard runs in this test process (on an OS-chosen port, in a thread) so that
+`sdd_launch.launch_job` can be replaced by `RecordingLauncher`, a stub that records its arguments and
+answers as the real one would. Its dry runs (what `GET /api/jobs/plan` asks) go to the real
+`launch_job`, so the panel shows what the plan says for the toy: a clean git repository can start, a
+project that is not a git repository cannot. The supervisor's state directory is under a temporary
+`XDG_STATE_HOME`.
 
 Run it with `python3 -m unittest discover -s tests/ui`. It skips without Playwright or a Chromium, or
 when the sandbox refuses a local port; `SDD_UI_TESTS=1` makes that a failure. Not part of the default
@@ -44,7 +45,7 @@ TASKS = ("# Tasks\n\n## Phase 1: Setup\n\n"
 PHASES = {"1": 2, "2": 1}
 HELD = 1
 NOT_GIT_REASON = "the project is not a git repository"
-CONFIRM_START = "Start an unattended run of"
+CONFIRM_START = "Start the job"
 
 
 def build_toy(root, git):
@@ -55,6 +56,7 @@ def build_toy(root, git):
     (feature / "tasks.md").write_text(TASKS, encoding="utf-8")
     (root / ".sdd").mkdir(parents=True, exist_ok=True)
     (root / ".sdd" / "config.toml").write_text("[run]\nmax_retries = 2\n", encoding="utf-8")
+    (root / ".gitignore").write_text(".sdd/\n", encoding="utf-8")
     if git:
         identity = ["-c", "user.name=sdd-ui", "-c", "user.email=sdd-ui@example.invalid", "-c", "commit.gpgsign=false"]
         for args in (["init", "-q"], ["add", "-A"], identity + ["commit", "-q", "-m", "toy"]):
@@ -63,25 +65,28 @@ def build_toy(root, git):
 
 
 class RecordingLauncher:
-    """Stands in for `sdd_launch.launch`: records each call's arguments and starts nothing."""
+    """Stands in for `sdd_launch.launch_job`: records each real call's arguments and starts nothing. Dry runs
+    (the plan's "can it start?") go to the real function, which changes nothing."""
 
-    def __init__(self):
+    def __init__(self, real):
+        self.real = real
         self.calls = []
         self.lock = threading.Lock()
 
-    def __call__(self, project, feature, phases=None, no_converge=True, max_tasks=None, dry_run=False):
+    def __call__(self, project, feature, scope, limits, title=None, dry_run=False):
+        if dry_run:
+            return self.real(project, feature, scope, limits, title, dry_run=True)
         with self.lock:
-            self.calls.append({"project": Path(project), "feature": Path(feature), "phases": list(phases or []),
-                               "no_converge": no_converge, "max_tasks": max_tasks})
-        run_args = sdd_dashboard.sdd_launch.build_run_args(list(phases or []), no_converge, max_tasks)
-        return {"pid": 4242, "run_args": run_args, "resumes": None}
+            self.calls.append({"project": Path(project), "feature": Path(feature), "scope": scope,
+                               "limits": limits, "title": title})
+        return {"job": "20261031-1012", "branch": "auto/20261031-1012", "pid": 4242}
 
     def reset(self):
         with self.lock:
             self.calls.clear()
 
 
-class StartRunTestCase(unittest.TestCase):
+class StartJobTestCase(unittest.TestCase):
     """One in-process dashboard per class on a toy (`GIT` says whether it is a git repository)."""
 
     GIT = True
@@ -96,8 +101,8 @@ class StartRunTestCase(unittest.TestCase):
         cls.feature = cls.project / "specs" / "001-only"
         cls._env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(base / "state")})
         cls._env.start()
-        cls.launcher = RecordingLauncher()
-        cls._launch = mock.patch.object(sdd_dashboard.sdd_launch, "launch", cls.launcher)
+        cls.launcher = RecordingLauncher(sdd_dashboard.sdd_launch.launch_job)
+        cls._launch = mock.patch.object(sdd_dashboard.sdd_launch, "launch_job", cls.launcher)
         cls._launch.start()
         handler = sdd_dashboard.DashboardHandler
         handler.project = handler.started_project = cls.project
@@ -132,42 +137,49 @@ class StartRunTestCase(unittest.TestCase):
         self.launcher.reset()
 
     @contextlib.contextmanager
-    def open_runs(self, element):
-        """The dashboard at `#runs`; returns once `element` in the Start run panel is visible. Every
-        `POST /api/run/start` the page sends is in `ui.start_posts`."""
-        with harness.browser_page(self.url + "#runs", name=self.id()) as ui:
+    def open_jobs(self, element, hash_="#jobs"):
+        """The dashboard at `#jobs`; returns once `element` in the Start job panel is visible. Every
+        `POST /api/jobs/start` the page sends is in `ui.start_posts`."""
+        with harness.browser_page(self.url + hash_, name=self.id()) as ui:
             ui.start_posts = []
             ui.page.on("request", lambda r: ui.start_posts.append(r.post_data_json)
-                       if r.method == "POST" and r.url.endswith("/api/run/start") else None)
-            ui.page.locator("#section-runs").wait_for(state="visible", timeout=TIMEOUT_MS)
-            ui.page.locator("#start-run-body " + element).first.wait_for(state="visible", timeout=TIMEOUT_MS)
+                       if r.method == "POST" and r.url.endswith("/api/jobs/start") else None)
+            ui.page.locator("#section-jobs").wait_for(state="visible", timeout=TIMEOUT_MS)
+            ui.page.locator("#start-job-body " + element).first.wait_for(state="visible", timeout=TIMEOUT_MS)
             yield ui
             ui.page.wait_for_load_state("networkidle")
 
 
-class CanStartTest(StartRunTestCase):
+class CanStartTest(StartJobTestCase):
     def phase_rows(self, ui):
-        boxes = ui.page.locator("#start-run-body .start-phase")
+        boxes = ui.page.locator("#start-job-body .start-phase")
         return {boxes.nth(i).locator(".start-phase-box").get_attribute("value"):
                 boxes.nth(i).locator(".start-count").inner_text() for i in range(boxes.count())}
 
     def test_panel_lists_runnable_phases_and_counts(self):
-        plan = sdd_dashboard.sdd_launch.preview(self.project, self.feature)
+        plan = sdd_dashboard.job_plan(self.project, self.feature)
         self.assertTrue(plan["can_start"], plan["reason"])
         self.assertEqual({p["id"]: p["runnable"] for p in plan["phases"]}, PHASES)
-        with self.open_runs("#start-run-btn") as ui:
+        with self.open_jobs("#start-job-btn") as ui:
             self.assertEqual(self.phase_rows(ui), {"1": "2 tasks", "2": "1 task"})
-            self.assertIn("Phase 1: Setup", ui.page.locator("#start-run-body .start-phase").first.inner_text())
-            boxes = ui.page.locator("#start-run-body .start-phase-box")
+            self.assertIn("Phase 1: Setup", ui.page.locator("#start-job-body .start-phase").first.inner_text())
+            boxes = ui.page.locator("#start-job-body .start-phase-box")
             self.assertTrue(all(boxes.nth(i).is_checked() for i in range(boxes.count())))
-            summary = ui.page.locator("#start-run-body .start-summary").inner_text()
+            summary = ui.page.locator("#start-job-body .start-summary").inner_text()
             self.assertIn("%d runnable, %d held." % (sum(PHASES.values()), HELD), summary)
-            self.assertEqual(ui.page.locator("#start-run-body .start-reason").count(), 0)
-            self.assertTrue(ui.page.locator("#start-run-btn").is_enabled())
+            self.assertEqual(ui.page.locator("#start-job-body .start-reason").count(), 0)
+            for field in ("#start-tasks", "#start-max-tasks", "#start-until", "#start-max-runs", "#start-title"):
+                self.assertEqual(ui.page.locator(field).count(), 1, field)
+            self.assertTrue(ui.page.locator("#start-job-btn").is_enabled())
         self.assertEqual(self.launcher.calls, [])  # opening the panel starts nothing
 
+    def test_runs_hash_redirects_to_jobs(self):
+        with self.open_jobs("#start-job-btn", hash_="#runs") as ui:
+            self.assertTrue(ui.page.url.endswith("#jobs"), ui.page.url)
+            self.assertEqual(ui.page.locator("#page-title").inner_text().strip(), "Jobs")
+
     def test_dismissed_confirmation_starts_nothing(self):
-        with self.open_runs("#start-run-btn") as ui:
+        with self.open_jobs("#start-job-btn") as ui:
             asked = []
 
             def dismiss(dialog):
@@ -175,18 +187,17 @@ class CanStartTest(StartRunTestCase):
                 dialog.dismiss()
 
             ui.page.once("dialog", dismiss)
-            ui.page.locator("#start-run-btn").click()
+            ui.page.locator("#start-job-btn").click()
             ui.page.wait_for_timeout(500)  # a POST, had one been sent, would have landed by now
-            self.assertEqual(len(asked), 1, "Start run did not ask for confirmation")
+            self.assertEqual(len(asked), 1, "Start job did not ask for confirmation")
             self.assertEqual(asked[0][0], "confirm")
-            self.assertIn(CONFIRM_START, asked[0][1])
-            self.assertIn("(3 tasks)", asked[0][1])
+            self.assertIn(CONFIRM_START + ' "Phases 1–2" (3 tasks)', asked[0][1])
             self.assertEqual(ui.start_posts, [])
         self.assertEqual(self.launcher.calls, [])
 
     def test_confirmed_click_calls_start_once(self):
-        with self.open_runs("#start-run-btn") as ui:
-            ui.page.locator('#start-run-body .start-phase-box[value="2"]').uncheck()
+        with self.open_jobs("#start-job-btn") as ui:
+            ui.page.locator('#start-job-body .start-phase-box[value="2"]').uncheck()
             ui.page.locator("#start-max-tasks").fill("3")
             asked = []
 
@@ -195,32 +206,44 @@ class CanStartTest(StartRunTestCase):
                 dialog.accept()
 
             ui.page.once("dialog", accept)
-            with ui.page.expect_response(lambda r: r.url.endswith("/api/run/start"), timeout=TIMEOUT_MS) as res:
-                ui.page.locator("#start-run-btn").click()
+            with ui.page.expect_response(lambda r: r.url.endswith("/api/jobs/start"), timeout=TIMEOUT_MS) as res:
+                ui.page.locator("#start-job-btn").click()
             self.assertEqual(res.value.status, 202, res.value.text())
-            self.assertEqual(res.value.json().get("pid"), 4242)
-            self.assertEqual(res.value.json().get("run_args"), "--no-converge --phases 1 --max-tasks 3")
-            self.assertEqual(len(asked), 1, "Start run did not ask for confirmation")
+            self.assertEqual(res.value.json(), {"ok": True, "job": "20261031-1012"})
+            self.assertEqual(len(asked), 1, "Start job did not ask for confirmation")
             self.assertEqual(asked[0][0], "confirm")
-            self.assertIn(CONFIRM_START + " phase 1 (2 tasks)", asked[0][1])
-            ui.page.locator("#toasts .toast", has_text="Run started").wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertIn(CONFIRM_START + ' "Phase 1" (2 tasks)', asked[0][1])
+            ui.page.locator("#toasts .toast", has_text="Job started").wait_for(state="visible", timeout=TIMEOUT_MS)
             ui.page.wait_for_timeout(500)  # a second POST, had one been sent, would have landed by now
-            self.assertEqual(ui.start_posts, [{"phases": ["1"], "no_converge": True, "max_tasks": 3}])
-        self.assertEqual(self.launcher.calls, [{"project": self.project, "feature": self.feature, "phases": ["1"],
-                                                "no_converge": True, "max_tasks": 3}])
+            self.assertEqual(ui.start_posts, [{"phases": ["1"], "max_tasks": 3}])
+        self.assertEqual(self.launcher.calls, [{"project": self.project, "feature": self.feature,
+                                                "scope": {"phases": ["1"], "tasks": []},
+                                                "limits": {"max_tasks": 3}, "title": None}])
+
+    def test_tasks_scope_and_title(self):
+        with self.open_jobs("#start-job-btn") as ui:
+            ui.page.locator('#start-job-body input[name="start-scope"][value="tasks"]').check()
+            ui.page.locator("#start-tasks").fill("t001, T005")
+            ui.page.locator("#start-title").fill("Two tasks")
+            ui.page.once("dialog", lambda dialog: dialog.accept())
+            with ui.page.expect_response(lambda r: r.url.endswith("/api/jobs/start"), timeout=TIMEOUT_MS) as res:
+                ui.page.locator("#start-job-btn").click()
+            self.assertEqual(res.value.status, 202, res.value.text())
+            self.assertEqual(ui.start_posts, [{"tasks": ["T001", "T005"], "title": "Two tasks"}])
+        self.assertEqual([c["scope"] for c in self.launcher.calls], [{"phases": [], "tasks": ["T001", "T005"]}])
 
 
-class CannotStartTest(StartRunTestCase):
+class CannotStartTest(StartJobTestCase):
     GIT = False
 
     def test_panel_shows_the_reason_and_no_button(self):
-        with self.open_runs(".start-reason") as ui:
-            reason = ui.page.locator("#start-run-body .start-reason").inner_text()
+        with self.open_jobs(".start-reason") as ui:
+            reason = ui.page.locator("#start-job-body .start-reason").inner_text()
             self.assertIn("Cannot start: " + NOT_GIT_REASON, reason)
-            self.assertEqual(ui.page.locator("#start-run-btn").count(), 0)
-            self.assertEqual(ui.page.locator("#start-run-body .start-phase-box").count(), 0)
+            self.assertEqual(ui.page.locator("#start-job-btn").count(), 0)
+            self.assertEqual(ui.page.locator("#start-job-body .start-phase-box").count(), 0)
             self.assertIn("%d runnable, %d held." % (sum(PHASES.values()), HELD),
-                          ui.page.locator("#start-run-body .start-summary").inner_text())
+                          ui.page.locator("#start-job-body .start-summary").inner_text())
             self.assertEqual(ui.start_posts, [])
         self.assertEqual(self.launcher.calls, [])
 

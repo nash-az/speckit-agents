@@ -1890,10 +1890,12 @@ class StartRunTest(unittest.TestCase):
             request(self, "POST", "/api/run/start", {}, content_type="text/plain", status=415)
         launch.assert_not_called()
 
-    def test_the_runs_view_has_a_start_panel_with_a_confirmation(self):
+    def test_the_jobs_view_has_a_start_panel_with_a_confirmation(self):
+        # The Start run panel became Start job (005 FR-011); /api/run/plan and /api/run/start stay for
+        # compatibility (tested above), and the page uses the job routes (JobsViewTest).
         html = dash.build_html()
-        for needle in ('id="start-run-card"', "function loadStartRun", "function startRun",
-                       "/api/run/start", "/api/run/plan", "window.confirm"):
+        for needle in ('id="start-job-card"', "function loadStartJob", "function startJob",
+                       "/api/jobs/start", "/api/jobs/plan", "window.confirm"):
             self.assertIn(needle, html)
 
 
@@ -2073,6 +2075,155 @@ class JobsRouteTest(unittest.TestCase):
         self.assertEqual(dash.sdd_job.load(self.root, "20261031-1100")["state"], "dropped")
         self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")
         self.assertTrue(self.git("branch", "--list", "auto/20261031-1100"))  # the branch is kept
+
+
+class JobsViewTest(unittest.TestCase):
+    """005 FR-011 (T017): the Jobs view's markup, routes and page-script helpers, run in node. The browser
+    behaviour (a Job with two runs, Drop's confirmation) is tests/ui/test_jobs.py."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = dash.build_html()
+        start = cls.html.index("function escapeHtml(")
+        js = cls.html[start:cls.html.index("function loadProject(")]
+        a = cls.html.index("    function shortText(")
+        short = cls.html[a:cls.html.index("}", cls.html.index("return", a)) + 1]
+        b = cls.html.index("    // Jobs view (005 FR-011, data-model.md §9).")
+        cls.js = js + "\n" + short + "\n" + cls.html[b:cls.html.index("    // End of the Jobs view helpers.")]
+
+    def run_js(self, expr):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        script = self.js + "\nprocess.stdout.write(JSON.stringify(" + expr + "));"
+        out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    JOB = ("{id: '20261031-1012', title: 'Phase 11', feature: '003-x', state: 'stopped', reason: 'max_tasks 3 reached',"
+           " branch: 'auto/20261031-1012', base: {branch: 'main', commit: 'abc'}, runs: ['20261031-1012'],"
+           " shown: {state: 'stopped'}, progress: {done: 3, total: 6, waiting_on_you: 1, left: 2}}")
+
+    def test_jobs_replace_runs_in_the_nav_and_runs_redirects(self):
+        self.assertIn('data-section="jobs"', self.html)
+        self.assertNotIn('data-section="runs"', self.html)
+        self.assertIn('id="section-jobs"', self.html)
+        self.assertNotIn('id="section-runs"', self.html)
+        self.assertIn("if (name === 'runs') { history.replaceState(null, '', '#jobs'); return 'jobs'; }", self.html)
+        for needle in ('id="jobs-list"', 'id="earlier-runs"', "Earlier runs", "function loadJobs()",
+                       "fetchJSON('/api/jobs', 'GET')", "fetchJSON('/api/jobs/plan', 'GET')", "postJSON('/api/jobs/start'",
+                       "'/api/jobs/' + encodeURIComponent(id) + '/' + action", "url = '/api/run/stop'",
+                       "block.appendChild(runDetailEl)"):
+            self.assertIn(needle, self.html)
+        refresh = self.html[self.html.index("function refreshAll("):]
+        self.assertIn("if (selectedSection === 'jobs') { loadJobs(); loadEvents(); loadStartJob(); }", refresh)
+
+    def test_card_shows_title_state_progress_branch_and_buttons(self):
+        html = self.run_js("jobCardHtml(" + self.JOB + ")")
+        for needle in ("Phase 11", 'class="job-state job-stopped">Stopped<', "max_tasks 3 reached",
+                       "auto/20261031-1012", " from main", "<b>3</b> of 6 done", "<b>1</b> waiting on you",
+                       "<b>2</b> left", "width:50%", 'data-job-toggle="20261031-1012"'):
+            self.assertIn(needle, html)
+        for action in ("stop", "continue", "merge", "drop"):
+            self.assertIn('data-job-action="%s"' % action, html)
+        self.assertRegex(html, r'data-job-action="stop"[^>]* disabled')
+        self.assertNotRegex(html, r'data-job-action="(continue|merge|drop)"[^>]* disabled')
+        self.assertNotIn("20261031-1012</span>", html.replace("auto/20261031-1012", ""))  # no run id as the title
+
+    def test_buttons_follow_the_shown_state(self):
+        got = self.run_js("['working', 'paused', 'waiting', 'interrupted', 'held', 'stopped', 'failed', 'done']"
+                          ".map(function(s) { return jobActions({state: s, shown: {state: s}}); })")
+        enabled = [[k for k in ("stop", "continue", "merge", "drop") if g[k]] for g in got]
+        self.assertEqual(enabled, [["stop"], ["stop"], ["continue"], ["continue"], ["continue"],
+                                   ["continue", "merge", "drop"], ["merge", "drop"], ["merge", "drop"]])
+        closed = self.run_js("[jobCardHtml({id: 'a', title: 'A', state: 'merged', shown: {state: 'merged'}, progress: null,"
+                             " merge_commit: '1234567890'}), jobCardHtml({id: 'b', title: 'B', state: 'dropped',"
+                             " shown: {state: 'dropped'}, progress: null})]")
+        for html in closed:
+            self.assertNotIn("data-job-action", html)
+        self.assertIn("merged as <span class=\"mono\">1234567</span>", closed[0])
+        self.assertIn("Progress is not available", closed[1])
+
+    def test_state_in_words(self):
+        got = self.run_js("['working', 'waiting', 'interrupted', 'held', 'failed', 'done'].map(function(s) {"
+                          " return jobStateText({state: s, shown: {state: s}}); })")
+        self.assertEqual(got, ["Working", "Waiting on you", "Stopped unexpectedly", "Held after the usage reset",
+                               "Failed", "Done"])
+        paused = self.run_js("jobStateText({state: 'working', shown: {state: 'paused', resets_at: 1793450000}})")
+        self.assertRegex(paused, r"^Paused until \d\d:\d\d: usage limit$")
+
+    def test_continue_asks_for_the_limit_named_in_the_reason(self):
+        got = self.run_js("[limitInReason(" + self.JOB + "),"
+                          " limitInReason({state: 'stopped', reason: 'until 18:00 reached'}),"
+                          " limitInReason({state: 'stopped', reason: 'max_runs 20 reached'}),"
+                          " limitInReason({state: 'stopped', reason: 'stopped by you'}),"
+                          " limitInReason({state: 'waiting', reason: 'max_tasks 3 reached'}),"
+                          " limitPrompt(" + self.JOB + ", 'max_tasks')]")
+        self.assertEqual(got[:5], ["max_tasks", "until", "max_runs", None, None])
+        self.assertIn("Phase 11 stopped: max_tasks 3 reached", got[5])
+        self.assertIn("or none", got[5])
+        js = self.html[self.html.index("function jobAction("):self.html.index("function runTasksHtml(")]
+        self.assertIn("window.prompt(limitPrompt(job, name)", js)
+        self.assertIn("window.confirm('Drop the job", js)
+
+    def test_limit_values(self):
+        now = "new Date(2026, 9, 31, 17, 0, 0).getTime()"
+        got = self.run_js("[parseLimit('max_tasks', '5', %s), parseLimit('max_runs', 'none', %s),"
+                          " parseLimit('max_tasks', '0', %s), parseLimit('max_tasks', 'x', %s),"
+                          " parseLimit('until', 'soon', %s),"
+                          " (parseLimit('until', '18:30', %s).value - %s / 1000) / 60,"
+                          " (parseLimit('until', '16:00', %s).value - %s / 1000) / 60]"
+                          % ((now,) * 9))
+        self.assertEqual(got[:2], [{"value": 5}, {"value": None}])
+        self.assertIn("error", got[2])
+        self.assertIn("error", got[3])
+        self.assertIn("HH:MM", got[4]["error"])
+        self.assertEqual(got[5], 90)  # 18:30 today
+        self.assertEqual(got[6], 23 * 60)  # 16:00 has passed: tomorrow
+
+    def test_runs_inside_their_job_and_earlier_runs(self):
+        got = self.run_js("""(function() {
+            var runs = [{id: '20261031-1530', job: '20261031-1012', tasks: [{id: 'T2', outcome: 'committed', commits: ['bbb']},
+                                                                            {id: 'T1', outcome: 'committed', commits: ['ccc']}]},
+                        {id: '20261031-1012', job: null, tasks: [{id: 'T1', outcome: 'blocked', commits: []}]},
+                        {id: '20261030-0800', job: null, tasks: []}];
+            var job = {id: '20261031-1012', runs: ['20261031-1012']};
+            var tasks = jobTasks(jobRuns(job, runs));
+            return [jobRuns(job, runs).map(function(r) { return r.id; }), earlierRuns([job], runs).map(function(r) { return r.id; }),
+                    tasks, jobTasksHtml(tasks, true, {T1: 'First <b>task</b>'}), jobTasksHtml([], true, {})]; })()""")
+        mine, earlier, tasks, html, empty = got
+        self.assertEqual(mine, ["20261031-1530", "20261031-1012"])
+        self.assertEqual(earlier, ["20261030-0800"])
+        self.assertEqual(tasks, [{"id": "T1", "outcome": "committed", "commits": ["ccc"], "runs": ["20261031-1012", "20261031-1530"]},
+                                 {"id": "T2", "outcome": "committed", "commits": ["bbb"], "runs": ["20261031-1530"]}])
+        self.assertIn('data-goto-task="T1"', html)
+        self.assertIn("First &lt;b&gt;task&lt;/b&gt;", html)
+        self.assertIn("No tasks worked on yet.", empty)
+
+    def test_start_job_panel_and_body(self):
+        plan = "{phases: [{id: '1', title: 'Setup', runnable: 2}, {id: '2', title: 'Core', runnable: 1}], runnable: 3, held: 1, can_start: true, reason: null}"
+        got = self.run_js("[startJobHtml(" + plan + "), startJobHtml({phases: [], runnable: 0, held: 0, can_start: false,"
+                          " reason: 'another job is open: Phase 11'})]")
+        panel, refused = got
+        for needle in ("3 runnable, 1 held.", 'name="start-scope" value="phases" checked', 'name="start-scope" value="tasks"',
+                       'id="start-tasks"', 'id="start-max-tasks"', 'id="start-until"', 'id="start-max-runs"', 'id="start-title"',
+                       'id="start-job-btn"', "Phase 1: Setup", "2 tasks", "1 task<"):
+            self.assertIn(needle, panel)
+        self.assertIn("Cannot start: another job is open: Phase 11", refused)
+        self.assertNotIn("start-job-btn", refused)
+        now = "new Date(2026, 9, 31, 17, 0, 0).getTime()"
+        got = self.run_js("[startJobBody({scope: 'phases', phases: [{id: '3', runnable: 2}, {id: '4', runnable: 1}, {id: '5', runnable: 1}],"
+                          " max_tasks: '4', until: '', max_runs: '', title: ''}, %s),"
+                          " startJobBody({scope: 'tasks', tasks: 't061, T063', max_runs: 'none', title: ' Mine '}, %s),"
+                          " startJobBody({scope: 'tasks', tasks: 'T061 nope'}, %s), startJobBody({scope: 'phases', phases: []}, %s),"
+                          " startJobBody({scope: 'phases', phases: [{id: '1', runnable: 2}], max_tasks: '-1'}, %s),"
+                          " jobDefaultTitle({phases: ['11']}), jobDefaultTitle({}), idRanges(['3', '4', '5', '7'])]" % ((now,) * 5))
+        self.assertEqual(got[0], {"body": {"phases": ["3", "4", "5"], "max_tasks": 4}, "count": 4, "title": "Phases 3–5"})
+        self.assertEqual(got[1], {"body": {"tasks": ["T061", "T063"], "max_runs": None, "title": "Mine"}, "count": 2,
+                                  "title": "Mine"})
+        self.assertEqual(got[2], {"error": "not a task id: nope"})
+        self.assertEqual(got[3], {"error": "choose at least one phase"})
+        self.assertIn("max tasks", got[4]["error"])
+        self.assertEqual(got[5:], ["Phase 11", "All open tasks", "3–5, 7"])
 
 
 class ReadOnlyTest(unittest.TestCase):
