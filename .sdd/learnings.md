@@ -29,3 +29,6 @@
 - In `dontAsk` mode the agents' `SDD_UI_TESTS=1 python3 -m unittest …` (an env-var prefix) is refused. They run the same tests without the prefix and confirm by hand that none skipped. Allowlist the prefixed command if strict runs are wanted.
 - The dashboard no longer loads Google Fonts (T065), so the UI tests have no network dependency besides the CDN files, which `tests/ui/vendor/` serves.
 
+
+## 20261102-1150 (2026-11-02)
+- The fake `claude` (`tests/fake/claude`) writes a `run.json` with only `run_id`, so a hand-run Continue on a held Job is refused unless `branch` and `job` are added as a real `/sdd-run` writes them.
