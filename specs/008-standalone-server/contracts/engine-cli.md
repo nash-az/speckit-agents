@@ -10,7 +10,7 @@ copy's `current` folder for the server.
 | `sdd-engine.py install --from <plugin root>` | `{"installed", "path", "plugin_version"}` | 0; 1 on a copy error |
 | `sdd-engine.py path` | `{"path", "plugin_version"}` | 0; 2 when there is no copy |
 | `sdd-tasks.py state --project <dir>` | data-model §4 | 0 |
-| `sdd-tasks.py session --pid <pid> --run-json <file>` | `{"session"}` or `{"session": null, "error"}` | 0 |
+| `sdd-tasks.py session --run-json <file>` | `{"session", "started_by"}` (or `session: null` with `error`) | 0 |
 | `sdd-control.py controls --project <dir>` | the `controls` object (data-model §5) | 0 |
 | `sdd-control.py stop --project <dir> [--now]` | `{"ok", "id"}` or `{"error"}` | 0 / 1 |
 | `sdd-control.py resume\|hold\|release --project <dir>` | as `stop` | 0 / 1 |

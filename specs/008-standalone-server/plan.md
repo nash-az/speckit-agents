@@ -61,8 +61,8 @@ specs/008-standalone-server/
 ├── spec.md
 ├── plan.md            # this file
 ├── research.md        # R1–R12
-├── data-model.md      # §1–§13
-├── quickstart.md      # §1–§8
+├── data-model.md      # §1–§14
+├── quickstart.md      # §1–§9
 ├── contracts/
 │   ├── server-api.md
 │   └── engine-cli.md
@@ -74,20 +74,21 @@ specs/008-standalone-server/
 
 ```text
 bin/                       # the engine (copied by sdd-engine.py install)
-├── sdd-tasks.py           # + CONTRACT, contract_compare, run_state, session_alive, `state`, `session`
+├── sdd-tasks.py           # + CONTRACT, contract_compare, state_dir/get_status/supervisor_alive (moved), current_state, session_alive, `state`, `session`
+├── sdd-views.py           # new: read models moved from the dashboard (data-model §14)
 ├── sdd-control.py         # new: write_control, read_control, controls, CLI (moved from the dashboard/supervisor)
 ├── sdd-engine.py          # new: install, path
 ├── sdd-slots.py           # new: take, free, holders
 ├── sdd-setup.py           # new: detect, check, apply (shared with /sdd-init)
 ├── sdd-supervise.py       # + --adopt, slots, SDD_SUPERVISED, contract in status.json
 ├── sdd-launch.py          # + adopt, cap check
-├── sdd-dashboard.py       # old page; imports run_state/controls; removed at parity (R9)
+├── sdd-dashboard.py       # old page; imports sdd-views, sdd-control, current_state; removed at parity (R9)
 └── …                      # sdd-decide, sdd-manual, sdd-unblock, sdd-edit, sdd-job, sdd-harvest: + contract field
 hooks/register.ts          # + session.start → sdd-engine.py install
 skills/sdd-stop/SKILL.md   # new
 skills/sdd-run/SKILL.md    # + install fallback, session record, contract in run.json
 skills/sdd-status/SKILL.md # step 4 calls `sdd-tasks.py state`
-skills/sdd-init/SKILL.md   # + install fallback; steps 3–5 call sdd-setup.py
+skills/sdd-init/SKILL.md   # + install fallback; every file write goes through sdd-setup.py apply
 server/
 ├── sdd-server.py          # entry point: single instance, args, serve
 ├── app.py                 # routes (server-wide + /api/p/<id>/… delegating to engine functions)
@@ -95,7 +96,7 @@ server/
 ├── setup.py               # setup prompt routes (sdd-setup.py through the engine copy)
 ├── plugin.py              # claude plugin list/install/update
 ├── watch.py               # 0.5 s file watcher → SSE topics
-├── versions.py            # warnings, write lock
+├── versions.py            # CONTRACT, warnings, write lock
 └── static/                # built UI (committed)
 ui/                        # React + TypeScript source (package.json, src/…)
 tests/

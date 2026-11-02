@@ -60,6 +60,12 @@ views and routes to the dashboard; once this feature lands they are built on the
 - Q: Where does 008 go in the build order? → A: Next, after 005's T020 and T022; then 006, then 004, then 007
   (user). 006 and 004 have no code yet, so their views are written once, on the new server and UI.
 
+### Session 2026-11-02 (analyze)
+- Q: An in-session run is cut off by a usage limit, but its session stays open: does the server take over? → A: No.
+  Hand-over covers only sessions that have ended (user). An open interactive session pauses its workflow at a usage
+  limit and continues after the reset by itself. If such a run goes stale, the person can still take it over after
+  confirming the session is no longer running it.
+
 ## Terms
 
 - **Server**: the standalone program that serves the UI and its API, keeps the project list, and starts, watches and
@@ -153,9 +159,10 @@ are disabled.
 
 ### User Story 4 - Hand-over after a cut-off (Priority: P2)
 
-The person starts `/sdd-run` in a session and clicks **Supervise this run** in the UI. Later the session's run is cut
-off: a usage limit, or the terminal closed. The server notices, waits for the usage window if needed, and finishes
-the run from where it stopped. If the run instead closes normally, the server does nothing.
+The person starts `/sdd-run` in a session and clicks **Supervise this run** in the UI. Later the session ends while
+its run is unfinished: the terminal was closed, or the session was quit or crashed. The server notices, waits for
+the usage window if needed, and finishes the run from where it stopped. If the run instead closes normally, the
+server does nothing. A session that is still open, for example one paused at a usage limit, is left alone.
 
 **Why this priority**: the person's priority for attaching; it saves the work that cut-off runs lose today.
 
@@ -171,7 +178,8 @@ process; the server resumes the run once from its checkpoint and finishes it.
    "Taken over after a cut-off" with the normal supervised controls.
 3. **Given** the run closed normally (`.sdd/run.json` removed), **When** the server sees it, **Then** it stops watching
    and starts nothing.
-4. **Given** a run whose session cannot be identified (started before this feature), **When** it has gone quiet, **Then**
+4. **Given** a run whose session cannot be identified (started before this feature), **When** it is stale (no activity
+   for 30 minutes), **Then**
    the UI offers **Take over** only after the person confirms that the session is closed.
 
 ---
@@ -263,8 +271,8 @@ with one detected check command, and get a project that `/sdd-run` accepts in pr
 - The plugin is updated while the server runs: the server notices the new engine copy and uses it for new work;
   a run already going keeps the version it started with, and the UI says so.
 - The same project is loaded twice, or through a symlink: one entry, by resolved path.
-- A project set up by an older plugin (no contract version in its `run.json` or config): treated as major version 0
-  and flagged.
+- A project used by an older plugin (no contract version in a live run's files): treated as major version 0 and
+  flagged while that run is live; leftover files of finished runs are never compared.
 - Two runs would start on one project (an in-session run while the server wants to resume): the server never starts
   a run while another run on that project is alive.
 - A session's process id is reused by another program after the session ended: the session is identified by more
@@ -284,7 +292,8 @@ with one detected check command, and get a project that `/sdd-run` accepts in pr
 
 **Server and project list**
 - **FR-001**: The server MUST be a program of its own, started outside any Claude session, and never by the plugin.
-  The plugin has no UI command. It MUST listen on localhost only.
+  It MUST refuse to start inside a Claude session, saying why. The plugin has no UI command. It MUST listen on
+  localhost only.
 - **FR-002**: At most one server MUST run per person. A second start MUST report the running one's address and exit.
 - **FR-003**: The server MUST keep a project list in its own state folder, outside every project, and MUST let the
   person add a project (Load project: pick a folder), switch between projects and remove one from the list.
@@ -326,7 +335,8 @@ with one detected check command, and get a project that `/sdd-run` accepts in pr
   MUST: wait while the session is alive; take over only when the session has ended and `.sdd/run.json` is still
   there; then resume the run from its checkpoint, after the usage reset when a limit caused the cut-off; and stop
   watching, starting nothing, when the run closed normally. Silence in the journal alone MUST never trigger a
-  take-over.
+  take-over. A session that is still open is never taken over on its own, even when its run is paused at a usage
+  limit; only when its run is stale and the person confirms that the session no longer runs it.
 - **FR-011**: Everything the server starts (supervisors, `claude -p`) MUST run outside any Claude session's sandbox,
   so a headless run can set up its own sandbox.
 

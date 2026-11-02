@@ -25,7 +25,7 @@ Prerequisites:
 ## §3 One view of every run (US2)
 1. Toy project with a leftover `status.json` `{"state": "done", "pid": <dead>}`. Start an in-session run (fake
    `claude`) → the UI says "Running in a Claude session" with Supervise this run, and no Stop or Resume buttons.
-2. `python3 bin/sdd-tasks.py state --project <toy>` → `state: running`, `by: session`.
+2. `python3 bin/sdd-tasks.py state --project <toy>` → `state: running`, `origin: session`.
 
 ## §4 Versions (US3)
 1. Edit the copy's `VERSION.json` to `"contract": "1.9"` → a minor warning; buttons work.
@@ -44,7 +44,7 @@ Prerequisites:
 3. In-session run, from another session: `/sdd-stop` names the owning session and does nothing.
 
 ## §7 UI (US6)
-1. `cd ui && npm ci && npm run build` → `server/static/` matches the committed build (`tests/test_ui_build.py`).
+1. `cd ui && npm ci && npm run build` → `server/static/` matches the committed build (`SDD_UI_BUILD=1 python3 -m unittest tests.test_ui_build`).
 2. `SDD_UI_TESTS=1 python3 -m unittest discover -s tests/server_ui` → all pass, including 375 px width checks and
    "event reaches the page within 2 s".
 

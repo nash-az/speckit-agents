@@ -24,12 +24,16 @@ unless marked as coming from the docs.
 - **Evidence**: In a Bash tool call of an interactive session, `$PPID` is the `claude` process itself:
   `ps -o pid,ppid,lstart,command -p $PPID` printed `26834 26583 Mon 2 Nov 11:48:03 2026 claude`. Its parent was the
   login shell.
-- **Decision**: `/sdd-run` records `session: {pid, started}` in `.sdd/run.json`. `pid` is `$PPID` of its Bash call.
-  `started` is that process's start time from `ps -o lstart= -p <pid>`, parsed to epoch seconds. A session is alive
-  when the pid exists **and** its start time still matches, so a reused pid is not mistaken for the session.
-- **Open, proven by a task**: that `$PPID` is also the `claude` process under `claude -p` (expected, untested), and
-  that `--permission-mode dontAsk` lets the skill run `python3 <helper> session --pid $PPID` (a variable in a single
-  command; earlier refusals were for pipes, `;` and loops). If either fails, the fallback is US4 acceptance 4.
+- **Evidence (later, same day)**: a session's Bash calls also carry `CLAUDE_PID` (here `26834`, the same process)
+  and `CLAUDECODE=1`. So the helper can read the pid from its own environment, and the skill's command line needs
+  no `$PPID`, which removes the question of whether `dontAsk` allows the variable. `CLAUDECODE` also lets the server
+  refuse to start inside a session (data-model §6).
+- **Decision**: `/sdd-run` records `session: {pid, started}` in `.sdd/run.json`. The helper reads `pid` from `CLAUDE_PID`,
+  and writes `session: null` when it is missing rather than guess (data-model §3). `started` is that process's start time from
+  `ps -o lstart= -p <pid>`, parsed to epoch seconds. A session is alive when the pid exists **and** its start time
+  still matches, so a reused pid is not mistaken for the session.
+- **Open, proven by a task (T001)**: that `CLAUDE_PID` is set, and is the `claude -p` process, in headless runs too.
+  If it is not, headless runs record `session: null`, which is harmless (they are supervised and never adopted).
 
 ## R3. The engine copy is refreshed by the plugin at session start
 
