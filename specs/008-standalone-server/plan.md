@@ -61,7 +61,7 @@ specs/008-standalone-server/
 ├── spec.md
 ├── plan.md            # this file
 ├── research.md        # R1–R12
-├── data-model.md      # §1–§14
+├── data-model.md      # §1–§15
 ├── quickstart.md      # §1–§9
 ├── contracts/
 │   ├── server-api.md
@@ -75,7 +75,7 @@ specs/008-standalone-server/
 ```text
 bin/                       # the engine (copied by sdd-engine.py install)
 ├── sdd-tasks.py           # + CONTRACT, contract_compare, state_dir/get_status/supervisor_alive (moved), current_state, session_alive, `state`, `session`
-├── sdd-views.py           # new: read models moved from the dashboard (data-model §14)
+├── sdd-views.py           # new: read models moved from the dashboard (data-model §14); + roadmap, waiting_all, runs_all (§15)
 ├── sdd-control.py         # new: write_control, read_control, controls, CLI (moved from the dashboard/supervisor)
 ├── sdd-engine.py          # new: install, path
 ├── sdd-slots.py           # new: take, free, holders
@@ -83,6 +83,7 @@ bin/                       # the engine (copied by sdd-engine.py install)
 ├── sdd-supervise.py       # + --adopt, slots, SDD_SUPERVISED, contract in status.json
 ├── sdd-launch.py          # + adopt, cap check
 ├── sdd-dashboard.py       # old page; imports sdd-views, sdd-control, current_state; removed at parity (R9)
+├── sdd-edit.py            # + roadmap-save, activate (§15)
 └── …                      # sdd-decide, sdd-manual, sdd-unblock, sdd-edit, sdd-job, sdd-harvest: + contract field
 hooks/register.ts          # + session.start → sdd-engine.py install
 skills/sdd-stop/SKILL.md   # new

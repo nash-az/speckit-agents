@@ -39,6 +39,9 @@ Changes and additions under the prefix:
 |---|---|---|
 | GET `…/run/current` | | as before, plus `origin`, `session_alive` and `attach` (`attach.json` or null); `controls` from data-model §5 |
 | POST `…/feature` | `{"feature": name \| null}` | 200; sets the project's feature in `projects.json` (replaces the old `/api/project/select`) |
+| GET `…/roadmap`, `…/waiting-all`, `…/runs-all` | | data-model §15 |
+| POST `…/roadmap` | `{"entries": [...]}` | 200 `{"commit"}`, or 400 / 409 |
+| POST `…/feature/activate` | `{"feature"}` | 200, or 409 with the exact refusal text (data-model §15) |
 | POST `…/run/adopt` | `{"confirm_closed"?: bool}` | 202 `{"pid"}`, or 409 `{"error"}` (data-model §7) |
 | POST `…/run/start`, `…/jobs/start`, `…/jobs/<id>/continue` | as before | also 409 `{"error": "cap reached: <holders>"}` (data-model §8) |
 | any write route | as before | also 409 `{"error": "version mismatch: …"}` on a major mismatch (data-model §11) |

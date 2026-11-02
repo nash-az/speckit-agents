@@ -1,0 +1,48 @@
+# Build order for this project, read by speckit-agents. Spec Kit never reads it.
+[[feature]]
+id = "001-unattended-runs"
+title = ""
+state = "superseded"
+note = "superseded by 003"
+
+[[feature]]
+id = "002-redesign"
+title = ""
+state = "superseded"
+note = "superseded by 003"
+
+[[feature]]
+id = "003-plugin-redesign"
+title = ""
+state = "done"
+note = "T001 won't fix"
+
+[[feature]]
+id = "005-jobs"
+title = ""
+state = ""
+note = ""
+
+[[feature]]
+id = "008-standalone-server"
+title = ""
+state = ""
+note = ""
+
+[[feature]]
+id = "006-spec-cycle"
+title = ""
+state = ""
+note = ""
+
+[[feature]]
+id = "004-feedback-chat"
+title = ""
+state = ""
+note = ""
+
+[[feature]]
+id = "007-parallelism"
+title = "Parallelism"
+state = ""
+note = "not written yet (from 005 Q4)"

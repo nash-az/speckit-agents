@@ -556,3 +556,69 @@ Each keeps its signature. `run_controls` and `write_control` go to `sdd-control.
 
 `bin/sdd-views.py` gets the same read-only guard test as `bin/sdd-dashboard.py` (no subprocess, unlink or `git `),
 except for `write_answer` and `try_apply`, which call `sdd-decide.py` as today; the exception is named in the test.
+
+## 15. Roadmap (FR-028 to FR-031)
+
+- **The file** `.sdd/roadmap.toml`, tracked by git, read with `tomllib`, and written by `bin/sdd-edit.py` (below) in
+  exactly this form:
+
+  ```toml
+  # Build order for this project, read by speckit-agents. Spec Kit never reads it.
+  [[feature]]
+  id = "005-jobs"            # a folder under specs/, or a short name for a feature not written yet
+  title = "Jobs"             # optional; shown when the folder does not exist yet
+  state = ""                 # "" (derived), "done", "superseded" or "parked"
+  note = ""                  # optional, shown on the row
+  ```
+
+  Entries appear in build order. Feature folders not in the file follow them, in folder order. An unreadable file
+  shows a warning and folder order, and never stops the view.
+- **Stage**, derived from the files, first match from the top:
+
+  | condition | stage |
+  |---|---|
+  | `state` is `superseded` or `parked` | that state |
+  | `state` is `done`, or every task is ticked or dropped (`wontfix`/`moved`/`superseded` in BLOCKED.md or the task state) | `done` |
+  | no folder | `not written` |
+  | a task is ticked, or a run in `.sdd/runs/*/workflows.json` names the feature | `building` |
+  | `tasks.md` | `tasks` |
+  | `plan.md` | `planned` |
+  | `spec.md` with a `## Clarifications` heading | `clarified` |
+  | `spec.md` | `spec` |
+
+- **Progress**: ticked tasks / (all tasks minus dropped ones), per feature. Overall: the sum over the features whose
+  stage is not `superseded`, `parked` or `not written`.
+- **Engine** (`bin/sdd-views.py`): `roadmap(project) -> {"contract", "features": [{"id", "title", "exists", "stage",
+  "state", "note", "done", "total", "waiting", "active"}], "overall": {"done", "total"}, "warnings": []}`. Also
+  `waiting_all(project)`, which is the "Waiting on you" list of every feature, each item with `feature`, and
+  `runs_all(project)`, which is every run of `.sdd/runs/` with its `feature` from `workflows.json`, newest first.
+- **Writes** (`bin/sdd-edit.py`, which already saves and commits the spec and the constitution for 003 FR-035):
+  - `roadmap-save --entries '<json list>'` validates the entries: `id` matches `^[0-9A-Za-z][0-9A-Za-z._-]*$`,
+    `state` is one of the four values, and no id appears twice. It writes the file in the form above and commits it
+    with `chore(roadmap): update build order`, under the same refusals as the spec editor (a run is going, other
+    changes are staged).
+  - `activate --feature <folder>` writes `.specify/feature.json` as `{"feature_directory": "specs/<folder>"}`
+    atomically. It refuses with an exact text:
+    - while `.sdd/run.json` exists: "a run is going: switch the feature after it ends";
+    - when `[run] feature` is set in `.sdd/config.toml`: "the project config pins the feature to <x>";
+    - when the folder has no `tasks.md`: "<folder> has no tasks yet".
+- **Routes**:
+  - `GET /api/p/<id>/roadmap`;
+  - `GET /api/p/<id>/waiting-all`;
+  - `GET /api/p/<id>/runs-all`;
+  - `POST /api/p/<id>/roadmap {entries}`;
+  - `POST /api/p/<id>/feature/activate {feature}`.
+  The POST routes go through the request checks and the version lock (§10, §11).
+- **Initial content**: this repository's `.sdd/roadmap.toml` is written with the specs, in the order the person
+  set on 2026-11-02:
+  - 001 and 002 superseded (by 003);
+  - 003 done ("T001 won't fix");
+  - then 005, 008, 006, 004 and 007 ("Parallelism", not written yet).
+- **Tests** (`tests/test_roadmap.py`, toy features in every stage):
+  - each stage row of the table;
+  - order: file entries first, then unlisted folders;
+  - an unreadable file → a warning and folder order;
+  - the overall figure leaves out superseded, parked and not-written features;
+  - `waiting_all` across two features;
+  - `roadmap-save` validation and the commit;
+  - each of `activate`'s three refusals, and a successful write that leaves `git status` clean (the file is ignored).

@@ -125,6 +125,18 @@
 
 ---
 
+## Phase 11: User Story 8 — The whole project at a glance (P2)
+
+**Goal**: the roadmap is a project's first view. **Independent test**: US8's independent test in spec.md.
+
+- [ ] T056 After T012, add `roadmap`, `waiting_all` and `runs_all` to `bin/sdd-views.py` per §15 (stages from the table, progress, overall, file order then unlisted folders, warnings for an unreadable file), with §15's view tests in `tests/test_roadmap.py`.
+- [ ] T057 After T056, add `roadmap-save` and `activate` to `bin/sdd-edit.py` per §15 (validation, the exact refusal texts, the plain commit), with §15's write tests in `tests/test_roadmap.py`.
+- [ ] T058 After T057, after T017, add `GET /api/p/<id>/roadmap`, `/waiting-all`, `/runs-all`, `POST /api/p/<id>/roadmap` and `POST /api/p/<id>/feature/activate` to `server/app.py` per §15 and contracts/server-api.md, with tests in `tests/test_server_routes.py`.
+- [ ] T059 [ui] After T058, after T035, add `views/Roadmap.tsx` as the project's first view (`/p/<id>` opens it): rows in order with stage, done/total and what needs you, the overall bar, one Waiting on you list naming each item's feature with its buttons, the run history across features, Start run on a row (confirm, then `feature/activate`, then the Start run panel), and reorder (up/down) and state editing with Save; rebuild `server/static/`.
+- [ ] T060 After T059, after T044, add `tests/server_ui/test_roadmap.py` covering US8 acceptance 1 to 6.
+
+---
+
 ## Phase 10: Polish
 
 - [ ] T048 [manual] After T010, reinstall the plugin (commit, then `claude plugin marketplace update speckit-agents` and `claude plugin update speckit-agents@speckit-agents`), start an interactive session in any folder, check `~/.local/share/speckit-agents/engine/current/VERSION.json` names 0.8.0, then run one `claude -p "hi"` and record in research.md R3 whether the hook fired there (expected: skipped only when `SDD_SUPERVISED=1`).
@@ -133,7 +145,7 @@
 - [ ] T051 After T046, run quickstart.md §1 to §4, §6, §7, §8 and §9 items 1, 2 and 4 with the fake `claude` (the named tests and CLI steps on temp repos) and record each section's result under `## Validation` in `specs/008-standalone-server/research.md`.
 - [ ] T052 [manual] After T051, run quickstart.md §5 (hand-over) for real and record the result under `## Validation` in research.md.
 - [ ] T053 [manual] After T051, run quickstart.md §9 item 3 (Install plugin from the server, with a test `HOME`) and record the result under `## Validation` in research.md.
-- [ ] T054 [manual] After T047, decide that the new UI replaces the old one: tick this when the ported tests pass and T047 found nothing blocking.
+- [ ] T054 [manual] After T047, after T060, decide that the new UI replaces the old one: tick this when the ported tests pass and T047 found nothing blocking.
 - [ ] T055 After T054, delete `bin/sdd-dashboard.py` and `tests/ui/`, keep the `bin/sdd-views.py` guard test without importing the dashboard, replace the dashboard launch lines in `CLAUDE.md` and `README.md` with `sdd-server`, and remove `sdd-dashboard.py` from `bin/sdd-engine.py`'s exclusions and its test.
 
 ---
@@ -150,7 +162,8 @@ Phase-level:
 - Phase 7 needs Phase 2.
 - Phase 8 needs Phases 3 (T014) and 4 (T020).
 - Phase 9 needs Phase 3 (T013), and its UI tasks need T033, which waits for your approval of the dependencies.
-- Phase 10 needs Phases 8 and 9.
+- Phase 11 needs Phase 3 (T012, T017) and Phase 9 (T035, T044).
+- Phase 10 needs Phases 8, 9 and 11.
 
 Task-level: every edge is written as "After Tnnn" in the task itself. Note that "T045 after T036 to T043" is spelled
 out one by one so the parser sees each.

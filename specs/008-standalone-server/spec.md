@@ -60,6 +60,11 @@ views and routes to the dashboard; once this feature lands they are built on the
 - Q: Where does 008 go in the build order? → A: Next, after 005's T020 and T022; then 006, then 004, then 007
   (user). 006 and 004 have no code yet, so their views are written once, on the new server and UI.
 
+- Q: Splitting the project into features makes the overall progress hard to see: drop features? → A: No; features
+  stay the unit of work (Spec Kit's flow is per feature), but the project is shown as a roadmap (user): one view of
+  every feature in build order with its stage and progress, and an overall figure. The build order is kept in a file
+  the plugin owns, starting with 005, 008, 006, 004, 007 (user).
+
 ### Session 2026-11-02 (analyze)
 - Q: An in-session run is cut off by a usage limit, but its session stays open: does the server take over? → A: No.
   Hand-over covers only sessions that have ended (user). An open interactive session pauses its workflow at a usage
@@ -264,6 +269,40 @@ with one detected check command, and get a project that `/sdd-run` accepts in pr
 7. **Given** the server is the older side of a mismatch, **When** the warning shows, **Then** it says to update the
    server, and does not offer to change the plugin.
 
+---
+
+### User Story 8 - The whole project at a glance (Priority: P2)
+
+The person opens a project and sees its roadmap first: every feature in build order, each with its stage (not
+written, spec, clarified, planned, tasks, building, done) and progress, an overall progress figure, one list of what
+waits on them across all features, and one history of runs. They open a feature to see its tasks and documents as
+today. They start a run on any feature from its row without switching anything by hand, and they change the order or
+mark a feature superseded or parked.
+
+**Why this priority**: the project is split into eight features and only one is visible at a time; the person cannot
+see where the project stands as a whole.
+
+**Independent Test**: on a toy project with three features in different stages and a roadmap file, the roadmap shows
+them in the file's order with the right stages, the overall figure leaves out the superseded one, and "Waiting on
+you" lists items of two features.
+
+**Acceptance Scenarios**:
+
+1. **Given** a project with features and `.sdd/roadmap.toml`, **When** it is opened, **Then** the roadmap is the first
+   view: the listed features in the file's order, then any feature not listed, each with stage, done/total tasks and
+   what needs the person, and an overall progress bar.
+2. **Given** a feature marked `superseded` or `parked`, **When** the roadmap shows it, **Then** it is shown as such and
+   left out of the overall figure.
+3. **Given** items waiting on the person in two features, **When** the roadmap is shown, **Then** one "Waiting on you"
+   list holds both, each naming its feature, with the same buttons as in the feature's own view.
+4. **Given** a feature that is not the active one and no run going, **When** the person clicks Start run on its row and
+   confirms, **Then** it becomes the active feature and the Start run panel opens for it. While a run is going, the
+   switch is refused with the reason.
+5. **Given** the person moves a feature up or marks it parked, **When** they save, **Then** the roadmap file changes
+   and is committed with a plain message, as the spec editor does (003 FR-035).
+6. **Given** a project with no roadmap file, **When** it is opened, **Then** every feature is shown in folder order, and
+   saving the order creates the file.
+
 ### Edge Cases
 
 - The server is not running: plugin commands keep working from the files (`/sdd-status` reads them, `/sdd-stop`
@@ -388,11 +427,27 @@ with one detected check command, and get a project that `/sdd-run` accepts in pr
 - **FR-027**: The server MUST be installed and updated on its own, independently of the plugin. When the server is
   the older side of a mismatch, it MUST say to update the server.
 
+**The roadmap (US8)**
+- **FR-028**: The project's build order and the features' manual states (`superseded`, `parked`, `done` with a note)
+  MUST live in one plugin-owned file, `.sdd/roadmap.toml`, that Spec Kit never reads. A roadmap entry may name a
+  feature that has no folder yet ("not written").
+- **FR-029**: The roadmap MUST be the first view of a project. It MUST show each feature's stage and progress,
+  derived from its files (never typed in by hand), an overall progress figure that leaves out superseded and
+  parked features, one "Waiting on you" list across all features, and one run history across all features.
+- **FR-030**: Starting a run from a roadmap row MUST make that feature the active one first (by writing Spec Kit's
+  `.specify/feature.json`, which is not tracked by git), after a confirmation, and only when no run is going and
+  the project's config does not pin a feature (`[run] feature`).
+- **FR-031**: The person MUST be able to reorder the roadmap and set or clear a feature's manual state from the UI;
+  the file is saved and committed with a plain message, under the same rules as 003 FR-035.
+
 **How the server is started**
 - **FR-024**: The person MUST be able to start the server with one command, from any folder. The server does not
   start at login; the person starts it after a reboot.
 
 ### Key Entities
+
+- **Roadmap entry**: feature folder name (or a title for a feature not written yet), manual state (none, done,
+  superseded, parked), note, position.
 
 - **Project entry**: resolved path, display name, when it was added, last seen state (present or missing).
 - **Engine copy**: folder, plugin version, contract version, when it was copied.
@@ -418,6 +473,8 @@ with one detected check command, and get a project that `/sdd-run` accepts in pr
   run state the controls table lists.
 - **SC-006**: All current browser tests, ported, pass against the new UI before the old page is removed; a written
   event reaches the UI within 2 seconds.
+- **SC-008**: Opening a project shows the whole project's state in one view: every feature's stage and progress,
+  the overall figure and everything waiting on the person, with no feature switch needed.
 - **SC-007a**: Restarting the server while a supervised run, a Job and an attachment are going loses none of them:
   each is shown with its controls within 10 seconds of the start, and the run finishes as if nothing had happened.
 - **SC-007**: No headless run started by the server fails to start its own sandbox.
