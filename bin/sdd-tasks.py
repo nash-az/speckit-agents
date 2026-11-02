@@ -51,7 +51,7 @@ CONVERGENCE_RE = re.compile(r"^convergence", re.IGNORECASE)
 
 # Agent tags that keep a task away from the run unless the config allows it.
 HOLD_TAGS = {
-    "manual": "needs a person to do it (recording, hardware, an account)",
+    "manual": "a step you do yourself; the run never attempts it",
     "decision": "needs a decision that is not in the spec",
     "dep": "adds a new dependency",
     "download": "downloads a large model or dataset",

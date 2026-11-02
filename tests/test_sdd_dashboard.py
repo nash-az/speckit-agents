@@ -331,6 +331,15 @@ class RunsTest(unittest.TestCase):
         (self.root / ".sdd" / "runs" / "20261025-1200.md").write_text("# Report\n", encoding="utf-8")
         self.assertTrue(request(self, "GET", "/api/runs")[0]["finished"])
 
+    def test_run_cut_off_before_its_report_is_not_running(self):
+        """A run with no report that is not the one in .sdd/run.json was cut off: stopped, tasks interrupted."""
+        run = request(self, "GET", "/api/runs")[0]
+        self.assertEqual(run["stopped"], "cut off")
+        self.assertNotIn("running", [t["outcome"] for t in run["tasks"]])
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"run_id": "20261025-1200"}), encoding="utf-8")
+        run = request(self, "GET", "/api/runs")[0]
+        self.assertIsNone(run["stopped"])
+
     def test_run_tasks_outcomes_and_commits(self):
         ev = lambda kind, i, **f: dict({"ts": f.pop("ts", "2026-10-25T10:00:00Z"), "kind": kind, "id": i}, **f)
         events = [ev("task.started", "T1", attempt=1, ts="2026-10-25T10:00:00Z"), ev("task.approved", "T1"),

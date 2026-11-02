@@ -271,6 +271,8 @@ def list_runs(project):
         return runs
     entries = [e for e in runs_dir.iterdir()
                if e.is_dir() and RUN_ID_RE.match(e.name) and (e / "workflows.json").is_file()]
+    current = read_json(project / ".sdd" / "run.json")
+    current = current.get("run_id") if isinstance(current, dict) else None
     for entry in sorted(entries, key=lambda p: p.name, reverse=True):
         run_id = entry.name
         events = sdd_tasks.run_events(project, run_id)["events"]
@@ -285,7 +287,11 @@ def list_runs(project):
             "finished": (runs_dir / (run_id + ".md")).is_file(),
             "stopped": None,
         })
-        runs[-1]["tasks"] = run_tasks(events, runs[-1]["finished"])
+        # A run with no report that is not the one in .sdd/run.json was cut off (stopped at a usage
+        # pause or killed, then never resumed): it is not running, and its open tasks are interrupted.
+        if not runs[-1]["finished"] and run_id != current:
+            runs[-1]["stopped"] = "cut off"
+        runs[-1]["tasks"] = run_tasks(events, runs[-1]["finished"] or runs[-1]["stopped"] == "cut off")
         listing = read_json(entry / "workflows.json")
         runs[-1]["feature"] = run_feature(project, run_id, listing)
         # The Job the run belonged to (005 data-model §5), else None.
@@ -1612,6 +1618,7 @@ def build_html():
   .task-card.log-open { border-color: var(--accent); }
   .task-card:hover { border-color: var(--accent); background: var(--surface-hover); }
   .task-id { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 700; color: var(--accent); margin-bottom: 0.25rem; display: block; }
+  .task-not-yet { font-size: 0.8125rem; color: var(--text-muted); margin-bottom: 0.5rem; }
   .task-text { font-size: 0.875rem; color: var(--text); margin-bottom: 0.5rem; line-height: 1.4; }
   .task-tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
   .task-tag { font-size: 0.6875rem; padding: 0.125rem 0.5rem; border-radius: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -2138,10 +2145,31 @@ def build_html():
     }
 
     // Everything waiting on a person, held and blocked together (FR-005). A task held only because
-    // a dependency is held waits on that task, not on the person, so it is not counted here.
+    // a dependency is held waits on that task, not on the person, so it is not counted here. Neither is
+    // a [manual] step that is not doable yet (markNotYet): only what the person can act on now counts.
     function isWaiting(t) {
       var key = taskStatusKey(t);
-      return (key === 'held' && t.status_tag !== 'dependency') || key === 'blocked';
+      return ((key === 'held' && t.status_tag !== 'dependency') || key === 'blocked') && !t.notYet;
+    }
+
+    // A held [manual] step is doable once every earlier phase is finished (each task done, moved,
+    // wontfix or superseded, not counting other held [manual] steps); tasks in its own phase do not
+    // count, so a setup step in the middle of a phase stays doable. Until then `t.notYet` is the
+    // number of open tasks in earlier phases, and the step shows in its phase as "Not yet" instead of
+    // in Waiting on you.
+    var FINISHED_KEYS = ['done', 'moved', 'wontfix', 'superseded'];
+    function markNotYet(phases) {
+      var open = 0;
+      (phases || []).forEach(function(p) {
+        var here = 0;
+        (p.tasks || []).forEach(function(t) {
+          var key = taskStatusKey(t), manual = key === 'held' && t.status_tag === 'manual';
+          t.notYet = manual ? open : 0;
+          if (!manual && FINISHED_KEYS.indexOf(key) < 0) here++;
+        });
+        open += here;
+      });
+      return phases;
     }
 
     // BLOCKED.md entry badges (data-model.md §1).
@@ -2154,7 +2182,7 @@ def build_html():
     // Overview counters, from the same statuses as the task cards.
     function countTasks(phases) {
       var c = { total: 0, done: 0, waiting: 0, blocked: 0 };
-      (phases || []).forEach(function(p) {
+      markNotYet(phases).forEach(function(p) {
         (p.tasks || []).forEach(function(t) {
           var key = taskStatusKey(t);
           c.total++;
@@ -2212,6 +2240,8 @@ def build_html():
         '" data-task-card="' + escapeHtml(t.id) + '">' +
         '<div class="task-head"><span class="task-id">' + escapeHtml(t.id) + '</span>' + taskBadge(t) + '</div>' +
         '<div class="task-text">' + inlineCode(t.text) + '</div>' +
+        (t.notYet ? '<div class="task-not-yet">Not yet: you can do this once the earlier phases are finished (' + t.notYet +
+          (t.notYet === 1 ? ' task' : ' tasks') + ' left).</div>' : '') +
         '<div class="task-tags">' + tagsHtml(t.tags) + taskRunChipHtml(t.id) + '</div>' +
         (showsLog(t) ? liveOutputHtml(t, liveLogs[t.id]) : '') + '</div>';
     }
@@ -2714,6 +2744,7 @@ def build_html():
 
     function needsGroups(phases, decisions) {
       var groups = { blocked: [], decision: [], manual: [], other: [] }, seen = {};
+      markNotYet(phases);
       (decisions || []).forEach(function(d) { seen[d.id] = true; groups.decision.push({ id: d.id, text: d.question || d.text, meta: 'decision' }); });
       (phases || []).forEach(function(p) {
         (p.tasks || []).forEach(function(t) {
@@ -2803,7 +2834,7 @@ def build_html():
     function overviewRunsHtml(runs) {
       if (!runs.length) return '<div class="ov-ok">No runs yet.</div>';
       return runs.slice(0, 5).map(function(r) {
-        var state = r.finished ? (r.stopped ? 'stopped' : 'done') : (r.interrupted > 0 ? 'paused' : 'running');
+        var state = r.finished ? (r.stopped ? 'stopped' : 'done') : r.stopped ? 'stopped' : (r.interrupted > 0 ? 'paused' : 'running');
         return '<div class="ov-row" data-run="' + escapeHtml(r.id) + '"><span class="id">#' + escapeHtml(r.id) + '</span>' +
           '<span class="txt">' + r.approved + ' approved · ' + r.blocked + ' blocked' + (r.interrupted ? ' · ' + r.interrupted + ' interrupted' : '') + '</span>' +
           '<span class="meta">' + state + '</span></div>';
@@ -2893,6 +2924,7 @@ def build_html():
 
     function renderTasks(phases, runId) {
       var waiting = '', count = 0, list = '', running = [];
+      markNotYet(phases);
       if (pendingTask) (phases || []).forEach(function(p) {
         if ((p.tasks || []).some(function(t) { return t.id === pendingTask; })) openDone[p.title] = true;
       });
@@ -3422,9 +3454,13 @@ def build_html():
       return isFinite(ms) && ms >= 0 ? Math.max(1, Math.round(ms / 60000)) + ' min' : '';
     }
 
-    // One row per task the run touched; a row opens the task in Tasks when the run was for the selected feature.
+    // One row per task the run touched, newest first so the running task is on top; a row opens the task in Tasks
+    // when the run was for the selected feature.
     function runTasksHtml(run) {
-      var tasks = run.tasks || [];
+      var tasks = (run.tasks || []).map(function(t, i) { return { t: t, i: i }; }).sort(function(a, b) {
+        var x = String(a.t.started || ''), y = String(b.t.started || '');
+        return x < y ? 1 : x > y ? -1 : b.i - a.i;
+      }).map(function(x) { return x.t; });
       if (!tasks.length) return '<div class="live-output-empty">No tasks recorded for this run.</div>';
       var here = run.feature && run.feature === activeFeature;
       return (here ? '' : '<div class="live-output-empty">This run was for ' + escapeHtml(run.feature || 'an unknown feature') +
@@ -3451,8 +3487,8 @@ def build_html():
         loadEvents();
         loadReport();
       });
-      var statusCls = run.finished ? (run.stopped ? 'status-stopped' : 'status-done') : (run.interrupted > 0 ? 'status-paused' : 'status-running');
-      var finishedText = run.finished ? (run.stopped ? 'stopped' : 'done') : 'running';
+      var statusCls = run.finished ? (run.stopped ? 'status-stopped' : 'status-done') : run.stopped ? 'status-stopped' : (run.interrupted > 0 ? 'status-paused' : 'status-running');
+      var finishedText = run.finished ? (run.stopped ? 'stopped' : 'done') : run.stopped ? 'stopped before its report' : 'running';
       div.innerHTML = '<div class="run-info"><div class="run-id">#' + escapeHtml(run.id) + '</div><div class="run-meta"><span class="pill ' + statusCls + '"><span class="pill-dot"></span>' + finishedText + '</span> ' + run.approved + ' approved · ' + run.blocked + ' blocked · ' + run.interrupted + ' interrupted · ' + run.events_count + ' events</div></div>';
       var block = document.createElement('div');
       block.className = 'run-block';
