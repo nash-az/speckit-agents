@@ -98,7 +98,7 @@ push, never delete a branch, never rewrite history. Tests use temporary git repo
 ## Phase 8: Polish
 
 - [ ] T020 [P] In `README.md` add a "Jobs" section: what a Job is, Start job, waiting and settling, the usage checkbox, limits and Continue, Merge and Drop, and that a plain `/sdd-run` still works. No test.
-- [ ] T021 Run quickstart.md §1–§5 with the fake `claude` (the test suite covers them; run the named tests and the CLI steps by hand on a temp repo) and record each section's result (pass/fail and one line of evidence) under a new heading `## Validation` in `specs/005-jobs/research.md`.
+- [x] T021 Run quickstart.md §1–§5 with the fake `claude` (the test suite covers them; run the named tests and the CLI steps by hand on a temp repo) and record each section's result (pass/fail and one line of evidence) under a new heading `## Validation` in `specs/005-jobs/research.md`.
 - [ ] T022 [manual] Run quickstart.md §6 for real on this repo: start a Job on a small open phase from the Jobs view, leave it, come back, check the banner never showed a run id, and Merge it. Record the result under `## Validation` in `specs/005-jobs/research.md`.
 
 ---
