@@ -2268,6 +2268,189 @@ class JobsViewTest(unittest.TestCase):
         self.assertEqual(got[5:], ["Phase 11", "All open tasks", "3–5, 7"])
 
 
+class JobBannerTest(unittest.TestCase):
+    """005 FR-012, SC-003 (T019): the banner and the Overview pill describe the open Job in the words of
+    data-model.md §9 and never show a run id. The banner code runs in node against a stand-in element; the
+    browser behaviour (the usage checkbox's flips) is tests/ui/test_banner.py."""
+
+    JOB_ID = "20261031-1012"
+    RUN_ID = "20261031-1530"
+    RESETS_AT = 1793450000
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = dash.build_html()
+        h = cls.html
+        parts = [h[h.index("function escapeHtml("):h.index("function loadProject(")]]
+        a = h.index("    // Jobs view (005 FR-011, data-model.md §9).")
+        parts.append(h[a:h.index("    // End of the Jobs view helpers.")])
+        a = h.index("    // Run banner (data-model.md §12.4")
+        parts.append(h[a:h.index("    // POST /api/run/<command> (§12.3).")])
+        a = h.index("    function runPillHtml(")
+        parts.append(h[a:h.index("    function overviewProgressHtml(")])
+        # The banner element and the page calls it makes; fetches never answer, so the render is what is checked.
+        stubs = ("var jobsById = {};\nfunction toast() {}\n"
+                 "function fetchJSON() { return new Promise(function() {}); }\n"
+                 "var bannerEl = {innerHTML: '', style: {}, querySelectorAll: function() { return []; },\n"
+                 "                querySelector: function() { return null; }};\n"
+                 "var document = {getElementById: function() { return bannerEl; }, querySelector: function() { return null; }};\n")
+        cls.js = stubs + "\n".join(parts)
+
+    def run_js(self, expr):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        script = self.js + "\nprocess.stdout.write(JSON.stringify(" + expr + "));"
+        out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def job(self, stored, shown=None, **shown_fields):
+        return {"id": self.JOB_ID, "title": "Phase 11", "feature": "003-x", "state": stored,
+                "reason": None, "branch": "auto/" + self.JOB_ID, "base": {"branch": "main", "commit": "abc1234"},
+                "runs": [self.JOB_ID, self.RUN_ID], "scope_tasks": ["T052", "T053"],
+                "shown": {"state": shown or stored, **shown_fields},
+                "progress": {"done": 3, "total": 6, "waiting_on_you": 2, "left": 1}}
+
+    def shown_states(self):
+        """(name, /api/run/current, the text data-model.md §9 gives) for every shown state."""
+        hhmm = time.strftime("%H:%M", time.localtime(self.RESETS_AT))
+        none = {"stop": False, "resume": False, "hold": False, "release": False, "reason": None}
+        run = {"state": "running", "run_id": self.RUN_ID, "workflow_dir": "/x/" + self.RUN_ID}
+        rows = [
+            ("working", {**run, "controls": {**none, "stop": True}, "job": self.job("working")},
+             "Working on Phase 11: T052, verifying (7 min)"),
+            ("stopping", {**run, "stopping": True, "controls": {**none, "stop": True,
+                          "reason": "stopping after the current task"}, "job": self.job("working")},
+             "Stopping after the current task…"),
+            ("paused, box checked", {**run, "state": "paused", "controls": {**none, "hold": True,
+             "reason": "waiting for the usage window to reset at " + hhmm},
+             "job": self.job("working", "paused", resets_at=self.RESETS_AT, keep_paused=False)},
+             "Paused until %s: usage limit; continues by itself" % hhmm),
+            ("paused, box unchecked", {**run, "state": "paused", "controls": {**none, "release": True,
+             "reason": "will stay paused after the reset at " + hhmm},
+             "job": self.job("working", "paused", resets_at=self.RESETS_AT, keep_paused=True)},
+             "Paused until %s: usage limit; stays paused" % hhmm),
+            ("held", {**run, "state": "paused", "controls": {**none, "reason": dash.NO_SUPERVISOR}, "job": self.job("held")},
+             "Held after the usage reset: Continue to resume"),
+            ("waiting", {"state": "none", "run_id": None, "workflow_dir": None,
+                         "controls": {**none, "reason": dash.NO_SUPERVISOR}, "job": self.job("waiting")},
+             "Waiting on you: 2 items"),
+            ("interrupted", {**run, "state": "stale", "controls": {**none, "reason": dash.NO_SUPERVISOR},
+                             "job": self.job("working", "interrupted")},
+             "Stopped unexpectedly: Continue to resume"),
+        ]
+        for state in ("stopped", "done", "failed"):
+            rows.append((state, {"state": "none", "run_id": None, "workflow_dir": None,
+                                 "controls": {**none, "reason": dash.NO_SUPERVISOR}, "job": self.job(state)},
+                         "Phase 11 %s: 3 tasks done; Merge to bring them into main, or Drop" % state))
+        rows.append(("no job", {"state": "none", "run_id": None, "workflow_dir": None,
+                                "controls": {**none, "reason": dash.NO_SUPERVISOR}}, "No job running"))
+        return rows
+
+    def render(self, runs):
+        """Each run through renderRunBanner() and runPillHtml(): {html, text, pill, checkbox}."""
+        since = "new Date(Date.now() - 7 * 60000 - 5000).toISOString()"
+        return self.run_js("""(function(runs) {
+            var el = bannerEl;
+            var strip = function(s) { return s.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim(); };
+            return runs.map(function(run) {
+              bannerActivity = {id: 'T052', step: 'verifying', since: %s};
+              stoppingTask = null; keepWanted = null;
+              renderRunBanner(run);
+              var text = /<span class="run-banner-text"[^>]*>([^<]*)<\\/span>/.exec(el.innerHTML);
+              var box = /<input type="checkbox"[^>]*>/.exec(el.innerHTML);
+              var titles = (el.innerHTML.match(/title="[^"]*"/g) || []).join(' ');
+              return {html: el.innerHTML, shown: strip(el.innerHTML) + ' ' + titles, text: text ? text[1] : null,
+                      pill: strip(runPillHtml(run)), checkbox: box ? box[0] : null};
+            });
+          })(%s)""" % (since, json.dumps([r[1] for r in self.shown_states()])))
+
+    def test_banner_texts_follow_the_table(self):
+        rows = self.shown_states()
+        for (name, _run, want), got in zip(rows, self.render(rows)):
+            self.assertEqual(got["text"], want, name)
+
+    def test_no_banner_or_pill_text_contains_a_run_id(self):
+        """SC-003: for every shown state, neither the banner (text, labels, tooltips) nor the pill names a run."""
+        run_id = re.compile(r"\d{8}-\d{4}")
+        rows = self.shown_states()
+        for (name, _run, _want), got in zip(rows, self.render(rows)):
+            self.assertIsNone(run_id.search(got["shown"]), (name, got["shown"]))
+            self.assertIsNone(run_id.search(got["pill"]), (name, got["pill"]))
+
+    def test_pill_says_what_the_banner_says(self):
+        rows = self.shown_states()
+        for (name, _run, want), got in zip(rows, self.render(rows)):
+            if name == "stopping":
+                continue  # the pill shows the Job's state; "Stopping after …" is the banner's own
+            self.assertEqual(got["pill"], want, name)
+
+    def test_buttons_and_checkbox_per_state(self):
+        rows = self.shown_states()
+        got = dict(zip([r[0] for r in rows], self.render(rows)))
+        hhmm = time.strftime("%H:%M", time.localtime(self.RESETS_AT))
+        self.assertIn('data-control="stop" data-mode="after-task"', got["working"]["html"])
+        self.assertIn('data-control="stop" data-mode="now"', got["working"]["html"])
+        self.assertIsNone(got["working"]["checkbox"])
+        for name, checked in (("paused, box checked", True), ("paused, box unchecked", False)):
+            box = got[name]["checkbox"]
+            self.assertIsNotNone(box, name)
+            self.assertEqual(" checked" in box, checked, name)
+            self.assertNotIn("disabled", box, name)
+            self.assertIn("Continue when the limit resets (%s)" % hhmm, got[name]["html"])
+            self.assertNotIn("data-control", got[name]["html"], name)
+        for name in ("held", "interrupted", "waiting"):
+            self.assertIn('data-job-action="continue"', got[name]["html"], name)
+            self.assertNotIn('data-job-action="merge"', got[name]["html"], name)
+        for name in ("done", "failed"):
+            self.assertIn('data-job-action="merge"', got[name]["html"], name)
+            self.assertIn('data-job-action="drop"', got[name]["html"], name)
+        self.assertIn('data-job-action="continue"', got["stopped"]["html"])
+        self.assertIn('data-go="jobs">Start job<', got["no job"]["html"])
+
+    def test_checkbox_posts_release_when_checked_and_hold_when_unchecked(self):
+        js = self.html[self.html.index("function renderJobBanner("):self.html.index("function bindControlButtons(")]
+        self.assertIn("postControl(check.checked ? 'release' : 'hold')", js)
+        for command in ("release", "hold"):
+            self.assertIn("/api/run/" + command, dash.CONTROL_ROUTES)
+
+    def test_stale_banner_hidden_with_an_open_job(self):
+        self.assertIn("run.state === 'stale' && !run.job", self.html)
+
+    def test_run_current_carries_the_open_job(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name).resolve()
+        root = base / "project"
+        (root / ".sdd").mkdir(parents=True)
+        (root / "specs" / "003-x").mkdir(parents=True)
+        (root / "specs" / "003-x" / "tasks.md").write_text("## Phase 11: A\n\n- [ ] T052 Do it\n- [x] T053 Done\n",
+                                                           encoding="utf-8")
+        handler = dash.DashboardHandler
+        saved = (handler.project, handler.feature, handler.port, handler.allow_ports)
+        handler.project, handler.feature, handler.port, handler.allow_ports = root, None, 8765, ()
+        env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(base / "state")})
+        env.start()
+
+        def record(state):
+            r = self.job(state)
+            del r["shown"], r["progress"]
+            return r
+
+        try:
+            self.assertNotIn("job", request(self, "GET", "/api/run/current"))
+            dash.sdd_job.save(root, record("waiting"))
+            got = request(self, "GET", "/api/run/current")["job"]
+            self.assertEqual(got["id"], self.JOB_ID)
+            self.assertEqual(got["shown"], {"state": "waiting"})
+            self.assertEqual(got["progress"]["done"], 1)
+            dash.sdd_job.save(root, record("merged"))
+            self.assertNotIn("job", request(self, "GET", "/api/run/current"))
+        finally:
+            env.stop()
+            handler.project, handler.feature, handler.port, handler.allow_ports = saved
+
+
 class ReadOnlyTest(unittest.TestCase):
     """data-model.md §4.8 (FR-020): the dashboard's source has no way to write or run anything,
     except `write_control()` and `write_answer()` (FR-033), which write `control.json` and one answer file

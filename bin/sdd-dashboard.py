@@ -26,7 +26,8 @@ Endpoints:
     GET /api/runs/<id>/report     -- run report markdown (id must look like 20261027-1431)
     GET /api/status               -- supervisor status (usage windows)
     GET /api/run/current          -- run state: none | running | paused | stale, plus `controls`
-                                     (data-model.md §4.5, §12.3)
+                                     (data-model.md §4.5, §12.3) and, with an open Job, `job` as
+                                     /api/jobs gives it (005 FR-012: the banner's words)
     POST /api/run/stop            -- { "mode"?: "after-task" | "now" } ask the supervisor to stop
     POST /api/run/resume          -- ask a held supervisor to start the next cycle
     POST /api/run/hold            -- while waiting for a usage window: stay paused after the reset
@@ -429,7 +430,20 @@ def run_state(project, now=None):
         result["by"] = "operator"
     if state == "stopping":
         result["stopping"] = True
+    job = open_job_view(project)
+    if job is not None:  # only with an open Job, so the 003 shape stays as it was without one
+        result["job"] = job
     return result
+
+
+def open_job_view(project):
+    """The open Job as `/api/jobs` gives it (005 data-model §9), or None: the banner and the Overview
+    headline describe it in words (FR-012)."""
+    try:
+        record = sdd_job.open_job(project)
+    except (OSError, ValueError):
+        return None
+    return job_view(project, record) if record else None
 
 
 _CONTROL_LOCK = threading.Lock()
@@ -1607,6 +1621,7 @@ def build_html():
   .run-banner-text { font-weight: 500; }
   .run-banner-actions { display: flex; gap: 0.5rem; }
   .run-banner .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .run-banner-keep { display: inline-flex; align-items: center; gap: 0.375rem; cursor: pointer; }
   .run-banner-reason, .run-banner-error { color: var(--text-muted); }
   .run-banner-error { color: var(--danger); }
   .run-banner code { font-family: 'JetBrains Mono', monospace; }
@@ -2712,9 +2727,14 @@ def build_html():
     }
 
     function runPillHtml(run) {
+      // With an open Job the pill says what the banner says (005 FR-012); never a run id.
+      if (run && run.job) {
+        return '<span class="ov-run ' + escapeHtml(jobPillClass(run.job)) + '"><span class="dot"></span>' +
+          escapeHtml(jobBannerText(run.job, bannerActivity, bannerKeep(run.job))) + '</span>';
+      }
       var state = (run && run.state) || 'none';
       // Words for the person, never the run id (that lives in the Jobs view).
-      var label = { running: 'Working', paused: 'Paused', stale: 'Stopped unexpectedly', none: 'Nothing running' }[state] || 'Nothing running';
+      var label = { running: 'Working', paused: 'Paused', stale: 'Stopped unexpectedly', none: 'No job running' }[state] || 'No job running';
       return '<span class="ov-run ' + escapeHtml(state) + '"><span class="dot"></span>' + escapeHtml(label) + '</span>';
     }
 
@@ -3080,6 +3100,48 @@ def build_html():
       var s = jobShown(job);
       if (s === 'paused' && job.shown.resets_at) return 'Paused until ' + hhmm(job.shown.resets_at) + ': usage limit';
       return JOB_STATE_WORDS[s] || s;
+    }
+
+    // The banner and Overview headline for the open Job (005 FR-012, data-model.md §9), never a run id.
+    // `activity` is what the agents are doing ({id, step, since}) or null; `keepPaused` overrides
+    // shown.keep_paused while a flip of the usage checkbox waits for the supervisor; `now` is in ms.
+    function jobBannerText(job, activity, keepPaused, now) {
+      if (!job) return 'No job running';
+      var s = jobShown(job), title = job.title || 'the job', p = job.progress || {};
+      if (s === 'working') {
+        if (!activity) return 'Working on ' + title;
+        var mins = Math.floor(((now || Date.now()) - Date.parse(activity.since)) / 60000);
+        return 'Working on ' + title + ': ' + activity.id + ', ' + activity.step +
+          (isFinite(mins) && mins >= 0 ? ' (' + (mins < 1 ? 'just started' : mins + ' min') + ')' : '');
+      }
+      if (s === 'paused') {
+        var keep = keepPaused === undefined || keepPaused === null ? !!job.shown.keep_paused : keepPaused;
+        return 'Paused until ' + (job.shown.resets_at ? hhmm(job.shown.resets_at) : '?') + ': usage limit; ' +
+          (keep ? 'stays paused' : 'continues by itself');
+      }
+      if (s === 'held') return 'Held after the usage reset: Continue to resume';
+      if (s === 'waiting') {
+        var n = p.waiting_on_you || 0;
+        return 'Waiting on you: ' + n + ' item' + (n === 1 ? '' : 's');
+      }
+      if (s === 'interrupted') return 'Stopped unexpectedly: Continue to resume';
+      if (s === 'stopped' || s === 'done' || s === 'failed') {
+        var d = p.done || 0, base = (job.base && job.base.branch) || 'the base branch';
+        return title + ' ' + s + ': ' + d + ' task' + (d === 1 ? '' : 's') + ' done; Merge to bring them into ' + base + ', or Drop';
+      }
+      return title + ' ' + s;
+    }
+
+    // The usage checkbox's label while the Job is paused (research R11).
+    function jobKeepLabel(job) {
+      return 'Continue when the limit resets (' + (job && job.shown && job.shown.resets_at ? hhmm(job.shown.resets_at) : '?') + ')';
+    }
+
+    // The Overview pill's dot class (.ov-run.<class>) for a Job's shown state.
+    function jobPillClass(job) {
+      var s = jobShown(job);
+      return s === 'working' ? 'running' : ['paused', 'held', 'waiting'].indexOf(s) >= 0 ? 'paused'
+        : s === 'interrupted' || s === 'failed' ? 'stale' : 'none';
     }
 
     // The limit a stopped Job was stopped by ("max_tasks 10 reached"), as sdd-launch.py reads it; else null.
@@ -3646,7 +3708,8 @@ def build_html():
     function loadRunState() {
       fetchJSON('/api/run/current', 'GET').then(function(run) {
         var el = document.getElementById('stale-banner');
-        if (run && run.state === 'stale') {
+        // With an open Job the run banner says it in words ("Stopped unexpectedly"), never the run id (005 SC-003).
+        if (run && run.state === 'stale' && !run.job) {
           el.innerHTML = staleBannerHtml(run.run_id);
           el.style.display = '';
         } else {
@@ -3720,7 +3783,83 @@ def build_html():
       fetchJSON('/api/runs/' + encodeURIComponent(runId) + '/events', 'GET').then(function(data) {
         bannerActivity = activityFrom(data && data.events);
         var el = document.querySelector('#run-banner .run-banner-text');
-        if (el && el.getAttribute('data-activity')) el.textContent = activityText(el.getAttribute('data-activity'));
+        if (el && el.hasAttribute('data-job-activity') && bannerJob) el.textContent = jobBannerText(bannerJob, bannerActivity);
+        else if (el && el.getAttribute('data-activity')) el.textContent = activityText(el.getAttribute('data-activity'));
+      });
+    }
+
+    // The open Job the banner shows (005 FR-012), and the usage checkbox's last flip while the supervisor has
+    // not taken it up yet ({value: keep_paused wanted, at: ms}), so a refresh in between does not flip it back.
+    var bannerJob = null;
+    var keepWanted = null;
+
+    function bannerKeep(job) {
+      if (!keepWanted) return null;
+      var real = !!(job.shown && job.shown.keep_paused);
+      if (real === keepWanted.value || Date.now() - keepWanted.at > 15000) { keepWanted = null; return null; }
+      return keepWanted.value;
+    }
+
+    // The banner for the open Job, in the words of data-model.md §9: Stop buttons while working, the usage
+    // checkbox while paused (research R11), and the Job's own Continue, Merge and Drop otherwise.
+    function renderJobBanner(el, run) {
+      var job = run.job, c = run.controls || {}, s = jobShown(job), sup = supervisorState(run);
+      bannerJob = job;
+      jobsById[job.id] = job;
+      var key = 'job:' + s + ':' + sup;
+      if (key !== lastBannerState) runBannerError = '';
+      lastBannerState = key;
+      var reason = c.reason || null, buttons = [], text, attrs = '', box = '';
+      var stopQuestion = 'Stop the run now? The current agent is stopped and its task is resumed from the journal on the next start.';
+      if (s === 'working' && sup === 'stopping') {
+        text = 'Stopping after ' + (stoppingTask || 'the current task') + '…';
+        buttons.push(controlButton('Stop now', 'stop', 'now', !!c.stop, reason, stopQuestion));
+      } else if (s === 'working') {
+        attrs = ' data-job-activity';
+        text = jobBannerText(job, bannerActivity);
+        buttons.push(controlButton('Stop after current task', 'stop', 'after-task', !!c.stop, reason));
+        buttons.push(controlButton('Stop now', 'stop', 'now', !!c.stop, reason, stopQuestion));
+      } else if (s === 'paused') {
+        var wanted = bannerKeep(job), keep = wanted === null ? !!job.shown.keep_paused : wanted;
+        text = jobBannerText(job, null, keep);
+        var can = !!(c.hold || c.release) || wanted !== null;
+        box = '<label class="run-banner-keep"><input type="checkbox" id="run-banner-continue"' + (keep ? '' : ' checked') +
+          (can ? '' : ' disabled title="' + escapeHtml(reason || 'not available now') + '"') + '> ' +
+          escapeHtml(jobKeepLabel(job)) + '</label>';
+      } else {
+        text = jobBannerText(job);
+        var a = jobActions(job);
+        if (a['continue']) buttons.push(jobButtonHtml(job, 'continue', 'Continue', true));
+        if (a.merge) buttons.push(jobButtonHtml(job, 'merge', 'Merge', true));
+        if (a.drop) buttons.push(jobButtonHtml(job, 'drop', 'Drop', true));
+      }
+      var anyDisabled = buttons.some(function(b) { return b.indexOf(' disabled ') !== -1; });
+      var html = '<span class="run-banner-text"' + attrs + '>' + escapeHtml(text) + '</span>' + box +
+        '<span class="run-banner-actions">' + buttons.join('') + '</span>';
+      if (anyDisabled && reason) html += '<span class="run-banner-reason">' + reasonHtml(reason) + '</span>';
+      if (runBannerError) html += '<span class="run-banner-error" role="alert">' + escapeHtml(runBannerError) + '</span>';
+      el.innerHTML = html;
+      el.style.display = '';
+      bindControlButtons(el);
+      var check = el.querySelector('#run-banner-continue');
+      if (check) check.addEventListener('change', function() {
+        // Checked: continue at the reset (release); unchecked: stay paused (hold).
+        keepWanted = { value: !check.checked, at: Date.now() };
+        postControl(check.checked ? 'release' : 'hold');
+      });
+      if (sup === 'stopping' && run.run_id) loadStoppingTask(run.run_id);
+      else stoppingTask = null;
+      if (s === 'working' && sup !== 'stopping' && run.run_id) loadBannerActivity(run.run_id);
+      else bannerActivity = null;
+    }
+
+    function bindControlButtons(el) {
+      el.querySelectorAll('button[data-control]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var question = btn.getAttribute('data-confirm');
+          if (question && !window.confirm(question)) return;
+          postControl(btn.getAttribute('data-control'), btn.getAttribute('data-mode'));
+        });
       });
     }
 
@@ -3730,9 +3869,17 @@ def build_html():
       var c = (run && run.controls) || {};
       var state = supervisorState(run);
       var hasRun = run && run.state && run.state !== 'none';
+      if (run && run.job) { renderJobBanner(el, run); return; }
+      bannerJob = null;
+      keepWanted = null;
       if (state === 'none' && !hasRun) {
-        el.innerHTML = '';
-        el.style.display = 'none';
+        // No open Job and nothing running (005 FR-012): say so and offer Start job (in the Jobs view).
+        lastBannerState = 'none';
+        el.innerHTML = '<span class="run-banner-text">' + escapeHtml(jobBannerText(null)) + '</span>' +
+          '<span class="run-banner-actions"><button type="button" class="btn" data-go="jobs">Start job</button></span>';
+        el.style.display = '';
+        stoppingTask = null;
+        bannerActivity = null;
         return;
       }
       if (state !== lastBannerState) runBannerError = '';  // a 409 text belongs to the state it was shown in
@@ -3780,13 +3927,7 @@ def build_html():
       if (runBannerError) html += '<span class="run-banner-error" role="alert">' + escapeHtml(runBannerError) + '</span>';
       el.innerHTML = html;
       el.style.display = '';
-      el.querySelectorAll('button[data-control]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var question = btn.getAttribute('data-confirm');
-          if (question && !window.confirm(question)) return;
-          postControl(btn.getAttribute('data-control'), btn.getAttribute('data-mode'));
-        });
-      });
+      bindControlButtons(el);
       if (state === 'stopping' && run.run_id) loadStoppingTask(run.run_id);
       else stoppingTask = null;
       if (activity && run.run_id) loadBannerActivity(run.run_id);
@@ -3823,10 +3964,12 @@ def build_html():
             return;
           }
           runBannerError = (data && data.error) || ('request failed (' + res.status + ')');
+          keepWanted = null;  // a refused checkbox flip shows the supervisor's state again
           toast(runBannerError);
           loadRunState();
         });
       }).catch(function(e) {
+        keepWanted = null;
         runBannerError = 'request failed: ' + e;
         toast(runBannerError);
       });

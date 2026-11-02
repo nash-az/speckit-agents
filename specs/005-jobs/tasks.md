@@ -91,7 +91,7 @@ push, never delete a branch, never rewrite history. Tests use temporary git repo
 
 **Goal**: the banner and Overview say what is happening. **Independent test**: every shown state against data-model.md §9.
 
-- [ ] T019 [US5] [ui] In `bin/sdd-dashboard.py` render the banner and the Overview headline from the open Job with the texts of data-model.md §9 (never a run id), and, while shown `paused`, the checkbox "Continue when the limit resets (<HH:MM>)", checked unless `status.json` has `keep_paused` true; checking posts `/api/run/release`, unchecking `/api/run/hold` (research R11). Tests: update `tests/ui/test_banner.py` for the new texts and the checkbox (three flips write hold, release, hold; the page shows the last); a page test in `tests/test_sdd_dashboard.py` that no banner text for any shown state contains a run id (SC-003).
+- [x] T019 [US5] [ui] In `bin/sdd-dashboard.py` render the banner and the Overview headline from the open Job with the texts of data-model.md §9 (never a run id), and, while shown `paused`, the checkbox "Continue when the limit resets (<HH:MM>)", checked unless `status.json` has `keep_paused` true; checking posts `/api/run/release`, unchecking `/api/run/hold` (research R11). Tests: update `tests/ui/test_banner.py` for the new texts and the checkbox (three flips write hold, release, hold; the page shows the last); a page test in `tests/test_sdd_dashboard.py` that no banner text for any shown state contains a run id (SC-003).
 
 ---
 

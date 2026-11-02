@@ -1,5 +1,7 @@
 """Browser tests of the run banner (FR-029, data-model.md §12.4): which buttons show for each
-supervisor state, and what a click writes to `control.json`.
+supervisor state, and what a click writes to `control.json`. With an open Job (005 FR-012, T019) the
+banner uses the words of 005 data-model.md §9, never a run id, and while the Job is paused it has the
+usage checkbox (research R11), whose flips write hold and release.
 
 No real supervisor runs. `FakeSupervisor` writes the `status.json` that `bin/sdd-supervise.py`
 would write (its `pid` is this test process, so `supervisor_alive()` sees a live one) into the
@@ -28,6 +30,10 @@ _spec.loader.exec_module(harness)
 _spec = importlib.util.spec_from_file_location("sdd_supervise", harness.ROOT / "bin" / "sdd-supervise.py")
 sdd_supervise = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sdd_supervise)
+
+_spec = importlib.util.spec_from_file_location("sdd_job", harness.ROOT / "bin" / "sdd-job.py")
+sdd_job = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(sdd_job)
 
 TIMEOUT_MS = 10000
 STOP_NOW_QUESTION = "Stop the run now?"
@@ -327,6 +333,138 @@ class NoSupervisorBannerTest(BannerTestCase):
             buttons.first.click(force=True)  # a disabled button sends nothing
             ui.page.wait_for_timeout(500)
             self.assertIsNone(self.supervisor.read_control(), "a disabled control wrote control.json")
+
+
+class NoJobBannerTest(BannerTestCase):
+    """No open Job and nothing running (005 FR-012): the banner says so and offers Start job."""
+
+    def test_no_job_running_offers_start_job(self):
+        with self.open_page() as ui:
+            text = ui.page.locator("#run-banner .run-banner-text")
+            self.assertEqual(text.inner_text().strip(), "No job running")
+            start = ui.page.locator("#run-banner button[data-go='jobs']", has_text="Start job")
+            self.assertEqual(start.count(), 1)
+            start.click()
+            ui.page.locator("#section-jobs").wait_for(state="visible", timeout=TIMEOUT_MS)
+
+
+JOB_ID = "20261031-1012"
+JOB_TITLE = "Toy job"
+
+
+class JobBannerTestCase(PausedBannerTestCase):
+    """An open Job in the toy's `.sdd/jobs/` (005 data-model §1): the banner speaks of it (FR-012)."""
+
+    STATE = "working"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        sdd_job.save(cls.dashboard.project, {
+            "id": JOB_ID, "title": JOB_TITLE, "feature": "001-only", "scope": {"tasks": ["T001", "T006", "T012"]},
+            "scope_tasks": ["T001", "T006", "T012"], "blocked_at_start": 0,
+            "limits": {"max_tasks": None, "until": None, "max_runs": 20}, "branch": "auto/" + JOB_ID,
+            "base": {"branch": "main", "commit": "abc1234"}, "state": cls.STATE, "reason": None,
+            "runs": [JOB_ID], "no_progress_runs": 0, "created": 1, "ended": None, "merge_commit": None})
+
+    def banner_text(self, ui):
+        return ui.page.locator("#run-banner .run-banner-text").inner_text().strip()
+
+    def assert_no_run_id(self, ui):
+        shown = ui.page.locator("#run-banner").inner_text() + " " + ui.page.locator("#ov-progress .ov-run").inner_text()
+        self.assertNotRegex(shown, r"\d{8}-\d{4}", "the banner or the Overview pill shows a run id (SC-003)")
+
+
+class WorkingJobBannerTest(JobBannerTestCase):
+    def test_working_job_names_the_job_and_offers_both_stops(self):
+        self.supervisor.write_status("running", cycle=1)
+        with self.open_page() as ui:
+            self.button(ui, "Stop now").wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertEqual(self.banner_text(ui), "Working on " + JOB_TITLE)
+            self.assertEqual(self.enabled_labels(ui), ["Stop after current task", "Stop now"])
+            ui.page.locator("#ov-progress .ov-run", has_text="Working on " + JOB_TITLE).wait_for(timeout=TIMEOUT_MS)
+            self.assert_no_run_id(ui)
+
+    def test_interrupted_job_offers_continue(self):
+        with self.open_page() as ui:  # stored `working`, no supervisor: shown `interrupted`
+            self.assertEqual(self.banner_text(ui), "Stopped unexpectedly: Continue to resume")
+            self.assertEqual(ui.page.locator("#run-banner button[data-job-action='continue']").count(), 1)
+            self.assertEqual(ui.page.locator("#run-banner button[data-control]").count(), 0)
+            self.assert_no_run_id(ui)
+
+
+class PausedJobBannerTest(JobBannerTestCase):
+    """While the Job is shown `paused` the banner has the usage checkbox (research R11): checked unless
+    `status.json` has `keep_paused` true; unchecking posts hold, checking posts release."""
+
+    def setUp(self):
+        super().setUp()
+        self.resets_at = int(time.time()) + 3600
+        self.reset_hhmm = time.strftime("%H:%M", time.localtime(self.resets_at))
+
+    def paused(self, keep):
+        self.supervisor.write_status("waiting", cycle=1, resets_at=self.resets_at, keep_paused=keep)
+
+    def checkbox(self, ui):
+        return ui.page.locator("#run-banner input#run-banner-continue")
+
+    def flip(self, ui, command, keep_after):
+        """Click the checkbox, wait for `POST /api/run/<command>`, check what it wrote, then act as the
+        supervisor: consume `control.json` and write `keep_paused` into `status.json`."""
+        with ui.page.expect_response(lambda r: r.url.endswith("/api/run/" + command), timeout=TIMEOUT_MS) as res:
+            self.checkbox(ui).click()
+        self.assertEqual(res.value.status, 202, res.value.text())
+        control = self.supervisor.read_control()
+        self.assertIsNotNone(control, f"the checkbox wrote no control.json for {command}")
+        self.assertEqual(control.get("command"), command)
+        self.assertEqual(control.get("id"), res.value.json().get("id"))
+        self.supervisor.clear_control()
+        self.paused(keep_after)
+        return control
+
+    def test_paused_shows_the_checked_box_and_continues_by_itself(self):
+        self.paused(False)
+        with self.open_page() as ui:
+            box = self.checkbox(ui)
+            box.wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertTrue(box.is_checked())
+            self.assertEqual(self.banner_text(ui), "Paused until %s: usage limit; continues by itself" % self.reset_hhmm)
+            label = ui.page.locator("#run-banner label.run-banner-keep").inner_text().strip()
+            self.assertEqual(label, "Continue when the limit resets (%s)" % self.reset_hhmm)
+            self.assertEqual(ui.page.locator("#run-banner button[data-control]").count(), 0)
+            self.assert_no_run_id(ui)
+
+    def test_kept_paused_shows_the_box_unchecked(self):
+        self.paused(True)
+        with self.open_page() as ui:
+            box = self.checkbox(ui)
+            box.wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertFalse(box.is_checked())
+            self.assertEqual(self.banner_text(ui), "Paused until %s: usage limit; stays paused" % self.reset_hhmm)
+
+    def test_three_flips_write_hold_release_hold_and_the_page_shows_the_last(self):
+        self.paused(False)
+        with self.open_page() as ui:
+            self.checkbox(ui).wait_for(state="visible", timeout=TIMEOUT_MS)
+            written = [self.flip(ui, "hold", True)["command"], self.flip(ui, "release", False)["command"],
+                       self.flip(ui, "hold", True)["command"]]
+            self.assertEqual(written, ["hold", "release", "hold"])
+            # Past the next 3 s refresh, which reads status.json again: the last flip stays.
+            ui.page.wait_for_timeout(3500)
+            self.assertFalse(self.checkbox(ui).is_checked())
+            self.assertEqual(self.banner_text(ui), "Paused until %s: usage limit; stays paused" % self.reset_hhmm)
+            self.assertIsNone(self.supervisor.read_control())
+            self.assert_no_run_id(ui)
+
+
+class HeldJobBannerTest(JobBannerTestCase):
+    STATE = "held"
+
+    def test_held_job_says_continue_to_resume(self):
+        with self.open_page() as ui:
+            self.assertEqual(self.banner_text(ui), "Held after the usage reset: Continue to resume")
+            self.assertEqual(ui.page.locator("#run-banner button[data-job-action='continue']").count(), 1)
+            self.assert_no_run_id(ui)
 
 
 if __name__ == "__main__":
