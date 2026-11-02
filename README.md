@@ -53,13 +53,14 @@ A task you did by hand is ticked in `tasks.md` instead. A task whose line says `
 
 ### Git-ignored runtime files
 
-`/sdd-init` adds these four lines to `.gitignore`, and `/sdd-run` refuses to start until they are there. Commit `.gitignore` after `/sdd-init`.
+`/sdd-init` adds these five lines to `.gitignore`, and `/sdd-run` refuses to start until they are there. Commit `.gitignore` after `/sdd-init`.
 
 ```
 .sdd/run.json
 .sdd/scratch/
 .sdd/runs/*/
 .sdd/plugin-feedback.jsonl
+.sdd/jobs/
 ```
 
 `.sdd/config.toml`, the run reports (`.sdd/runs/<run id>.md`) and `.sdd/learnings.md` stay tracked.
@@ -149,6 +150,21 @@ python3 bin/sdd-harvest.py <project dir> [--log logs/<file>.md]
 ```
 
 It appends the entries it has not seen before to `logs/<date>-<project>-feedback.md` (or `--log`), under `## Harvested <date>`, and remembers their ids in `logs/.harvested.json`, so a second run adds nothing. Bad lines are skipped.
+
+## Jobs
+
+A **Job** is what you start when you want a piece of work done: a feature, a scope of tasks (all open tasks, some phases, or a list of tasks), optional limits, and one branch, `auto/<job id>`. A Job keeps going across as many runs as it needs (usage windows, crashes, caps) and you watch the Job, not the runs: its runs are its history. A **run** is still one `/sdd-run` session, with its own run id and report. A project has at most one open Job at a time.
+
+- **Start job.** In the dashboard's **Jobs** view (`#jobs`, which replaces the Runs view), open **Start job**, pick the scope (phases or tasks), set limits if you want any, and optionally a title (by default the scope in words: "Phase 11", "Phases 3–5", "T061, T063", "All open tasks"). The dashboard refuses when another Job is open, the working tree has changes, the project is not a git repository, or no task in the scope is runnable. Otherwise it records the Job in `.sdd/jobs/<id>.json` (git-ignored), creates the branch and starts the supervisor (`bin/sdd-supervise.py --job <id>`) in the background. Without the dashboard: `python3 <plugin>/bin/sdd-launch.py . specs/<feature> --job [--phases 7,8 | --tasks T061,T063] [--max-tasks N] [--until EPOCH] [--max-runs N] [--title TEXT]`.
+- **Run after run.** When a run ends, the supervisor plans the scope again: runnable tasks left starts the next run; only items that need you makes the Job **waiting**; nothing open in scope makes it **done**. New open tasks that appear in a scoped phase join the Job. Two runs in a row without progress (no new ticked task and no new `BLOCKED.md` entry) make it **failed**.
+- **Waiting and settling.** While a Job waits on you, settle its items in the dashboard ("Waiting on you": answer a decision, "I did it" or "Skip" for a `[manual]` task, or the buttons on a blocked task). Each settle is committed on the Job's branch, and when it makes a task in scope runnable and no run is active, the Job continues by itself, with no click.
+- **The usage checkbox.** When a run reaches the usage limit, the Job is shown **paused** and always waits for the reset, however long, the weekly limit included. The banner shows a checkbox "Continue when the limit resets (<HH:MM>)", checked by default. Checked, the run resumes at the reset; unchecked, the Job is **held** at the reset and waits for Continue. You can flip it as often as you like during the pause; only its value at the reset counts.
+- **Limits and Continue.** The limits are a number of tasks (`max_tasks`), a stop-by time (`until`; the current task finishes first) and a number of runs (`max_runs`, 20 by default). Counting never restarts for the Job. A Job that reaches a limit is **stopped** with the limit named. **Continue** resumes a waiting, interrupted (the supervisor died), held or stopped Job; for a Job stopped by a limit it asks for a new value for that limit (or none) and refuses while the limit would still be reached. "Stop after current task" stops a working Job ("stopped by you"). Without the dashboard: `sdd-launch.py . specs/<feature> --continue <id> [--max-tasks N|none] [--until EPOCH|none] [--max-runs N|none]`.
+- **Merge and Drop.** A Job stays open until you merge or drop it, even when it is done, stopped or failed: it blocks Start job, the checkout stays on its branch, and dashboard commits go there. **Merge** brings its branch into the base branch it started from (a fast-forward when possible, else a merge commit "merge: job <title>"); on a conflict it aborts the merge, leaves everything as it was and lists the conflicting files. **Drop** (with a confirm) switches back to the base branch. Neither deletes the Job's branch, and neither pushes. Without the dashboard: `python3 <plugin>/bin/sdd-job.py list|show <id>|merge <id>|drop <id> [project]`.
+
+The banner and the Overview say in words what the open Job is doing ("Working on Phase 11: T061, implementing (4 min)", "Waiting on you: 2 items", "Paused until 14:00: usage limit; continues by itself"), never a run id. On a task, the run chip says "done in job <title>" and opens that Job.
+
+**A plain `/sdd-run` still works.** Jobs are added on top: `/sdd-run`, `bin/sdd-supervise.py` without `--job` and the dashboard's stop and resume behave as before, and runs started that way show under "Earlier runs" in the Jobs view.
 
 ## Dashboard
 
