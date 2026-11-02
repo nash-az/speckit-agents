@@ -1,4 +1,5 @@
 """bin/sdd-supervise.py against a scripted stand-in for `claude -p` (tests/fake/claude)."""
+import importlib.util
 import json
 import os
 import re
@@ -365,7 +366,7 @@ class RunControlTest(unittest.TestCase):
                 {"sleep": 0.3}, finished("a"), {"sleep": 30}, *DONE]
 
     def test_hold_during_the_wait_ends_held_at_the_reset_and_times_out(self):
-        proc = self.start([self.waits_briefly(), [*DONE]], "--max-wait-hours", "0.002")
+        proc = self.start([self.waits_briefly(), [*DONE]], "--max-hold-hours", "0.002")
         self.wait_for(lambda s: s.get("state") == "waiting", "waiting")
         self.assertFalse(self.status()["keep_paused"])
         self.control("hold")
@@ -437,6 +438,95 @@ class RunControlTest(unittest.TestCase):
         self.assertIn("stopping now", out)
         self.assertIn("ignoring operator request 'stop' while held", out)
         self.assertNotIn("safe point", out)
+
+    # The dashboard's Start run launches with --max-cycles 1 --max-wait-hours 0 (sdd-launch.py). A stop and a
+    # Resume must work with exactly those settings (run 20261102-1438: Resume could never continue).
+    DASHBOARD = ("--max-cycles", "1", "--max-wait-hours", "0")
+
+    def write_feature(self, tasks):
+        """A feature the run works on, through .specify/feature.json, with these task lines."""
+        feature = self.project / "specs" / "f"
+        feature.mkdir(parents=True, exist_ok=True)
+        (feature / "tasks.md").write_text("# Tasks\n\n## Phase 1: Build\n\n" + "\n".join(tasks) + "\n")
+        (self.project / ".specify").mkdir(exist_ok=True)
+        (self.project / ".specify" / "feature.json").write_text(json.dumps({"feature_directory": "specs/f"}))
+
+    def test_dashboard_settings_after_task_stop_then_resume_continues(self):
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), {"control": {"command": "stop", "mode": "after-task"}},
+                  {"sleep": 0.5}, finished("a"), started("b", "verify:T1"), {"sleep": 30}, *DONE]
+        proc = self.start([cycle1, [{"transcript": True}, *DONE]], *self.DASHBOARD)
+        held = self.wait_for(lambda s: s.get("state") == "held", "held")
+        self.assertEqual(held["reason"], "stopped by operator")
+        time.sleep(0.5)
+        self.assertIsNone(proc.poll(), "a hold must not time out at once with --max-wait-hours 0")
+        self.control("resume")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 2, "Resume starts a cycle even with --max-cycles 1")
+        self.assertEqual(self.status()["state"], "done")
+        self.assertNotIn("stopping after 1 cycles", out)
+
+    def test_dashboard_settings_stop_now_then_resume_continues(self):
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), {"control": {"command": "stop", "mode": "now"}},
+                  {"sleep": 30}, *DONE]
+        proc = self.start([cycle1, [{"transcript": True}, *DONE]], *self.DASHBOARD)
+        self.wait_for(lambda s: s.get("state") == "held", "held")
+        self.control("resume")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 2)
+
+    def test_resumes_do_not_use_up_max_cycles(self):
+        stop_now = [{"transcript": True}, started("a", "impl:T1"), {"control": {"command": "stop", "mode": "now"}},
+                    {"sleep": 30}, *DONE]
+        proc = self.start([stop_now, stop_now, [{"transcript": True}, *DONE]], *self.DASHBOARD)
+        for _ in range(2):
+            self.wait_for(lambda s: s.get("state") == "held", "held")
+            self.control("resume")
+            self.wait_for(lambda s: s.get("state") != "held", "running again")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 3)
+
+    def test_hold_has_its_own_limit(self):
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), {"control": {"command": "stop", "mode": "now"}},
+                  {"sleep": 30}, *DONE]
+        proc = self.start([cycle1, [*DONE]], *self.DASHBOARD, "--max-hold-hours", "0.0005")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 3, out)
+        self.assertIn("held longer than --max-hold-hours", out)
+        self.assertEqual(len(calls), 1)
+
+    def test_after_task_stop_with_no_task_left_lets_the_run_finish(self):
+        self.write_feature(["- [x] T1 Done already."])
+        cycle1 = [{"transcript": True}, started("a", "commit:T1"), {"control": {"command": "stop", "mode": "after-task"}},
+                  {"sleep": 0.5}, finished("a"), {"sleep": 1.0}, *DONE]
+        proc = self.start([cycle1], *self.DASHBOARD, "--run-args=--no-converge --tasks T1")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("no task is left in this run: letting it finish", out)
+        self.assertNotIn("held", out)
+        self.assertEqual(self.status()["state"], "done")
+
+    def test_after_task_stop_with_a_task_left_still_holds(self):
+        self.write_feature(["- [x] T1 Done already.", "- [ ] T2 Still open."])
+        cycle1 = [{"transcript": True}, started("a", "commit:T1"), {"control": {"command": "stop", "mode": "after-task"}},
+                  {"sleep": 0.5}, finished("a"), {"sleep": 30}, *DONE]
+        proc = self.start([cycle1, [{"transcript": True}, *DONE]], *self.DASHBOARD, "--run-args=--no-converge")
+        self.wait_for(lambda s: s.get("state") == "held", "held")
+        self.control("resume")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 2)
+
+    def test_run_scope_reads_both_spellings(self):
+        spec = importlib.util.spec_from_file_location("sup_scope", SCRIPT)
+        sup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sup)
+        self.assertEqual(sup.run_scope("--no-converge --tasks T1,T2 --phases=3"),
+                         {"phases": ["3"], "tasks": ["T1", "T2"], "max_tasks": None})
+        self.assertEqual(sup.run_scope("--max-tasks 2")["max_tasks"], "2")
 
     def test_a_stale_control_file_is_deleted_at_startup(self):
         self.logs.mkdir(parents=True)

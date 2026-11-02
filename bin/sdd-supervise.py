@@ -42,6 +42,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -198,6 +199,27 @@ class Cycle:
             pass
         return started, finished
 
+    def nothing_left(self) -> bool:
+        """True when this run has no runnable task left (its --phases/--tasks scope, held tasks excluded).
+        False when unsure: a Job (its feature may not be the active one, and its stop-by time must hold),
+        a --max-tasks cap, no feature found, or an unreadable tasks.md."""
+        if getattr(self.args, "job", ""):
+            return False
+        try:
+            scope = run_scope(self.args.run_args)
+            if scope["max_tasks"] is not None:
+                return False
+            feature = run_feature_dir(self.args.project)
+            if feature is None or not (feature / "tasks.md").is_file():
+                return False
+            result = sdd_tasks.plan(sdd_tasks.parse_tasks(feature / "tasks.md"),
+                                    sdd_tasks.parse_blocked_entries(feature / "BLOCKED.md"),
+                                    sdd_tasks.load_config(self.args.project / ".sdd" / "config.toml"),
+                                    scope["phases"], None, scope["tasks"])
+            return result.get("runnable") == 0
+        except Exception:  # noqa: BLE001 - never let this check break a stop
+            return False
+
     def run(self) -> str:
         """Run until the process ends. Returns 'finished', 'paused', 'limit' or 'operator'."""
         env = dict(os.environ, **self.args.profile_config.get("env", {}), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="0")
@@ -270,6 +292,18 @@ class Cycle:
                 break
             if pause_at is not None:
                 idle = started == finished
+                if (self.operator and self.pause_window is None and not hard and started > 0
+                        and (finished > pause_at or idle) and self.nothing_left()):
+                    # "Stop after the current task" with no task left: holding would leave a run
+                    # that Resume can only close, so let it finish and write its report instead.
+                    self.operator = False
+                    pause_at = None
+                    say("stop requested after the current task, but no task is left in this run: letting it finish")
+                    if self.status:
+                        with self.lock:
+                            write_status(self.status, state="running", cycle=self.cycle_no, stream=str(self.log_path),
+                                         usage=self.usage.windows, threshold=self.args.threshold)
+                    continue
                 if finished > pause_at or idle or hard:
                     self.stop_reason = "operator" if self.operator else "paused"
                     if finished > pause_at or idle:
@@ -329,6 +363,36 @@ def send_control(logs: Path, request: dict) -> None:
     os.replace(tmp, logs / "control.json")
 
 
+def run_scope(run_args: str) -> dict:
+    """--phases, --tasks and --max-tasks from the /sdd-run arguments (either `--x a,b` or `--x=a,b`)."""
+    words = shlex.split(run_args or "")
+    found: dict[str, str] = {}
+    for i, word in enumerate(words):
+        for name in ("--phases", "--tasks", "--max-tasks"):
+            if word == name and i + 1 < len(words):
+                found[name] = words[i + 1]
+            elif word.startswith(name + "="):
+                found[name] = word.split("=", 1)[1]
+    split = lambda v: [x for x in v.split(",") if x] or None  # noqa: E731
+    return {"phases": split(found["--phases"]) if "--phases" in found else None,
+            "tasks": split(found["--tasks"]) if "--tasks" in found else None,
+            "max_tasks": found.get("--max-tasks")}
+
+
+def run_feature_dir(project: Path) -> Path | None:
+    """The feature a plain /sdd-run works on: `[run] feature` in .sdd/config.toml, else .specify/feature.json."""
+    config = sdd_tasks.load_config(project / ".sdd" / "config.toml")
+    name = str((config.get("run") or {}).get("feature") or "").strip()
+    if name:
+        return project / name if "/" in name else project / "specs" / name
+    try:
+        data = json.loads((project / ".specify" / "feature.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    directory = data.get("feature_directory") if isinstance(data, dict) else None
+    return project / directory if isinstance(directory, str) and directory else None
+
+
 def read_run_id(project: Path) -> str | None:
     """The `run_id` in the project's .sdd/run.json, or None when there is no live run."""
     try:
@@ -357,10 +421,12 @@ def read_control(logs: Path) -> dict | None:
 
 
 def hold(args: argparse.Namespace, logs: Path, status: Path, cycle_no: int, reason: str) -> bool:
-    """Held after an operator stop or a kept pause: True when Resume comes, False after --max-wait-hours."""
+    """Held after an operator stop or a kept pause: True when Resume comes, False after --max-hold-hours.
+    The hold has its own limit: --max-wait-hours bounds only the usage-window wait, and the dashboard
+    starts runs with --max-wait-hours 0, which would end every hold at once."""
     write_status(status, state="held", reason=reason, cycle=cycle_no)
     say(f"held ({reason}): waiting for Resume from the dashboard")
-    deadline = time.time() + args.max_wait_hours * 3600
+    deadline = time.time() + args.max_hold_hours * 3600
     while time.time() < deadline:
         time.sleep(max(0.0, min(args.poll, deadline - time.time())))
         control = read_control(logs)
@@ -419,7 +485,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="stop at once at this utilization (default: each window's threshold + 0.01)")
     parser.add_argument("--run-args", default="", help='extra /sdd-run arguments, e.g. "--phases 15"')
     parser.add_argument("--max-wait-hours", type=float, default=12.0)
-    parser.add_argument("--max-cycles", type=int, default=20)
+    parser.add_argument("--max-cycles", type=int, default=20,
+                        help="cycles the supervisor starts by itself (the first and those after usage resets); "
+                             "a cycle started by an operator Resume does not count")
+    parser.add_argument("--max-hold-hours", type=float, default=24.0,
+                        help="how long a run stopped by the operator (or kept paused) waits for Resume")
     parser.add_argument("--profile", default="",
                         help="run with [profiles.NAME] from .sdd/config.toml: its model and env for claude")
     parser.add_argument("--job", default="",
@@ -492,7 +562,14 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
     holds), `held` (only with --job: kept paused at the usage reset), `held-too-long`, `no-reset`,
     `too-late` (never with --job: a Job waits for any reset) or `max-cycles`."""
     run_id = None
-    for cycle_no in range(1, args.max_cycles + 1):
+    cycle_no = 0
+    counted = 0  # cycles started by the supervisor itself; one started by a Resume is not counted
+    resumed = False
+    while resumed or counted < args.max_cycles:
+        cycle_no += 1
+        if not resumed:
+            counted += 1
+        resumed = False
         log_path = logs / f"{time.strftime('%Y%m%d-%H%M%S')}-cycle{cycle_no}.jsonl"
         say(f"cycle {cycle_no}: starting /sdd-run")
         cycle = Cycle(args, log_path, status, cycle_no)
@@ -504,9 +581,10 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
             if args.job:
                 return "operator", 0, run_id
             if not hold(args, logs, status, cycle_no, "stopped by operator"):
-                say("held longer than --max-wait-hours: stopping")
+                say("held longer than --max-hold-hours: stopping")
                 write_status(status, state="stopped", reason="held too long", cycle=cycle_no)
                 return "held-too-long", 3, run_id
+            resumed = True
             continue
         if outcome == "finished" and (args.project / ".sdd" / "run.json").exists():
             say(f"cycle {cycle_no}: the run ended but .sdd/run.json is still there, so it was cut off by "
@@ -547,9 +625,10 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
             return "held", 0, run_id
         if after == "hold":
             if not hold(args, logs, status, cycle_no, "kept paused; the usage window has reset"):
-                say("held longer than --max-wait-hours: stopping")
+                say("held longer than --max-hold-hours: stopping")
                 write_status(status, state="stopped", reason="held too long", cycle=cycle_no)
                 return "held-too-long", 3, run_id
+            resumed = True
     say(f"stopping after {args.max_cycles} cycles")
     write_status(status, state="stopped", reason="max cycles")
     return "max-cycles", 4, run_id

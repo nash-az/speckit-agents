@@ -550,9 +550,12 @@ Help text: "stop at once at this utilization (default: each window's threshold +
   (and `"paused"` otherwise). A `resume` command received while a run is going is ignored (and was
   deleted by `read_control`).
 - In `main()`: when `cycle.run()` returns `"operator"`, `write_status(state="held", reason="stopped by operator", cycle=…)`,
-  say so, then poll `read_control` every `args.poll` seconds, for at most `args.max_wait_hours`:
-  `resume` → continue to the next cycle (it counts toward `--max-cycles`); a `stop` while held is
-  discarded; timeout → `write_status(state="stopped", reason="held too long")` and return 3. The
+  say so, then poll `read_control` every `args.poll` seconds, for at most `args.max_hold_hours` (default 24; amended
+  2026-11-02: it was `max_wait_hours`, which the dashboard passes as 0, so a hold ended at once):
+  `resume` → continue to the next cycle (it does not count toward `--max-cycles`; amended 2026-11-02); a `stop` while held is
+  discarded; timeout → `write_status(state="stopped", reason="held too long")` and return 3. An `after-task` stop
+  reached at a safe point where the run has no runnable task left in its `--phases`/`--tasks` scope (no `--max-tasks`,
+  not a Job) is dropped, and the run finishes and writes its report (amended 2026-11-02, run 20261102-1438). The
   existing SIGTERM/SIGINT handler still ends the supervisor while held. `--no-sleep` (tests) does not
   shorten this wait; tests drive it with `control.json` and a small `--max-wait-hours`.
 - Usage-window wait (`main()`'s `waiting` branch): replace `sleep_until(time.time() + wait)` by a loop
