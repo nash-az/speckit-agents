@@ -491,13 +491,18 @@ class CurrentRunTest(unittest.TestCase):
         (self.root / ".sdd" / "runs" / (self.RUN_ID + ".md")).write_text("# Report\n", encoding="utf-8")
         self.assertEqual(self.current()["state"], "paused")
 
-    def test_paused_when_supervisor_not_stopped(self):
+    def test_dead_supervisor_status_is_ignored(self):
+        """A finished or killed supervisor's status.json (no live pid) never decides the state: the
+        journal does (§4.5 rule 3). An in-session `/sdd-run` after a supervised run stays `running`."""
         self.write_run_json()
+        for state in ("done", "waiting", "running", "held"):
+            self.write_status(state)
+            self.assertEqual(self.current()["state"], "running", state)
         self.set_age(self.wf / "journal.jsonl", 120)
         self.set_age(self.wf / "agent-a01.jsonl", 120)
-        for state in ("waiting", "running", "held"):
+        for state in ("done", "waiting", "running", "held"):
             self.write_status(state)
-            self.assertEqual(self.current()["state"], "paused", state)
+            self.assertEqual(self.current()["state"], "stale", state)
 
     def test_live_supervisor_running_is_running(self):
         self.write_run_json()

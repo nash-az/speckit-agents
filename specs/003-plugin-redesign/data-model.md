@@ -310,8 +310,10 @@ names the newest run that touched it.
 - no `.sdd/run.json` → `none`;
 - `.sdd/runs/<id>.md` exists for its `run_id` → `paused` (an interrupted run waiting to resume — its
   report is written and committed, the skill keeps `run.json`);
-- supervisor `status.json` exists and its `state` is not `"stopped"` → `paused`, except that a live
-  supervisor (§12.3) whose `state` is `running` or `stopping` → `running` (it is working, not paused);
+- supervisor `status.json` exists, that supervisor is alive (§12.3 `supervisor_alive`) and its `state`
+  is not `"stopped"` → `paused`, except `running` or `stopping` → `running` (it is working, not paused).
+  A dead supervisor's `status.json` (any `state`, e.g. `done` left by a finished run) is skipped, so a run
+  started by `/sdd-run` in a session is judged by the next rule;
 - `run.json`'s `workflow_dir` passes `valid_workflow_dir()` (§3.9) and its `journal.jsonl` or any
   `agent-*.jsonl` in it was modified less than 30 minutes ago → `running`;
 - otherwise → `stale`.

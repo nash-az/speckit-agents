@@ -554,9 +554,10 @@ def _recently_modified(workflow_dir: Path, now: float) -> bool:
 def current_run(project, now=None):
     """`GET /api/run/current` (data-model.md §4.5, FR-017): the first rule that matches wins.
     1. no `.sdd/run.json` -> none; 2. `.sdd/runs/<run_id>.md` exists -> paused (interrupted, waiting
-    to resume); 3. supervisor `status.json` with a `state` other than "stopped" -> paused, unless a
-    live supervisor is `running` or `stopping` -> running; 4. a valid `workflow_dir` whose journal or an agent file changed in the last 30 minutes ->
-    running; 5. otherwise stale."""
+    to resume); 3. a live supervisor's `status.json` with a `state` other than "stopped" -> paused,
+    except `running` or `stopping` -> running (a dead supervisor's file is history and is skipped, so a
+    run started by `/sdd-run` in a session is judged by its journal); 4. a valid `workflow_dir` whose
+    journal or an agent file changed in the last 30 minutes -> running; 5. otherwise stale."""
     now = time.time() if now is None else now
     run_file = project / ".sdd" / "run.json"
     if not run_file.is_file():
@@ -570,8 +571,8 @@ def current_run(project, now=None):
     if run_id and RUN_ID_RE.match(run_id) and (project / ".sdd" / "runs" / (run_id + ".md")).is_file():
         return {"state": "paused", **result}
     status = get_status(project)
-    if isinstance(status, dict) and status.get("state") != "stopped":
-        working = status.get("state") in ("running", "stopping") and supervisor_alive(status)
+    if isinstance(status, dict) and status.get("state") != "stopped" and supervisor_alive(status):
+        working = status.get("state") in ("running", "stopping")
         return {"state": "running" if working else "paused", **result}
     if (workflow_dir and sdd_tasks.valid_workflow_dir(workflow_dir)
             and _recently_modified(Path(workflow_dir), now)):
