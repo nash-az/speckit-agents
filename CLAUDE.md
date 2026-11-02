@@ -31,7 +31,34 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 - **`templates/`**: `sdd-config.toml`, `settings.json` (sandbox and allow/deny rules), `agent-tags.md`.
 
 ## Progress
-- **Handoff (end of 2026-11-02) — start here.** Read `logs/2026-10-31-lessons.md` first (lessons up to 2026-11-02).
+- **Handoff (evening of 2026-11-02) — start here.** Read `logs/2026-11-02-lessons.md` first. Build order:
+  `.sdd/roadmap.toml` (005, 008, 006, 004, 007; 001/002 superseded, 003 done), not memory.
+  - **State:** checkout on `main`, clean, nothing pushed (no remote). The plugin is reinstalled from `cc98e18`
+    (cache `~/.claude/plugins/cache/speckit-agents/speckit-agents/0.1.0`, identical to the repo); open Claude sessions
+    keep the old copy until restarted. `.specify/feature.json` points at **008** (the dashboard's own feature picker may
+    still show 005; pick 008 there). No run is going.
+  - **Done today:** `c11294d` (a dead supervisor's `status.json` no longer marks a live run paused); 005 T020 (`cf476fe`,
+    run `20261102-1438`, closed by hand, report `ae3c161`); `a56b7fd` (Resume works for dashboard-started runs:
+    `--max-hold-hours`, Resume cycles don't count, a stop after the last task lets the run finish); 008 spec, plan,
+    research, data model §1–§15, contracts, quickstart and 60 one-line tasks (two analyze passes by a fresh reviewer),
+    `07e6e44`, `83c7929`, `cc98e18`.
+  - **008 standalone server:** one server per person, installed on its own (git clone), started from a terminal
+    (`sdd-server`), opening any project (Load project, setup prompt, plugin install/update), the plugin as an almost
+    stateless engine (`bin/` copied to a versioned engine folder), versions flagged (a major mismatch locks writes),
+    hand-over of ended in-session runs, `/sdd-stop`, cap `max_parallel` 2, React + TypeScript UI, and the roadmap as a
+    project's first view (US8). 34 of 60 tasks runnable; T001/T002 are the person's proofs; T033 `[dep]` gates the UI.
+  - **Next, in the person's order:** T022 (005's real Job test) runs as a Job on 008 Phases 1–2 from the Jobs view (the
+    person's choice, 1A); then 008 runs. The person starts runs from the dashboard, not the operator.
+  - **Approved in principle, on hold until the person says go:** the appended task log (every agent of the task across
+    the run's workflows; `run_events()` emits verify/commit starts); the Preparing state in 008; the banner saying what
+    Resume does plus a Close run button (proposed for 008's UI); tightening `/sdd-run`'s resume (it deletes and
+    rebuilds `run.json`). Open bug: Stop after current task during start-up stops before any task.
+  - **Later:** delete merged `auto/` branches (ask); the language app (stale `run.json`, `/sdd-init` on the new plugin,
+    then runs; not in the roadmap yet).
+  - **Dashboard:** `python3 bin/sdd-dashboard.py --project . --port 8765` from the checkout (it was started from the
+    operator session and may have ended with it).
+  - Tests: 477 Python, 48 browser, 24 node, 17 plugin, all passing.
+- **Handoff (morning of 2026-11-02, superseded by the one above).** Read `logs/2026-10-31-lessons.md` first (lessons up to 2026-11-02).
   - **Branch:** the checkout is on `auto/20261031-2039` (the 005 run branch), clean, NOT merged into `main` yet.
     `main` holds 003 (all done except T001, wontfix), the 005/006 specs and the responsive layout. Nothing is pushed.
   - **005 Jobs (`specs/005-jobs/`):** T001–T018 are implemented and ticked (runs `20261031-2039`, cut off at the
@@ -124,7 +151,7 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   - **Browser tests:** Playwright is installed for the system `python3` (via Artifactory, see `.sdd/learnings.md`); use
     `channel="chrome"`. `tests/ui/vendor/` holds the CDN copies. The dashboard check that works today is a throwaway Node
     script using the language app's Playwright (see learnings).
-- **Handoff (end of 2026-10-30) — start here.** `main` holds everything (not pushed); run `20261030-1515`
+- **Handoff (end of 2026-10-30, older).** `main` holds everything (not pushed); run `20261030-1515`
   (003 Phase 11, T052/T053/T061) is merged into `main` (fast-forward). Read `logs/2026-10-30-lessons.md` first.
   - **Done this session:** dashboard: Docs tabs, spec/constitution editor (FR-035), Overview ("Running now", grouped "Needs
     you"), clicked task/run opens its log/events/report under itself, runs↔tasks linked both ways with commits, readable event
@@ -152,8 +179,8 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
   views were checked in a browser with throwaway scripts, not committed UI tests. Not done: the Tasks view rethink (status-first list
   with filter chips and one-line rows was proposed, awaiting the user's go-ahead); Phase 11 tasks T052-T061, T063-T066, T069, T071.
 - **`.claude/settings.local.json.bu` and `.claude/settings.provider.example.json`:** the user's own files. Keep them untracked; never commit them.
-- **Installed** at user scope as `speckit-agents@speckit-agents` from the marketplace `~/private/speckit-agents` (cache at
-  commit `2f4f544`; the frozen copy in `/tmp` is no longer used). Claude Code runs the plugin from a cache pinned to a
+- **Installed** at user scope as `speckit-agents@speckit-agents` from the marketplace `~/private/speckit-agents` (cache
+  reinstalled 2026-11-02 from `cc98e18`; the frozen copy in `/tmp` is no longer used). Claude Code runs the plugin from a cache pinned to a
   git commit (`~/.claude/plugins/cache/speckit-agents/…`), so edits take effect only after commit + `claude plugin uninstall`
   + `claude plugin marketplace update speckit-agents` + `claude plugin install`.
 
