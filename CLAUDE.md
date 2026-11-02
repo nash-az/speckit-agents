@@ -31,6 +31,32 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 - **`templates/`**: `sdd-config.toml`, `settings.json` (sandbox and allow/deny rules), `agent-tags.md`.
 
 ## Progress
+- **Handoff (end of 2026-11-02) — start here.** Read `logs/2026-10-31-lessons.md` first (lessons up to 2026-11-02).
+  - **Branch:** the checkout is on `auto/20261031-2039` (the 005 run branch), clean, NOT merged into `main` yet.
+    `main` holds 003 (all done except T001, wontfix), the 005/006 specs and the responsive layout. Nothing is pushed.
+  - **005 Jobs (`specs/005-jobs/`):** T001–T018 are implemented and ticked (runs `20261031-2039`, cut off at the
+    weekly limit after T017, and `20261102-0009`, one task: T018). Open: T019 (banner/Overview from the open Job),
+    T020 (README "Jobs"), T021 (quickstart §1–§5 with the fake `claude`), then T022 `[manual]`, the user's real Job
+    test, which the dashboard shows as "Not yet" until T019–T021 are done. Next: run T019–T021 (no supervisor is
+    running; `.sdd/run.json` is gone, so a new run starts), then tell the user T022 is ready, then merge into `main`
+    (ask first).
+    Launch: from `~/private`, `python3 speckit-agents/bin/sdd-supervise.py --project ~/private/speckit-agents
+    "--run-args=--no-converge" --max-wait-hours 12 --max-cycles 10` in the background, output to a file.
+  - **Fixed this session (committed on the run branch):** dashboard "Waiting on you"/"Needs you" lists only manual
+    steps doable now (others show "Not yet"); neutral `[manual]` reason in `bin/sdd-tasks.py`; run detail lists
+    tasks newest first; a run cut off before its report shows "stopped before its report", not "running".
+  - **To fix next (not done):** "Stop after the current task" pressed during a run's start-up stops before any task
+    (`bin/sdd-supervise.py`, the `idle = started == finished` safe point; see lessons). Add a browser test for the
+    newest-first run detail order (none yet).
+  - **Then:** 006 spec cycle (`specs/006-spec-cycle/`, clarified: `spec/<feature>` branches, Merge planning, only
+    CRITICAL analyze findings block, Clarify starts by itself, Opus, `max_parallel` 2) needs plan, tasks, analyze;
+    then 004; then 007 (parallelism, from 005 Q4). Housekeeping: make the tasks template and `/sdd-tag` mark more
+    tasks `[P]`. The language app still waits (stale `run.json`, `/sdd-init`, then runs).
+  - **Dashboard:** `python3 bin/sdd-dashboard.py --project . --port 8765` from the checkout; restart it after code
+    changes (the page is served by the process that was started, old code until restarted).
+  - **Plugin install** is at `fbbc8a3` (before 005's code); reinstall after merging (see "Installed" below).
+  - Tests at handoff: 463 Python, 41 browser (`SDD_UI_TESTS=1 python3 -m unittest discover -s tests/ui`), 24 node,
+    17 plugin, all passing.
 - **Done:** v0.1 is built. Tasks T001–T008 and T012–T014 are ticked in `specs/001-unattended-runs/tasks.md`.
 - **Tests:** `python3 -m unittest discover -s tests` (parser, checkpoint and supervisor tests; the supervisor runs against `tests/fake/claude`), `node --test tests/workflow.test.mjs` (the workflow with stubbed agents), and `claude plugin test .` (11 guard tests).
   - Type-check: `tsc -p` against a tsconfig that includes the engine's `claude-code.d.ts`. The engine lays it in `.claude-plugin/types/` once the plugin loads.
