@@ -512,48 +512,11 @@ def try_apply(project: Path, feature: Path, task_id: str, answer: str) -> dict:
     return {"applied": True, "commit": result["commit"], "files": result["files"]}
 
 
-# A run whose journal or agent transcripts changed within this many seconds is `running` (§4.5).
-RUNNING_WINDOW_SECONDS = 30 * 60
-
-
-def _recently_modified(workflow_dir: Path, now: float) -> bool:
-    """True when `journal.jsonl` or any `agent-*.jsonl` in the directory changed in the window."""
-    for f in [workflow_dir / "journal.jsonl", *workflow_dir.glob("agent-*.jsonl")]:
-        try:
-            if now - f.stat().st_mtime < RUNNING_WINDOW_SECONDS:
-                return True
-        except OSError:
-            continue
-    return False
-
-
 def current_run(project, now=None):
-    """`GET /api/run/current` (data-model.md §4.5, FR-017): the first rule that matches wins.
-    1. no `.sdd/run.json` -> none; 2. `.sdd/runs/<run_id>.md` exists -> paused (interrupted, waiting
-    to resume); 3. a live supervisor's `status.json` with a `state` other than "stopped" -> paused,
-    except `running` or `stopping` -> running (a dead supervisor's file is history and is skipped, so a
-    run started by `/sdd-run` in a session is judged by its journal); 4. a valid `workflow_dir` whose
-    journal or an agent file changed in the last 30 minutes -> running; 5. otherwise stale."""
-    now = time.time() if now is None else now
-    run_file = project / ".sdd" / "run.json"
-    if not run_file.is_file():
-        return {"state": "none", "run_id": None, "workflow_dir": None}
-    run = read_json(run_file)
-    run = run if isinstance(run, dict) else {}
-    run_id = run.get("run_id") if isinstance(run.get("run_id"), str) else None
-    workflow_dir = run.get("workflow_dir") if isinstance(run.get("workflow_dir"), str) else None
-    result = {"run_id": run_id, "workflow_dir": workflow_dir}
-    # The run id names a file, so it must look like one (this also rules out path traversal).
-    if run_id and RUN_ID_RE.match(run_id) and (project / ".sdd" / "runs" / (run_id + ".md")).is_file():
-        return {"state": "paused", **result}
-    status = get_status(project)
-    if isinstance(status, dict) and status.get("state") != "stopped" and supervisor_alive(status):
-        working = status.get("state") in ("running", "stopping")
-        return {"state": "running" if working else "paused", **result}
-    if (workflow_dir and sdd_tasks.valid_workflow_dir(workflow_dir)
-            and _recently_modified(Path(workflow_dir), now)):
-        return {"state": "running", **result}
-    return {"state": "stale", **result}
+    """`GET /api/run/current` (003 data-model.md §4.5, FR-017): `sdd-tasks.py` `current_state()`
+    (008 data-model §4), the one rule for everyone, without its new keys, so the 003 shape stays."""
+    state = sdd_tasks.current_state(project, now)
+    return {key: state[key] for key in ("state", "run_id", "workflow_dir")}
 
 
 # Live output (data-model.md §4.6, FR-021).

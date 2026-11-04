@@ -12,6 +12,7 @@
   sdd-tasks.py changed  <tasks.md> --run-json .sdd/run.json
   sdd-tasks.py events   <project dir> <run id>
   sdd-tasks.py session  --run-json .sdd/run.json
+  sdd-tasks.py state    --project <project dir>
 
 Every command prints JSON on stdout. Only the standard library is used.
 """
@@ -810,6 +811,68 @@ def run_events(project: Path, run_id: str) -> dict:
             "events": journal_events([Path(d) for d in dirs])}
 
 
+# --- Run state: one rule for everyone (008 data-model §4) ---------------------------------------
+
+RUN_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{4}[a-z0-9-]*$")
+# A run whose journal or agent transcripts changed within this many seconds is `running` (003 §4.5).
+RUNNING_WINDOW_SECONDS = 30 * 60
+
+
+def recently_modified(workflow_dir: Path, now: float) -> bool:
+    """True when `journal.jsonl` or any `agent-*.jsonl` in the directory changed in the window."""
+    for f in [workflow_dir / "journal.jsonl", *workflow_dir.glob("agent-*.jsonl")]:
+        try:
+            if now - f.stat().st_mtime < RUNNING_WINDOW_SECONDS:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def current_state(project: Path, now=None) -> dict:
+    """The run state everyone reads (008 data-model §4). `state` follows 003 §4.5, first rule wins:
+    1. no `.sdd/run.json` -> none; 2. `.sdd/runs/<run_id>.md` exists -> paused (interrupted, waiting
+    to resume); 3. a live supervisor's `status.json` with a `state` other than "stopped" -> paused,
+    except `running` or `stopping` -> running (a dead supervisor's file is history and is skipped, so a
+    run started by `/sdd-run` in a session is judged by its journal); 4. a valid `workflow_dir` whose
+    journal or an agent file changed in the last 30 minutes -> running; 5. otherwise stale.
+    `origin`: a live supervisor (state not stopped or done) -> "job" when its status names a Job, else
+    "supervisor"; otherwise run.json's `started_by` (default "session"); null when there is no run."""
+    project = Path(project)
+    now = time.time() if now is None else now
+    run_file = project / ".sdd" / "run.json"
+    if not run_file.is_file():
+        return {"contract": CONTRACT, "state": "none", "run_id": None, "workflow_dir": None,
+                "origin": None, "session_alive": None}
+    try:
+        run = json.loads(run_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        run = None
+    run = run if isinstance(run, dict) else {}
+    run_id = run.get("run_id") if isinstance(run.get("run_id"), str) else None
+    workflow_dir = run.get("workflow_dir") if isinstance(run.get("workflow_dir"), str) else None
+    status = get_status(project)
+    live = isinstance(status, dict) and supervisor_alive(status)
+
+    if live and status.get("state") not in ("stopped", "done"):
+        origin = "job" if status.get("job") else "supervisor"
+    else:
+        started_by = run.get("started_by")
+        origin = started_by if started_by in ("session", "supervisor") else "session"
+
+    # The run id names a file, so it must look like one (this also rules out path traversal).
+    if run_id and RUN_ID_RE.match(run_id) and (project / ".sdd" / "runs" / (run_id + ".md")).is_file():
+        state = "paused"
+    elif live and status.get("state") != "stopped":
+        state = "running" if status.get("state") in ("running", "stopping") else "paused"
+    elif workflow_dir and valid_workflow_dir(workflow_dir) and recently_modified(Path(workflow_dir), now):
+        state = "running"
+    else:
+        state = "stale"
+    return {"contract": CONTRACT, "state": state, "run_id": run_id, "workflow_dir": workflow_dir,
+            "origin": origin, "session_alive": session_alive(run)}
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -857,6 +920,9 @@ def main(argv: list[str]) -> int:
     p_session = sub.add_parser("session")
     p_session.add_argument("--run-json", type=Path, required=True)
 
+    p_state = sub.add_parser("state")
+    p_state.add_argument("--project", type=Path, default=Path("."))
+
     args = parser.parse_args(argv)
     code = 0
     if args.cmd == "parse":
@@ -882,6 +948,8 @@ def main(argv: list[str]) -> int:
         result = run_events(args.project, args.run_id)
     elif args.cmd == "session":
         result, code = record_session(args.run_json)
+    elif args.cmd == "state":
+        result = current_state(args.project)
     else:
         result = load_config(args.config)
         result["errors"] = config_errors(result)

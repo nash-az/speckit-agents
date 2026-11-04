@@ -214,5 +214,154 @@ class MovedHelpersTest(TempHome):
         self.assertFalse(tasks.supervisor_alive(None))
 
 
+class CurrentStateTest(TempHome):
+    """§4: `current_state()` and the `state` command (the 003 §4.5 rules, `origin`, `session_alive`)."""
+
+    RUN_ID = "20261104-1200"
+
+    def setUp(self):
+        super().setUp()
+        (self.project / ".sdd" / "runs").mkdir()
+        self.wf = self.root / "transcripts" / "wf_current"
+        self.wf.mkdir(parents=True)
+        (self.wf / "journal.jsonl").write_text("{}\n", encoding="utf-8")
+        (self.wf / "agent-a01.jsonl").write_text("{}\n", encoding="utf-8")
+        self.status_file = tasks.state_dir(self.project) / "status.json"
+
+    def age(self, minutes):
+        import time
+        t = time.time() - minutes * 60
+        for f in (self.wf / "journal.jsonl", self.wf / "agent-a01.jsonl"):
+            os.utime(f, (t, t))
+
+    def write_run(self, **extra):
+        data = {"run_id": self.RUN_ID, "workflow_dir": str(self.wf), **extra}
+        (self.project / ".sdd" / "run.json").write_text(json.dumps(data), encoding="utf-8")
+
+    def write_status(self, **status):
+        self.status_file.write_text(json.dumps(status), encoding="utf-8")
+
+    def state(self):
+        return tasks.current_state(self.project)
+
+    def test_none_without_run_json(self):
+        self.assertEqual(self.state(), {"contract": tasks.CONTRACT, "state": "none", "run_id": None,
+                                        "workflow_dir": None, "origin": None, "session_alive": None})
+
+    def test_paused_when_report_exists(self):
+        self.write_run()
+        self.age(120)
+        (self.project / ".sdd" / "runs" / (self.RUN_ID + ".md")).write_text("# Report\n")
+        got = self.state()
+        self.assertEqual(got["state"], "paused")
+        self.assertEqual((got["run_id"], got["workflow_dir"]), (self.RUN_ID, str(self.wf)))
+        self.age(0)
+        self.assertEqual(self.state()["state"], "paused")  # the report beats recent activity
+
+    def test_dead_supervisor_status_is_ignored(self):
+        self.write_run()
+        for state in ("done", "waiting", "running", "held"):
+            self.write_status(state=state, pid=dead_pid())
+            self.assertEqual(self.state()["state"], "running", state)
+        self.age(120)
+        for state in ("done", "waiting", "running", "held"):
+            self.write_status(state=state)
+            self.assertEqual(self.state()["state"], "stale", state)
+
+    def test_live_supervisor(self):
+        self.write_run()
+        self.age(120)
+        for state, want in (("running", "running"), ("stopping", "running"), ("held", "paused"),
+                            ("waiting", "paused")):
+            self.write_status(state=state, pid=os.getpid())
+            self.assertEqual(self.state()["state"], want, state)
+
+    def test_stopped_supervisor_does_not_pause(self):
+        self.write_run()
+        self.write_status(state="stopped", pid=os.getpid())
+        self.assertEqual(self.state()["state"], "running")
+        self.age(120)
+        self.assertEqual(self.state()["state"], "stale")
+
+    def test_running_window(self):
+        self.write_run()
+        self.age(120)
+        os.utime(self.wf / "agent-a01.jsonl")  # only an agent file is recent
+        self.assertEqual(self.state()["state"], "running")
+        self.age(31)
+        (self.wf / "notes.txt").write_text("not an agent file\n")  # recent, ignored
+        self.assertEqual(self.state()["state"], "stale")
+        self.age(29)
+        self.assertEqual(self.state()["state"], "running")
+
+    def test_stale_when_workflow_dir_invalid(self):
+        bad = self.root / "transcripts" / "not-a-wf"
+        bad.mkdir()
+        (bad / "journal.jsonl").write_text("{}\n")
+        self.write_run(workflow_dir=str(bad))
+        self.assertEqual(self.state()["state"], "stale")
+        self.write_run(workflow_dir=str(self.root / "gone" / "wf_gone"))
+        self.assertEqual(self.state()["state"], "stale")
+
+    def test_stale_when_run_json_unreadable(self):
+        (self.project / ".sdd" / "run.json").write_text("not json")
+        got = self.state()
+        self.assertEqual((got["state"], got["run_id"], got["workflow_dir"]), ("stale", None, None))
+        self.assertEqual(got["origin"], "session")
+
+    def test_origin_live_supervisor(self):
+        self.write_run(started_by="session")
+        self.write_status(state="running", pid=os.getpid())
+        self.assertEqual(self.state()["origin"], "supervisor")
+
+    def test_origin_live_supervisor_with_a_job(self):
+        self.write_run(started_by="supervisor")
+        self.write_status(state="waiting", pid=os.getpid(), job="20261104-1100")
+        self.assertEqual(self.state()["origin"], "job")
+
+    def test_origin_from_started_by(self):
+        self.write_run(started_by="session")
+        self.assertEqual(self.state()["origin"], "session")
+        self.write_run(started_by="supervisor")
+        self.assertEqual(self.state()["origin"], "supervisor")
+
+    def test_origin_defaults_to_session(self):
+        self.write_run()
+        self.assertEqual(self.state()["origin"], "session")
+
+    def test_leftover_done_status_with_a_live_journal(self):
+        self.write_run()
+        self.write_status(state="done", pid=dead_pid(), job="20261104-1100")
+        got = self.state()
+        self.assertEqual((got["state"], got["origin"]), ("running", "session"))
+
+    def test_session_alive(self):
+        self.write_run()
+        self.assertIsNone(self.state()["session_alive"])
+        self.write_run(session={"pid": os.getpid(), "started": ps_started(os.getpid())})
+        with maybe_fake_ps():
+            self.assertIs(self.state()["session_alive"], True)
+        self.write_run(session={"pid": dead_pid(), "started": MY_START})
+        self.assertIs(self.state()["session_alive"], False)
+
+    def test_state_command(self):
+        self.write_run(started_by="session")
+        out = subprocess.run([sys.executable, str(SCRIPT), "state", "--project", str(self.project)],
+                             capture_output=True, text=True, env=dict(os.environ))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout), {
+            "contract": tasks.CONTRACT, "state": "running", "run_id": self.RUN_ID,
+            "workflow_dir": str(self.wf), "origin": "session", "session_alive": None})
+
+    def test_dashboard_current_run_drops_the_new_keys(self):
+        dash = load("sdd_dashboard", "sdd-dashboard.py")
+        self.write_run(started_by="session")
+        self.assertEqual(dash.current_run(self.project),
+                         {"state": "running", "run_id": self.RUN_ID, "workflow_dir": str(self.wf)})
+        (self.project / ".sdd" / "run.json").unlink()
+        self.assertEqual(dash.current_run(self.project),
+                         {"state": "none", "run_id": None, "workflow_dir": None})
+
+
 if __name__ == "__main__":
     unittest.main()
