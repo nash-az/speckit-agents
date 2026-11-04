@@ -594,9 +594,10 @@ def _unavailable(reason):
 def task_log(project, run_id, task_id):
     """`GET /api/runs/<id>/tasks/<task_id>/log` (data-model.md §4.6, FR-021).
 
-    The task's newest event in the run's last workflow directory names its agent; the transcript
-    is `<workflow_dir>/agent-<agent_id>.jsonl` (research.md D7). Anything not found gives
-    `{"available": false, "reason"}`; the route always answers 200.
+    The newest agent started for the task names the transcript `<dir>/agent-<agent_id>.jsonl`
+    (research.md D7): the run's workflow directories are searched newest first, so a run resumed
+    in a new session still shows the agent of the task that is running (or the last one that ran).
+    Anything not found gives `{"available": false, "reason"}`; the route always answers 200.
     """
     if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id):
         return _unavailable("invalid run id")
@@ -608,24 +609,48 @@ def task_log(project, run_id, task_id):
     workflow_dir = run.get("workflow_dir")
     if not isinstance(workflow_dir, str) or not sdd_tasks.valid_workflow_dir(workflow_dir):
         return _unavailable("run has no workflow directory")
-    feed = sdd_tasks.run_events(project, run_id)
-    last = len(feed["workflow_dirs"]) - 1
-    event = next((e for e in reversed(feed["events"])
-                  if e.get("workflow") == last and e.get("id") == task_id and e.get("agent_id")), None)
-    if event is None:
-        return _unavailable("no agent for this task in the current workflow")
-    agent_id = str(event["agent_id"])
+    found = _newest_agent(sdd_tasks.run_events(project, run_id)["workflow_dirs"], task_id)
+    if found is None:
+        return _unavailable("no agent has started for this task yet")
+    wf, agent_id, label = found
     if not re.match(r"^[A-Za-z0-9_-]+$", agent_id):  # it names a file
         return _unavailable("invalid agent id")
-    transcript = Path(workflow_dir) / f"agent-{agent_id}.jsonl"
+    transcript = wf / f"agent-{agent_id}.jsonl"
     try:
         with transcript.open(encoding="utf-8", errors="replace") as f:
             lines = [line.rstrip("\n") for line in f]
     except OSError:
         return _unavailable("transcript not found")
     shown = [t for t in (_readable_line(line) for line in lines) if t is not None]
-    return {"available": True, "label": event.get("label"),
+    return {"available": True, "label": label,
             "lines": [t[:LOG_MAX_LINE_CHARS] for t in shown[-LOG_MAX_LINES:]]}
+
+
+def _newest_agent(workflow_dirs, task_id):
+    """(workflow dir, agent id, label) of the newest agent started for `task_id`: any label kind
+    (impl, eval, verify, commit, repair) whose ids include the task, newest directory first."""
+    for raw in reversed(workflow_dirs):
+        wf = Path(raw)
+        if not sdd_tasks.valid_workflow_dir(wf):
+            continue
+        newest = None
+        try:
+            lines = (wf / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue  # a line cut off when the process was killed
+            if not isinstance(entry, dict) or entry.get("type") != "started" or not entry.get("agentId"):
+                continue
+            match = sdd_tasks.LABEL_RE.match(str(entry.get("label") or ""))
+            if match and task_id in match["ids"].split(","):
+                newest = (wf, str(entry["agentId"]), entry["label"])
+        if newest is not None:
+            return newest
+    return None
 
 
 # Transcript record types that carry no reading material (request bodies, attachments, hashes).
@@ -1682,6 +1707,8 @@ def build_html():
   .live-output { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.5rem; cursor: default; }
   .live-output-title { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; margin-bottom: 0.25rem; }
   .live-output-empty { font-size: 0.8125rem; color: var(--text-muted); }
+  .job-live .live-output-lines { max-height: 320px; }
+  .job-live-label { text-transform: none; letter-spacing: 0; font-weight: 400; }
   .live-output-lines { max-height: 240px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; color: var(--text); }
 
   /* Usage windows */
@@ -3733,7 +3760,7 @@ def build_html():
         var list = document.getElementById('jobs-list'), earlier = document.getElementById('earlier-runs');
         var signature = JSON.stringify([jobs, runs.map(function(x) { return [x.id, x.job, x.events_count, x.finished, x.tasks]; }),
                                         selectedRunId, expandedRun, expandedJob, activeFeature]);
-        if (list._signature === signature) return;
+        if (list._signature === signature) { pollJobLive(); return; }
         list._signature = signature;
         var content = document.querySelector('.content'), top = content ? content.scrollTop : 0;
         if (runDetailEl.parentNode) runDetailEl.parentNode.removeChild(runDetailEl);  // keep it (and its scroll) across the rebuild
@@ -3744,7 +3771,7 @@ def build_html():
           var card = document.createElement('div');
           card.className = 'job-card' + (JOB_CLOSED.indexOf(job.state) < 0 ? ' open-job' : '');
           card.setAttribute('data-job', job.id);
-          card.innerHTML = jobCardHtml(job);
+          card.innerHTML = jobCardHtml(job) + jobLiveHtml(job, runs);
           if (expandedJob === job.id) {
             var mine = jobRuns(job, runs);
             var here = !!job.feature && job.feature === activeFeature;
@@ -3765,7 +3792,42 @@ def build_html():
         if (!early.length) earlier.innerHTML = '<div class="ov-ok">No earlier runs.</div>';
         early.forEach(function(run) { earlier.appendChild(runItemEl(run)); });
         if (content) content.scrollTop = top;
+        pollJobLive();
       }).catch(function(e) { console.error('loadJobs error', e); });
+    }
+
+    // The technical log of a running Job, right on its card: the transcript of the agent working on the running
+    // task (implementer, verifier or commit), the same feed as Live output in Tasks. Filled by pollJobLive().
+    function jobLiveHtml(job, runs) {
+      if (JOB_CLOSED.indexOf(job.state) >= 0) return '';
+      var mine = jobRuns(job, runs), run = mine.filter(function(x) { return !x.finished && !x.stopped; })[0];
+      if (!run) return '';
+      var task = jobTasks([run]).filter(function(t) { return t.outcome === 'running'; })[0];
+      return '<div class="live-output job-live" data-live-run="' + escapeHtml(run.id) + '" data-live-task-id="' + escapeHtml(task ? task.id : '') + '">' +
+        '<div class="live-output-title">' + (task ? 'Live output · ' + escapeHtml(task.id) + ' <span class="job-live-label"></span>' : 'Live output') + '</div>' +
+        '<div class="live-output-body">' + (task ? liveOutputBodyHtml(jobLiveLogs[run.id + ' ' + task.id]) :
+          '<div class="live-output-empty">Preparing the run: the project checks run before the first task starts. ' +
+          'Output appears here as soon as the first agent starts.</div>') + '</div></div>';
+    }
+
+    var jobLiveLogs = {};
+
+    function pollJobLive() {
+      document.querySelectorAll('.job-live').forEach(function(box) {
+        var runId = box.getAttribute("data-live-run"), id = box.getAttribute("data-live-task-id");
+        if (!id) return;
+        fetchJSON('/api/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(id) + '/log', 'GET').then(function(log) {
+          jobLiveLogs[runId + ' ' + id] = log;
+          var body = box.querySelector('.live-output-body'), label = box.querySelector('.job-live-label');
+          if (label) label.textContent = log && log.label ? '(' + log.label + ')' : '';
+          var html = liveOutputBodyHtml(log);
+          if (!body || body._html === html) return;
+          var state = liveScrollState(body);
+          body.innerHTML = html;
+          body._html = html;
+          restoreLiveScroll(body, state);
+        });
+      });
     }
 
     // One event as a short sentence; the full record is the row's tooltip.

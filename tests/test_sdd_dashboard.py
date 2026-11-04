@@ -661,11 +661,33 @@ class TaskLogTest(unittest.TestCase):
         self.assertEqual(self.log()["lines"], [
             "Running the tests.", "> Bash: Run pytest", "< 72 passed", "< error: boom", "not json"])
 
-    def test_older_workflow_directory_is_ignored(self):
+    def test_older_workflow_directory_is_the_fallback(self):
         write_run(self.root, self.RUN_ID, [self.wf, self.old])  # the last directory is now wf_old
         self.write_run_json(self.RUN_ID, self.wf)
-        data = self.log(task="T2")  # T2 ran only in wf_log
-        self.assertFalse(data["available"])
+        self.assertEqual(self.log()["label"], "impl:T1")  # wf_old's agent a99 is the newest for T1
+        (self.wf / "agent-a03.jsonl").write_text('{"n": "t2"}\n', encoding="utf-8")
+        data = self.log(task="T2")  # T2 ran only in wf_log, an older directory now
+        self.assertEqual((data["available"], data["label"]), (True, "impl:T2"))
+
+    def test_resumed_run_shows_the_verifier_still_running(self):
+        # The run resumed in a new session: only "started" for verify:T5, no result yet.
+        base = Path(self.tmp.name).resolve() / "transcripts"
+        new = write_workflow_dir(base / "wf_new", [
+            {"type": "launched"},
+            {"type": "started", "key": "v2:05", "agentId": "a05", "label": "verify:T5"}])
+        (new / "agent-a05.jsonl").write_text('{"n": "verifying"}\n', encoding="utf-8")
+        write_run(self.root, self.RUN_ID, [self.wf, new])
+        self.write_run_json(self.RUN_ID, new)
+        data = self.log(task="T5")
+        self.assertEqual((data["available"], data["label"], data["lines"]),
+                         (True, "verify:T5", ['{"n": "verifying"}']))
+
+    def test_commit_agent_of_a_group(self):
+        journal = RUN_JOURNAL + [
+            {"type": "started", "key": "v2:04", "agentId": "a04", "label": "commit:T1,T2"}]
+        write_workflow_dir(self.wf, journal)
+        (self.wf / "agent-a04.jsonl").write_text('{"n": "commit"}\n', encoding="utf-8")
+        self.assertEqual(self.log(task="T2")["label"], "commit:T1,T2")
 
     def test_run_not_active(self):
         self.assertEqual(self.log(run_id="20261026-0900"),
