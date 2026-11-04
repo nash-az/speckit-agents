@@ -76,6 +76,11 @@ views and routes to the dashboard; once this feature lands they are built on the
   (user). Most manual steps produce text, which stays the default, but a visual review (T047) is clearer with a
   screenshot. The old dashboard gets no upload, since it is retired at T055; until then screenshots go to the chat.
   The pictures are committed with the task's record, so the agent that reads the record sees them (FR-032).
+- Q: Where do a run's technical log and its step events belong? → A: The log under the Job, the steps under the
+  task (user). Each view answers one question: Jobs answers "what is the machine doing", so it shows the live output
+  of the agent working now (implementer, verifier or commit) and the run-level events; Tasks answers "where does each
+  piece of work stand", so a task shows its own steps in plain sentences and links to its log in Jobs. The old
+  dashboard shows the transcript on the task card and the step events under the run, the other way round (FR-033).
 
 ## Terms
 
@@ -452,6 +457,16 @@ you" lists items of two features.
   task MUST save each picture in the feature's `evidence/` folder, link it from the saved note (under the task's
   `Record:` heading when it has one, else in `manual-notes.md`), and commit the pictures in the same commit as the
   tick. A refused settle MUST leave no picture behind.
+
+**Where logs and events are shown**
+- **FR-033**: A Job with a run going MUST show, on its card in Jobs, the live output of the agent working on the
+  running task (any agent kind: implementer, evaluator, verifier, commit, repair), found across every session of the
+  run, newest first, updated without a reload. Before the first agent starts it MUST say the run is preparing (the
+  project checks run first), never stay blank. The run detail in Jobs MUST list the run-level events (started,
+  paused at a usage limit, resumed in a new session, checks failed, stopped, finished); a task's own step events
+  (implementation started, sent to the verifier, approved, committed with its hash, blocked with its reason) MUST be
+  shown on that task in Tasks, as plain sentences newest last, with a **View log** link that opens the task's
+  output in Jobs. Tasks MUST NOT show the full transcript on the task card.
 
 **How the server is started**
 - **FR-024**: The person MUST be able to start the server with one command, from any folder. The server does not
