@@ -20,7 +20,7 @@
 
 - [ ] T001 [P] [manual] From a terminal, not a run (a nested `claude -p` cannot start its own sandbox inside a run), prove research R2 for headless runs: in a temp git repo add `.claude/skills/env/SKILL.md` whose only step runs `env` as a Bash call, run `claude -p "/env" --permission-mode dontAsk --allowedTools "Skill,Bash(env)"`, and record under `## R2 evidence (headless)` in `specs/008-standalone-server/research.md` whether `CLAUDE_PID` and `CLAUDECODE` are set and whether `CLAUDE_PID` is the `claude -p` process (`ps -o command -p <pid>`).
 - [ ] T002 [P] [manual] Prove research R11 on your own machine (it changes your Claude Code setup): in a terminal run `claude plugin update speckit-agents@speckit-agents < /dev/null` and `claude plugin install speckit-agents@speckit-agents --scope user --json < /dev/null`, and record both outputs and exit codes under `## R11 evidence` in `specs/008-standalone-server/research.md`, with one line saying whether they need a terminal.
-- [ ] T003 [P] Bump `.claude-plugin/plugin.json` `version` to `0.8.0` (research R3) and add `tests/test_plugin_manifest.py` asserting the file parses, `version` matches `^\d+\.\d+\.\d+$` and `name` is `speckit-agents`.
+- [x] T003 [P] Bump `.claude-plugin/plugin.json` `version` to `0.8.0` (research R3) and add `tests/test_plugin_manifest.py` asserting the file parses, `version` matches `^\d+\.\d+\.\d+$` and `name` is `speckit-agents`.
 
 ---
 

@@ -1,5 +1,5 @@
 {
   "name": "speckit-agents",
-  "version": "0.1.0",
+  "version": "0.8.0",
   "description": "Unattended Spec Kit implementation with Claude Code subagents: implement, verify and commit each task, park what needs a person in BLOCKED.md"
 }
