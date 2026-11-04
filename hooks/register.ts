@@ -27,6 +27,17 @@ async function currentBranch($: EngineInterface, root: string): Promise<string> 
 }
 
 export const register: Register = on => {
+  // Refresh the versioned engine copy the standalone server uses (data-model §2). Best effort: a failure here
+  // must never stop the session from starting, and /sdd-init and /sdd-run run the same install as a fallback.
+  on('session.start', async ($, e, next) => {
+    try {
+      await $.process.run(['python3', `${$.plugin.root}/bin/sdd-engine.py`, 'install', '--from', $.plugin.root])
+    } catch {
+      // ignored on purpose
+    }
+    return next(e)
+  })
+
   on('tool.call', { tool: ['Edit', 'Write', 'NotebookEdit'] }, async ($, e, next) => {
     const run = await activeRun($)
     if (!run) return next(e)

@@ -142,3 +142,29 @@ describe('hooks', () => {
     expect(refused(await $.tool.call({ tool: 'Bash', command, agentId: 'a1' } as never))).toBe(false)
   })
 })
+
+describe('session start', () => {
+  test('session start runs sdd-engine.py install from the plugin root', async ($, on) => {
+    const runs: string[][] = []
+    on('process.run', (_, e) => {
+      runs.push([...(e as unknown as { argv: string[] }).argv ?? (e as unknown as { command: string[] }).command])
+      return { value: { exitCode: 0, stdout: '{}', stderr: '' } } as never
+    })
+    on('session.start', (_, e) => ({ cwd: (e as { cwd: string }).cwd }) as never)
+    await ($.session as unknown as { start: (e: object) => Promise<unknown> }).start({ cwd: '/repo' })
+    expect(runs.length).toBe(1)
+    expect(runs[0]?.[0]).toBe('python3')
+    const root = runs[0]?.[4] ?? ''
+    expect(root.length > 0).toBe(true)
+    expect(runs[0]?.slice(1)).toEqual([`${root}/bin/sdd-engine.py`, 'install', '--from', root])
+  })
+
+  test('a failing install does not stop the session from starting', async ($, on) => {
+    on('process.run', () => ({ deny: 'python3 not found' }))
+    on('session.start', (_, e) => ({ cwd: (e as { cwd: string }).cwd }) as never)
+    const result = await ($.session as unknown as { start: (e: object) => Promise<unknown> }).start({ cwd: '/repo' })
+    const r = result as { isError?: boolean; deny?: string; cwd?: string }
+    expect(r.isError === true || r.deny !== undefined).toBe(false)
+    expect(r.cwd).toBe('/repo')
+  })
+})
