@@ -75,11 +75,10 @@ Comes after T010 (the plugin refreshes its engine copy at session start).
 2. In your own terminal: `claude plugin marketplace update speckit-agents`, then
    `claude plugin update speckit-agents@speckit-agents`.
 3. Start a new interactive `claude` session in any folder, then quit it.
-4. Run `cat ~/.local/share/speckit-agents/engine/current/VERSION.json`. It should name version `0.8.0`.
-5. Run `claude -p "hi"` once. Then run step 4 again and see whether the file's time changed (the hook fired).
-   Expected: it fires, unless `SDD_SUPERVISED=1` is set.
-6. Write what you saw in this card's note box: the version in step 4, and whether the file's time changed in step 5.
-   Press **I did it**. It saves your note under `## R3 evidence (hook)` in `research.md`.
+4. Run `ls -l ~/.local/share/speckit-agents/engine/current/VERSION.json; cat ~/.local/share/speckit-agents/engine/current/VERSION.json`.
+5. Run `claude -p "hi"` once, then run the command from step 4 again.
+6. Paste everything steps 4 and 5 printed into this card's note box and press **I did it**. It saves the output under
+   `## R3 evidence (hook)` in `research.md`, and Claude reads the result from it.
 
 Record: research.md ## R3 evidence (hook)
 

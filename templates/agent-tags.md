@@ -10,6 +10,10 @@ Unattended runs (`/sdd-run` from speckit-agents) read extra tags written after `
   the result, and the last step "press I did it on the task's card" (it ticks the task). When the person's
   finding must be written down, end the section with `Record: <file>.md ## <heading>` (a file in the feature
   folder, such as `research.md ## Validation`): the note they type on the card is saved there, in the same commit.
+  Ask the person only to do things and to paste or describe what they saw, never to draw a conclusion that the
+  output already shows (an exit code, whether a value is set): the agent reading the record draws it.
+  Ask for text, never a screenshot: the card's note box takes only text, so a step says "copy the message
+  exactly" instead.
   The dashboard shows that section on the task's card under "Waiting on you". The task line itself stays one line.
 - `[decision]` — the task must settle a question the spec, plan and research leave open; name the question in the task. Held until answered.
 - `[dep]` — adds a package not yet in the project's manifests. Held unless the run allows dependencies.

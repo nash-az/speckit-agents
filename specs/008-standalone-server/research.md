@@ -186,3 +186,10 @@ install exit code: 0
 
 How would they not need a terminal if you ask me to open a terminal?
 ```
+
+- **Conclusion (Claude, from the output above):** both commands exit 0 with stdin from `/dev/null`, so they do
+  **not** need a terminal. "Terminal" here meant an interactive prompt someone types into. The person used one
+  only to run the proof by hand; the server can run these commands itself. `update` printed text, and `install
+  --json` printed one JSON object (`outcome`, `installedVersion`, `availableVersion`), which the server can parse.
+- **Also found:** this install is a directory marketplace. The plugin "loads in place from" the checkout, so edits
+  take effect at the next session start or `/reload-plugins`, with no cached copy to refresh.

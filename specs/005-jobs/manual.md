@@ -16,9 +16,10 @@ Merge brings its work into `main`.
 4. Leave it. Close the tab if you like. Come back after a while (an hour or more is fine).
 5. Check the banner at the top of every view, while the Job runs and after it ends. It should describe the Job
    (for example "Job running: Phases 1–2 of 008") and should **never** show a run id like `20261104-1602`. If you
-   see a run id, take a screenshot.
+   see a run id, copy the banner's text exactly; it goes in the note box in step 7.
 6. When the Job is **done** (the Jobs view says so), open it in the Jobs view and press **Merge**. Expected: its
-   commits land on `main` and the Job shows as merged. If Merge reports a conflict, take a screenshot and stop.
+   commits land on `main` and the Job shows as merged. If Merge reports a conflict, copy its message
+   exactly into the note box and stop there (press **I did it** with that note, or ask Claude).
 7. Back here, in this card's note box, write what you saw: "banner never showed a run id; Merge worked", or what went
    wrong. Then press **I did it**. It ticks T022 and saves your note under `## Validation` in `research.md`, in one
    commit.
