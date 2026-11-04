@@ -810,7 +810,7 @@ class DocEndpointTest(unittest.TestCase):
 
     FEATURE_FILES = {"spec": "spec.md", "plan": "plan.md", "research": "research.md",
                      "data-model": "data-model.md", "quickstart": "quickstart.md", "tasks": "tasks.md",
-                     "blocked": "BLOCKED.md", "decisions": "decisions.md"}
+                     "blocked": "BLOCKED.md", "decisions": "decisions.md", "manual": "manual.md"}
     PROJECT_FILES = {"constitution": ".specify/memory/constitution.md",
                      "learnings": ".sdd/learnings.md", "config": ".sdd/config.toml"}
 
@@ -862,6 +862,25 @@ class DocEndpointTest(unittest.TestCase):
         result = request(self, "GET", "/api/doc?name=research", status=409)
         self.assertEqual(result, {"error": "choose a feature", "features": ["001-only", "002-other"]})
         self.assertEqual(request(self, "GET", "/api/doc?name=config"), "# cfg\n")  # project-wide
+
+    def test_feature_param_reads_that_features_copy(self):
+        """A document link in task text can open another feature's document (`&feature=`)."""
+        other = self.root / "specs" / "002-other"
+        other.mkdir()
+        (other / "quickstart.md").write_text("# other quickstart\n", encoding="utf-8")
+        (self.feature / "quickstart.md").write_text("# own quickstart\n", encoding="utf-8")
+        self.assertEqual(request(self, "GET", "/api/doc?name=quickstart&feature=002-other"), "# other quickstart\n")
+        self.assertEqual(request(self, "GET", "/api/doc?name=quickstart&feature=001-only"), "# own quickstart\n")
+        self.assertEqual(request(self, "GET", "/api/doc?name=plan&feature=002-other"), {"missing": True})
+
+    def test_feature_param_is_checked(self):
+        """Only a folder under specs/, only for a feature document, and only once; anything else is 404."""
+        (self.root / "specs" / "002-other").mkdir()
+        (self.root / ".sdd" / "config.toml").write_text("# cfg\n", encoding="utf-8")
+        for query in ("name=spec&feature=999-none", "name=spec&feature=..", "name=spec&feature=..%2F..",
+                      "name=config&feature=001-only", "name=constitution&feature=002-other",
+                      "name=spec&feature=001-only&feature=002-other"):
+            request(self, "GET", f"/api/doc?{query}", status=404)
 
     def test_aliases(self):
         self.write_all()
@@ -1361,12 +1380,12 @@ class DocumentsViewTest(unittest.TestCase):
         for name in dash.DOC_NAMES:
             if name in ("tasks", "blocked"):
                 self.assertIn('data-raw="%s"' % name, self.html)
-            elif name in ("spec", "plan", "research", "data-model", "quickstart", "constitution", "learnings"):
+            elif name in ("spec", "plan", "research", "data-model", "quickstart", "manual", "constitution", "learnings"):
                 self.assertNotIn('class="nav-item" data-section="%s"' % name, self.html)  # a tab under Docs
             else:
                 self.assertIn('class="nav-item" data-section="%s"' % name, self.html)
         self.assertIn('class="nav-item" data-section="docs"', self.html)
-        self.assertIn("var DOC_GROUP = ['spec', 'plan', 'research', 'data-model', 'quickstart', 'constitution', 'learnings'];", self.html)
+        self.assertIn("var DOC_GROUP = ['spec', 'plan', 'research', 'data-model', 'quickstart', 'manual', 'constitution', 'learnings'];", self.html)
         self.assertIn("Raw document", self.html)
         self.assertIn("'Not written yet'", self.html)
 

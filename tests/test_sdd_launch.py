@@ -417,6 +417,15 @@ class ContinueJobTest(unittest.TestCase):
         self.refused("no task in the scope is runnable")
         self.assertEqual((self.branch(), self.record()["state"]), ("main", "waiting"))
 
+    def test_continue_with_nothing_left_makes_the_job_done(self):
+        git(self.root, "switch", "-q", self.job_branch)
+        for task_id in ("T001", "T003", "T004"):  # T002 is done in the fixture
+            self.tick(task_id)
+        git(self.root, "switch", "-q", "main")
+        self.set(state="waiting", reason="only items that need you are left")
+        self.refused("nothing is left to run: the job is now done, so Merge it")
+        self.assertEqual((self.branch(), self.record()["state"]), ("main", "done"))
+
     def test_refuses_outside_a_git_repository(self):
         with tempfile.TemporaryDirectory() as other:
             project = Path(other).resolve()

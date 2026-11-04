@@ -563,6 +563,23 @@ class AfterSettleTest(unittest.TestCase):
         (self.feature / "tasks.md").write_text(SETTLE_TASKS.replace("- [ ] T002", "- [x] T002"))
         self.not_started("no task in the scope is runnable")
 
+    def test_nothing_left_after_a_skip_makes_the_job_done(self):
+        """The person skipped the last item (wontfix): nothing waits on them and nothing is left, so the Job is
+        done and can be merged, instead of staying "waiting" with a Continue that always refuses."""
+        (self.feature / "tasks.md").write_text(SETTLE_TASKS.replace("- [ ] T002", "- [x] T002"))
+        (self.feature / "BLOCKED.md").write_text("# Blocked\n\n## T003\n- status: wontfix\n- tag: manual\n"
+                                                 "- reason: skipped\n- question:\n- answer:\n")
+        self.assertEqual(job.after_settle(self.root),
+                         {"started": False, "reason": "the job is done: every task in the scope is done or skipped"})
+        self.popen.assert_not_called()
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["state"], saved["reason"]), ("done", job.COMPLETE_REASON))
+
+    def test_a_manual_task_still_open_keeps_the_job_waiting(self):
+        (self.feature / "tasks.md").write_text(SETTLE_TASKS.replace("- [ ] T002", "- [x] T002"))
+        self.assertFalse(job.finish_if_complete(self.root, job.load(self.root, JOB_ID)))
+        self.assertEqual(job.load(self.root, JOB_ID)["state"], "waiting")
+
     def test_a_launcher_refusal_comes_back_as_the_reason(self):
         (self.root / "stray.txt").write_text("x\n")
         self.not_started("the working tree has changes; commit or stash them first: stray.txt")

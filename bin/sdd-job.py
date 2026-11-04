@@ -270,6 +270,23 @@ def progress(project, record: dict) -> dict:
     return {"done": done, "total": done + waiting + left, "waiting_on_you": waiting, "left": left}
 
 
+COMPLETE_REASON = "every task in the scope is done or skipped"
+
+
+def finish_if_complete(project, record: dict) -> bool:
+    """A `waiting` Job with nothing left in its scope (no task waiting on the person, none left to run) is
+    `done`: the person settled the last item, for example by skipping it, so there is nothing to continue
+    and the Job can be merged. Stores the new state and returns True; otherwise changes nothing."""
+    if record.get("state") != "waiting":
+        return False
+    counts = progress(project, record)
+    if counts["waiting_on_you"] or counts["left"]:
+        return False
+    record["state"], record["reason"] = "done", COMPLETE_REASON
+    save(project, record)
+    return True
+
+
 def tasks_done(project, record: dict) -> int:
     """Ids in `scope_tasks` now ticked in `tasks.md` (data-model §3; counting never resets)."""
     ticked = _ticked(_parsed(project, record))
@@ -426,6 +443,8 @@ def after_settle(project) -> dict:
             return {"started": False, "reason": "a run is active"}
         if _pid_alive(_status(project)):
             return {"started": False, "reason": "a supervisor is running"}
+        if finish_if_complete(project, record):
+            return {"started": False, "reason": "the job is done: " + COMPLETE_REASON}
         if _scope_runnable(project, record) == 0:
             return {"started": False, "reason": "no task in the scope is runnable"}
         launcher = _launcher()

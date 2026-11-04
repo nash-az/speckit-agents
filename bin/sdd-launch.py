@@ -392,6 +392,8 @@ def continue_job(project: Path, job_id: str, new_limits: dict | None = None) -> 
                                   [str(p) for p in scope.get("phases") or []] or None, None,
                                   [str(t) for t in scope.get("tasks") or []] or None)
             if plan["runnable"] == 0:
+                if sdd_job.finish_if_complete(project, record):
+                    raise Refused("nothing is left to run: the job is now done, so Merge it")
                 raise Refused("no task in the scope is runnable")
     except Refused:
         if switched_from:

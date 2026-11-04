@@ -25,6 +25,11 @@ Unattended runs (`/sdd-run` from speckit-agents) read extra tags written after `
 `- [ ] T057 [US1] [manual] Record …`. Add a tag only when it applies; most tasks have none.
 
 - `[manual]` — a person must do it: record audio or video, use hardware, log in or pay, judge by ear or eye. The run never attempts it.
+  Give every `[manual]` task a section in the feature's `manual.md` whose heading starts with the task id
+  (`## T057 Record the learner audio`), with numbered steps a person can follow without reading code: where to
+  go (a terminal, a dashboard view, a file), the exact commands or clicks, what to look for, where to record
+  the result, and the last step "press I did it on the task's card" (it ticks the task). The dashboard shows
+  that section on the task's card under "Waiting on you". The task line itself stays one line.
 - `[decision]` — the task must settle a question the spec, plan and research leave open; name the question in the task. Held until answered.
 - `[dep]` — adds a package not yet in the project's manifests. Held unless the run allows dependencies.
 - `[download]` — needs a large model or dataset not yet on disk. Held unless the run allows downloads.

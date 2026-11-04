@@ -19,6 +19,6 @@ Tag the open tasks in the current feature's `tasks.md`. The tag meanings are in 
 4. Write each tag as a bracket after the task's existing leading tags (`[P]`, `[USn]`), keeping their order:
    `- [ ] T057 [US1] [manual] Record …`.
    Change nothing else on the line, and never touch tasks that are done.
-5. For `[manual]` tasks, write how-to steps next to the tag (or in the task's text): where to do it, the commands to run, and what "done" looks like, so a person can act without reading code.
+5. For each `[manual]` task, add a section to the feature's `manual.md` (create it if missing) whose heading starts with the task id (`## T057 Record the learner audio`), with numbered steps a person can follow without reading code: where to go (a terminal, a dashboard view, a file), the exact commands or clicks, what to look for, where to record the result, and last "press I did it on the task's card". Keep the task line itself one line. The dashboard shows the section on the task's card.
 6. For `[decision]` tasks, write the options and their trade-offs next to the question (or link to the research file that has them), so the person can decide without reading transcripts.
 7. Run `parse` again and confirm that the tags were read. Say how many tasks are now held by default: those tagged `manual`, `decision`, `dep` or `download`, unless the config allows dependencies or downloads.

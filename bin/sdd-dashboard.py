@@ -12,7 +12,8 @@ Endpoints:
     GET /                         -- single-page HTML dashboard
     GET /api/projects             -- the started project only (no directory scan)
     POST /api/project/select      -- { "path"?, "feature"? } select a project and/or feature (memory only)
-    GET /api/doc?name=<name>      -- one document from a fixed name set (missing -> {"missing": true})
+    GET /api/doc?name=<name>      -- one document from a fixed name set (missing -> {"missing": true});
+                                     &feature=<folder under specs/> reads a feature document from that feature
     GET /api/project/spec         -- alias of /api/doc?name=spec
     GET /api/project/plan         -- alias of /api/doc?name=plan
     GET /api/project/tasks        -- read tasks.md (parsed)
@@ -780,6 +781,7 @@ DOC_NAMES = {
     "tasks": ("feature", "tasks.md"),
     "blocked": ("feature", "BLOCKED.md"),
     "decisions": ("feature", "decisions.md"),
+    "manual": ("feature", "manual.md"),
     "constitution": ("project", ".specify/memory/constitution.md"),
     "learnings": ("project", ".sdd/learnings.md"),
     "config": ("project", ".sdd/config.toml"),
@@ -1206,15 +1208,22 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_doc(self, name):
+    def _send_doc(self, name, feature_name=None):
         """`GET /api/doc?name=<name>` (data-model.md §4.3): raw text, `200 {"missing": true}` for a
-        missing file, 404 for a name outside DOC_NAMES, 409 for a feature document without a feature."""
+        missing file, 404 for a name outside DOC_NAMES, 409 for a feature document without a feature.
+        `feature_name` (a document link in task text) reads that feature's copy instead of the active
+        feature's; it must be one of feature_names() and a feature document, else 404."""
         if name not in DOC_NAMES:
             self._send_json({"error": "not found"}, 404)
             return
         scope, rel = DOC_NAMES[name]
         proj = DashboardHandler.project
-        if scope == "feature":
+        if feature_name is not None:
+            if scope != "feature" or feature_name not in feature_names(proj):
+                self._send_json({"error": "not found"}, 404)
+                return
+            path = proj / "specs" / feature_name / rel
+        elif scope == "feature":
             feature = self._feature_dir()
             if feature is None:
                 self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409)
@@ -1239,8 +1248,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(discover_projects(DashboardHandler.started_project or DashboardHandler.project))
             return
         if path == "/api/doc":
-            names = urllib.parse.parse_qs(query).get("name", [])
-            self._send_doc(names[0] if len(names) == 1 else None)
+            params = urllib.parse.parse_qs(query)
+            names, features = params.get("name", []), params.get("feature", [])
+            if len(features) > 1:
+                self._send_json({"error": "not found"}, 404)
+                return
+            self._send_doc(names[0] if len(names) == 1 else None, features[0] if features else None)
             return
         if path in DOC_ALIASES:
             self._send_doc(DOC_ALIASES[path])
@@ -1596,6 +1609,13 @@ def build_html():
   .markdown h1, .markdown h2, .markdown h3 { color: var(--text); margin: 1.25rem 0 0.5rem; font-weight: 600; }
   .markdown h1 { font-size: 1.375rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
   .markdown h2 { font-size: 1.125rem; }
+  .markdown .doc-target { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+  a.doc-ref { text-decoration: underline dotted; }
+  .manual-steps-fold { margin: 0.5rem 0; border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.75rem; background: var(--bg); }
+  .manual-steps-fold > summary { cursor: pointer; font-weight: 600; }
+  .manual-steps-fold .markdown ol { padding-left: 1.5rem; }
+  .manual-steps-fold .markdown li { margin: 0.25rem 0; }
+  .manual-steps-none { margin: 0.5rem 0; font-size: 0.8125rem; color: var(--text-muted, #8b93a1); }
   .markdown h3 { font-size: 1rem; color: var(--text-muted); }
   .markdown p { margin: 0.5rem 0; }
   .markdown code { background: var(--bg); padding: 0.125rem 0.375rem; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.875rem; color: var(--info); }
@@ -1941,7 +1961,7 @@ def build_html():
     var selectedSection = 'overview';
     var sectionShown = false;
     // The design documents share one sidebar entry, "Docs", with a tab per document.
-    var DOC_GROUP = ['spec', 'plan', 'research', 'data-model', 'quickstart', 'constitution', 'learnings'];
+    var DOC_GROUP = ['spec', 'plan', 'research', 'data-model', 'quickstart', 'manual', 'constitution', 'learnings'];
     var lastDoc = 'spec';
     // File names a document link may point at, for links such as [spec.md](./spec.md).
     var DOC_BY_FILE = { spec: 'spec', plan: 'plan', research: 'research', 'data-model': 'data-model', quickstart: 'quickstart',
@@ -1998,16 +2018,49 @@ def build_html():
 
     // `code` spans in task and decision text.
     function inlineCode(text) {
-      return escapeHtml(text).replace(/`([^`]+)`/g, '<code>$1</code>');
+      return linkDocs(escapeHtml(text).replace(/`([^`]+)`/g, '<code>$1</code>'));
+    }
+
+    // Document references in task, question and decision text become links that open the document view,
+    // at the cited section when there is one: `specs/<feature>/<doc>.md` or a bare `<doc>.md` (the shown
+    // feature), either one followed by "§N"; "<NNN> §N" (feature NNN's data model); and a bare "§N" (the
+    // shown feature's data model, as tasks.md files cite it). html is already escaped; a path to a feature
+    // that does not exist stays plain text.
+    var knownFeatures = [], shownFeature = null;
+    var DOC_REF = /(?:specs\\/([\\w.-]+)\\/)?\\b(spec|plan|research|data-model|quickstart|decisions|manual)\\.md(?:(<\\/code>)?(\\s+)§(\\d+(?:\\.\\d+)*))?|\\b(\\d{3})\\s+§(\\d+(?:\\.\\d+)*)|§(\\d+(?:\\.\\d+)*)/g;
+
+    function docRefHtml(doc, feature, sec, text) {
+      var where = DOC_TITLES[doc] + (sec ? ' §' + sec : '') + (feature ? ' (' + feature + ')' : '');
+      return '<a href="#' + doc + '" class="doc-ref" data-doc="' + doc + '"' +
+        (feature ? ' data-feature="' + escapeHtml(feature) + '"' : '') + (sec ? ' data-sec="' + sec + '"' : '') +
+        ' title="Open ' + escapeHtml(where) + '">' + text + '</a>';
+    }
+
+    function linkDocs(html) {
+      return String(html).replace(DOC_REF, function(m, folder, doc, close, gap, sec, num, numSec, bareSec) {
+        if (doc) {
+          if (folder && knownFeatures.length && knownFeatures.indexOf(folder) < 0) return m;  // before the list loads, link
+          var name = m.slice(0, m.indexOf('.md') + 3);
+          if (!sec) return docRefHtml(doc, folder, null, name);
+          if (close) return docRefHtml(doc, folder, sec, name) + close + gap + docRefHtml(doc, folder, sec, '§' + sec);
+          return docRefHtml(doc, folder, sec, m);
+        }
+        if (num) {
+          var feature = knownFeatures.filter(function(f) { return f.indexOf(num + '-') === 0; })[0];
+          return feature ? docRefHtml('data-model', feature, numSec, m) : m;
+        }
+        return docRefHtml('data-model', null, bareSec, m);
+      });
     }
 
     // A BLOCKED.md question: `code` and bare file paths styled, one sentence per line, and an
     // "Either <a>. Or <b>." question shown as two numbered ways to settle the task.
     function questionText(text) {
       var path = /(^|[\\s(])(~?\\/[\\w.\\/-]*[\\w\\/]|[\\w.-]+\\/[\\w.\\/-]*\\.\\w+)/g;
-      return String(text).split(/(`[^`]+`)/).map(function(part, i) {
+      var html = String(text).split(/(`[^`]+`)/).map(function(part, i) {
         return i % 2 ? '<code>' + escapeHtml(part.slice(1, -1)) + '</code>' : escapeHtml(part).replace(path, '$1<code>$2</code>');
       }).join('');
+      return linkDocs(html);
     }
 
     function questionSentences(text) {
@@ -2275,9 +2328,55 @@ def build_html():
         '<div class="task-text">' + inlineCode(t.text) + '</div>' +
         (t.status_reason ? '<div class="blocked-reason">' + escapeHtml(t.status_reason) + '</div>' : '') +
         (ask ? blockedQuestionHtml(ask) : '') +
-        (taskStatusKey(t) === 'held' && t.status_tag === 'manual' ? manualActionsHtml(t) : '') +
+        (taskStatusKey(t) === 'held' && t.status_tag === 'manual' ? '<div class="manual-steps" data-steps-task="' + escapeHtml(t.id) + '"></div>' + manualActionsHtml(t) : '') +
         (t.status === 'blocked' && t.status_tag === 'open' ? unblockActionsHtml(t.id) : '') +
         '</div>';
+    }
+
+    // The step-by-step instructions of a [manual] task: the section of the feature's manual.md whose heading
+    // starts with the task id ("## T022 Real Job test"), down to the next heading of the same or a higher level.
+    // null when manual.md has no such section.
+    function manualSection(text, id) {
+      var lines = String(text || '').split('\\n'), start = -1, level = 0;
+      for (var i = 0; i < lines.length; i++) {
+        var h = /^(#{1,6})\\s+(.*)$/.exec(lines[i]);
+        if (!h) continue;
+        if (start >= 0 && h[1].length <= level) return lines.slice(start, i).join('\\n');
+        if (start < 0 && (h[2] + ' ').indexOf(id + ' ') === 0) { start = i; level = h[1].length; }
+      }
+      return start >= 0 ? lines.slice(start).join('\\n') : null;
+    }
+
+    // Fill each empty `.manual-steps` box under el from manual.md, open, so the person sees what to do where
+    // they act. A task without a section says so, and how to add one.
+    function fillManualSteps(el) {
+      var boxes = Array.prototype.slice.call(el.querySelectorAll('.manual-steps[data-steps-task]:not([data-filled])'));
+      if (!boxes.length) return Promise.resolve();
+      return fetchDoc(docUrl('manual')).then(function(d) {
+        boxes.forEach(function(box) {
+          var id = box.getAttribute('data-steps-task');
+          var section = d.text != null ? manualSection(d.text, id) : null;
+          box.setAttribute('data-filled', '');
+          if (section == null) {
+            box.innerHTML = '<div class="manual-steps-none">No step-by-step instructions yet: add a <code>## ' + escapeHtml(id) +
+              '</code> section to the feature&#39;s <code>manual.md</code>.</div>';
+            return;
+          }
+          box.innerHTML = '<details class="manual-steps-fold" open><summary>Steps</summary><div class="markdown"></div></details>';
+          renderDoc(box.querySelector('.markdown'), section.replace(/^#{1,6}[^\\n]*\\n?/, ''), 'markdown');
+          linkDocRefsIn(box);
+        });
+      });
+    }
+
+    // Doc names in rendered markdown become document links too: inline code outside links, and paragraphs
+    // and list items that are plain text (so an attribute is never rewritten).
+    function linkDocRefsIn(el) {
+      el.querySelectorAll('code, p, li').forEach(function(n) {
+        if (n.tagName === 'CODE' ? n.closest('a, pre') : n.children.length) return;
+        var html = linkDocs(n.innerHTML);
+        if (html !== n.innerHTML) n.innerHTML = html;
+      });
     }
 
     // A held [manual] task (FR-036): the person says they did it, or skips it. Each button is one commit.
@@ -2335,7 +2434,7 @@ def build_html():
     // Documents (data-model.md §4.3): every /api/doc name. tasks and blocked keep their structured views
     // and show the document only under a "Raw document" toggle; the others open in the shared doc view.
     var DOC_TITLES = {
-      spec: 'Spec', plan: 'Plan', research: 'Research', 'data-model': 'Data model', quickstart: 'Quickstart',
+      spec: 'Spec', plan: 'Plan', research: 'Research', 'data-model': 'Data model', quickstart: 'Quickstart', manual: 'Manual steps',
       decisions: 'Decisions', constitution: 'Constitution', learnings: 'Learnings', config: 'Config',
       tasks: 'tasks.md', blocked: 'BLOCKED.md'
     };
@@ -2433,8 +2532,8 @@ def build_html():
       });
     }
 
-    function docUrl(name) {
-      return '/api/doc?name=' + encodeURIComponent(name);
+    function docUrl(name, feature) {
+      return '/api/doc?name=' + encodeURIComponent(name) + (feature ? '&feature=' + encodeURIComponent(feature) : '');
     }
 
     function docKind(name) {
@@ -2497,6 +2596,9 @@ def build_html():
     function loadFeatureSelect() {
       fetchJSON('/api/features', 'GET').then(function(f) {
         var box = document.getElementById('header-feature');
+        knownFeatures = (f && f.features) || [];
+        shownFeature = (f && f.active) || null;
+        if (selectedSection === 'tasks' && JSON.stringify(knownFeatures) !== box._features) { box._features = JSON.stringify(knownFeatures); loadTasks(); }
         if (!f || !f.features || !f.features.length) { box.style.display = 'none'; return; }
         var key = JSON.stringify(f);
         if (box._key === key) return;
@@ -2518,6 +2620,7 @@ def build_html():
       fetchJSON('/api/project/select', 'POST', { feature: name }).then(function(result) {
         if (!result || !result.ok) { toast('Failed to choose feature ' + name); return; }
         hideFeaturePicker();
+        docFeature = null;
         toast('Feature: ' + name);
         editNote = ''; editError = '';
         loadFeatureSelect();
@@ -2562,9 +2665,10 @@ def build_html():
         if (target && target.scrollIntoView) target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         document.querySelectorAll('section').forEach(function(el) { el.style.display = 'none'; });
         var isDoc = DOC_TITLES[name] && !RAW_DOCS[name];
+        if (!isDoc) { docFeature = null; docSection = null; }
         var sec = document.getElementById(isDoc ? 'section-doc' : 'section-' + name);
         if (sec) sec.style.display = 'block';
-        document.getElementById('page-title').textContent = isDoc ? DOC_TITLES[name] : name.charAt(0).toUpperCase() + name.slice(1);
+        document.getElementById('page-title').textContent = isDoc ? docTitle(name) : name.charAt(0).toUpperCase() + name.slice(1);
         selectedSection = name;
         if (name === 'overview') loadOverview();
         if (name === 'tasks') loadTasks();
@@ -2600,7 +2704,7 @@ def build_html():
     // The bar above an editable document: Edit, and the Commit row while the file has edits.
     function renderEditBar(name) {
       var bar = document.getElementById('doc-edit-bar');
-      if (EDITABLE_DOCS.indexOf(name) < 0) { bar.innerHTML = ''; return Promise.resolve(); }
+      if (EDITABLE_DOCS.indexOf(name) < 0 || docFeature) { bar.innerHTML = ''; return Promise.resolve(); }
       return Promise.all([fetchJSON('/api/doc/state?name=' + name, 'GET'), name === 'spec' ? fetchJSON('/api/features', 'GET') : Promise.resolve(null)]).then(function(r) {
         if (docShown !== name) return;
         var st = r[0], feats = r[1], html = '';
@@ -2675,7 +2779,7 @@ def build_html():
       if (docShown !== name) { leaveEditor(); editNote = ''; editError = ''; }
       docShown = name;
       renderEditBar(name);
-      document.getElementById('doc-title').textContent = DOC_TITLES[name];
+      document.getElementById('doc-title').textContent = docTitle(name);
       var tabs = document.getElementById('doc-tabs');
       if (DOC_GROUP.indexOf(name) >= 0) {
         lastDoc = name;
@@ -2688,9 +2792,40 @@ def build_html():
       } else {
         tabs.innerHTML = '';
       }
-      var el = document.getElementById('doc-content');
-      if (el.getAttribute('data-want') !== docUrl(name)) el.innerHTML = '';
-      showDoc(el, docUrl(name), docKind(name));
+      var el = document.getElementById('doc-content'), url = docUrl(name, docFeature);
+      if (el.getAttribute('data-want') !== url) el.innerHTML = '';
+      return showDoc(el, url, docKind(name)).then(function() {
+        if (docSection && el.getAttribute('data-want') === url) { scrollToSection(el, docSection); docSection = null; }
+      });
+    }
+
+    // A document link (linkDocs): show that document, from its own feature when that is not the one shown
+    // (the title says which, and editing is off), and scroll to the cited section once it has loaded.
+    var docFeature = null, docSection = null;
+
+    function openDocRef(name, feature, sec) {
+      docFeature = feature && feature !== shownFeature ? feature : null;
+      docSection = sec || null;
+      if (selectedSection === name) loadDoc(name); else showSection(name);
+    }
+
+    function docTitle(name) {
+      return DOC_TITLES[name] + (docFeature ? ' · ' + docFeature : '');
+    }
+
+    // The heading numbered sec ("## 6. Real run", "### 4.3 Names", "## §2 …"), scrolled to and briefly marked.
+    function scrollToSection(el, sec) {
+      var hs = el.querySelectorAll('h1, h2, h3, h4');
+      for (var i = 0; i < hs.length; i++) {
+        var t = hs[i].textContent.replace(/^[\\s§]+/, '');
+        if (t.indexOf(sec) !== 0 || /^\\.?\\d/.test(t.slice(sec.length))) continue;
+        var h = hs[i];
+        if (h.scrollIntoView) h.scrollIntoView({ block: 'start' });
+        h.classList.add('doc-target');
+        setTimeout(function() { h.classList.remove('doc-target'); }, 2500);
+        return true;
+      }
+      return false;
     }
 
     // "Raw document" toggle under the Tasks and Blocked views.
@@ -2959,6 +3094,7 @@ def build_html():
       document.getElementById('waiting-count').textContent = count;
       setHtml(document.getElementById('waiting-list'), waiting ||
         '<div class="empty"><div>Nothing is waiting on you.</div></div>');
+      fillManualSteps(document.getElementById('waiting-list'));
       var tasksEl = document.getElementById('tasks-list');
       var live = {};
       tasksEl.querySelectorAll('.live-output-body').forEach(function(b) { live[b.getAttribute('data-live-task')] = liveScrollState(b); });
@@ -3992,6 +4128,7 @@ def build_html():
       document.querySelectorAll('.nav-item').forEach(function(item) {
         item.addEventListener('click', function() {
           var section = item.getAttribute('data-section');
+          docFeature = null; docSection = null;
           if (section) showSection(section === 'docs' ? lastDoc : section);
         });
       });
@@ -4038,6 +4175,13 @@ def build_html():
 
       // A task chip naming a Job (005 FR-013) opens that Job's card in Jobs; its runs are inside it.
       document.addEventListener('click', function(ev) {
+        var ref = ev.target.closest ? ev.target.closest('a.doc-ref') : null;
+        if (!ref || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        openDocRef(ref.getAttribute('data-doc'), ref.getAttribute('data-feature'), ref.getAttribute('data-sec'));
+      }, true);
+      document.addEventListener('click', function(ev) {
         var chip = ev.target.closest ? ev.target.closest('[data-open-job]') : null;
         if (!chip) return;
         expandedJob = chip.getAttribute('data-open-job');
@@ -4054,7 +4198,7 @@ def build_html():
       });
 
       showSection(sectionFromHash());
-      window.addEventListener('popstate', function() { showSection(sectionFromHash()); });
+      window.addEventListener('popstate', function() { docFeature = null; docSection = null; showSection(sectionFromHash()); });
       document.getElementById('feature-select').addEventListener('change', function(ev) {
         if (ev.target.value) chooseFeature(ev.target.value);
       });
