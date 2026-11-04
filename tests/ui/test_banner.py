@@ -303,7 +303,10 @@ class PollingBannerTest(BannerTestCase):
 
 class NoSupervisorBannerTest(BannerTestCase):
     """A `.sdd/run.json` and no supervisor `status.json`: the banner shows the run, every control
-    is disabled, and the reason (`NO_SUPERVISOR` in `bin/sdd-dashboard.py`) is shown."""
+    is disabled, and the reason is shown. The run names no session and is stale, so the reason is
+    the "session is unknown" row of 008 data-model §5 (`bin/sdd-control.py`)."""
+
+    REASON = "the session that started this run is unknown"
 
     RUN_ID = "20261030-0000"
 
@@ -325,11 +328,10 @@ class NoSupervisorBannerTest(BannerTestCase):
             for i in range(buttons.count()):
                 label = buttons.nth(i).inner_text().strip()
                 self.assertFalse(buttons.nth(i).is_enabled(), f"{label} is enabled without a supervisor")
-                self.assertIn("no supervisor is running", buttons.nth(i).get_attribute("title") or "")
+                self.assertIn(self.REASON, buttons.nth(i).get_attribute("title") or "")
             reason = ui.page.locator("#run-banner .run-banner-reason")
             reason.wait_for(state="visible", timeout=TIMEOUT_MS)
-            self.assertIn("no supervisor is running", reason.inner_text())
-            self.assertIn("python3 bin/sdd-supervise.py", reason.locator("code").inner_text())
+            self.assertIn(self.REASON, reason.inner_text())
             buttons.first.click(force=True)  # a disabled button sends nothing
             ui.page.wait_for_timeout(500)
             self.assertIsNone(self.supervisor.read_control(), "a disabled control wrote control.json")

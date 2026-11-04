@@ -53,6 +53,11 @@ from pathlib import Path
 # The project config (run profiles) is read with the task helper's own loader (data-model §9).
 _spec = importlib.util.spec_from_file_location("sdd_tasks", Path(__file__).with_name("sdd-tasks.py"))
 sdd_tasks = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_tasks)
+# control.json's reader and its one writer live in sdd-control.py (008 data-model §5).
+_spec = importlib.util.spec_from_file_location("sdd_control", Path(__file__).with_name("sdd-control.py"))
+sdd_control = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_control)
+read_control = sdd_control.read_control
+send_control = sdd_control.send_control
 
 TRANSCRIPT_RE = re.compile(r"Transcript dir: (\S+)")
 SAFE_GRACE_S = 20     # after SIGINT, before SIGTERM
@@ -243,11 +248,12 @@ class Cycle:
             # A Job's stop-by time (005 data-model §6): send ourselves the "stop after the current task"
             # request; the operator path below then stops the run at the next safe point.
             until = getattr(self.args, "until", None)
-            if until is not None and not self.until_sent and time.time() >= until:
+            # A pending request is never overwritten (data-model §5): try again at the next poll.
+            if (until is not None and not self.until_sent and time.time() >= until
+                    and send_control(self.log_path.parent, {"id": "until", "command": "stop", "mode": "after-task",
+                                                            "requested_at": int(time.time())})):
                 self.until_sent = True
                 say(f"the job's stop-by time {time.strftime('%H:%M', time.localtime(until))} has passed")
-                send_control(self.log_path.parent, {"id": "until", "command": "stop", "mode": "after-task",
-                                                    "requested_at": int(time.time())})
             if rejected:
                 self.stop_reason = "limit"
                 say("stopping now: the limit was hit before a safe point")
@@ -351,13 +357,6 @@ def write_status(path: Path, **fields) -> None:
     path.write_text(json.dumps(fields, indent=2) + "\n", encoding="utf-8")
 
 
-def send_control(logs: Path, request: dict) -> None:
-    """Write a request to <state dir>/control.json atomically, as the dashboard does (data-model §12.1)."""
-    tmp = logs / "control.json.tmp"
-    tmp.write_text(json.dumps(request), encoding="utf-8")
-    os.replace(tmp, logs / "control.json")
-
-
 def run_scope(run_args: str) -> dict:
     """--phases, --tasks and --max-tasks from the /sdd-run arguments (either `--x a,b` or `--x=a,b`)."""
     words = shlex.split(run_args or "")
@@ -396,23 +395,6 @@ def read_run_id(project: Path) -> str | None:
         return None
     run_id = data.get("run_id") if isinstance(data, dict) else None
     return run_id if isinstance(run_id, str) and run_id else None
-
-
-def read_control(logs: Path) -> dict | None:
-    """The dashboard's pending request in <state dir>/control.json (data-model §12.1), or None.
-    The supervisor owns deletion: the file is removed whenever a request is returned."""
-    path = logs / "control.json"
-    try:
-        control = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(control, dict):
-        return None
-    try:
-        path.unlink()
-    except OSError:
-        pass
-    return control
 
 
 def hold(args: argparse.Namespace, logs: Path, status: Path, cycle_no: int, reason: str) -> bool:

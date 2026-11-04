@@ -71,7 +71,6 @@ import re
 import threading
 import time
 import urllib.parse
-import uuid
 from pathlib import Path
 
 # All task state comes from bin/sdd-tasks.py, so the CLI and the dashboard cannot disagree
@@ -90,6 +89,9 @@ _spec = importlib.util.spec_from_file_location("sdd_edit", Path(__file__).with_n
 sdd_edit = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_edit)
 _spec = importlib.util.spec_from_file_location("sdd_job", Path(__file__).with_name("sdd-job.py"))
 sdd_job = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_job)
+# Run controls and the one writer of control.json (008 data-model §5).
+_spec = importlib.util.spec_from_file_location("sdd_control", Path(__file__).with_name("sdd-control.py"))
+sdd_control = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_control)
 
 DEFAULT_PORT = 8765
 
@@ -361,46 +363,21 @@ get_status = sdd_tasks.get_status
 supervisor_alive = sdd_tasks.supervisor_alive
 
 
-NO_SUPERVISOR = "no supervisor is running; start one with `python3 bin/sdd-supervise.py`"
-STOP_MODES = ("after-task", "now")
+STOP_MODES = sdd_control.STOP_MODES
 
 
-def _reset_time(status) -> str:
-    resets_at = status.get("resets_at")
-    if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool):
-        return time.strftime("%H:%M", time.localtime(resets_at))
-    return "?"
-
-
-def run_controls(status) -> dict:
-    """The `controls` table of data-model.md §12.3: which commands the supervisor accepts now."""
-    controls = {"stop": False, "resume": False, "hold": False, "release": False, "reason": None}
-    if not isinstance(status, dict) or not supervisor_alive(status):
-        controls["reason"] = NO_SUPERVISOR
-        return controls
-    state = status.get("state")
-    if state == "running":
-        controls["stop"] = True
-    elif state == "stopping":
-        controls["stop"] = True  # only `mode: now`; an after-task stop is already under way
-        controls["reason"] = "stopping after the current task"
-    elif state == "held":
-        controls["resume"] = True
-    elif state == "waiting":
-        if status.get("keep_paused") is True:
-            controls["release"] = True
-            controls["reason"] = f"will stay paused after the reset at {_reset_time(status)}"
-        else:
-            controls["hold"] = True
-            controls["reason"] = f"waiting for the usage window to reset at {_reset_time(status)}"
-    return controls
+def run_controls(project) -> dict:
+    """`sdd-control.py` `controls()` (008 data-model §5) without `adopt` and `confirm_closed`: this
+    dashboard has no take-over route, so its `controls` keep the 003 §12.3 keys."""
+    controls = sdd_control.controls(project)
+    return {key: controls[key] for key in ("stop", "resume", "hold", "release", "reason")}
 
 
 def run_state(project, now=None):
     """`GET /api/run/current`: current_run() plus `controls`, `by` (held) and `stopping`."""
     result = current_run(project, now)
     status = get_status(project)
-    result["controls"] = run_controls(status)
+    result["controls"] = run_controls(project)
     state = status.get("state") if isinstance(status, dict) else None
     if state == "held":
         result["by"] = "operator"
@@ -422,26 +399,11 @@ def open_job_view(project):
     return job_view(project, record) if record else None
 
 
-_CONTROL_LOCK = threading.Lock()
-
-
 def write_control(logs: Path, command: str, mode: str | None = None):
-    """The only writer in this file (data-model.md §4.8, §12.3): one request for the supervisor in
-    `<logs>/control.json`, written to `control.json.tmp` and moved into place, so the supervisor
-    never reads half a file. Returns the request id, or False when a request is already pending
-    (it is never overwritten before the supervisor consumes it)."""
-    with _CONTROL_LOCK:
-        target = logs / "control.json"
-        if target.exists():
-            return False
-        control = {"id": uuid.uuid4().hex, "command": command}
-        if command == "stop":
-            control["mode"] = mode or "after-task"
-        control["requested_at"] = int(time.time())
-        tmp = logs / "control.json.tmp"
-        tmp.write_text(json.dumps(control) + "\n", encoding="utf-8")
-        os.replace(tmp, target)
-        return control["id"]
+    """One request for the supervisor in `<logs>/control.json` (data-model.md §4.8, §12.3), written by
+    `sdd-control.py` `write_control()` under its lock (008 data-model §5). Returns the request id, or
+    False when a request is already pending."""
+    return sdd_control.write_control(logs, command, mode)
 
 
 TASK_ID_RE = re.compile(r"^T\d{3,}$")
@@ -855,21 +817,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if mode not in STOP_MODES:
                 self._send_json({"error": "unknown mode", "modes": list(STOP_MODES)}, 400, cors)
                 return
-        proj = DashboardHandler.project
-        status = get_status(proj)
-        controls = run_controls(status)
-        allowed = controls[command]
-        state = status.get("state") if isinstance(status, dict) else None
-        if command == "stop" and state == "stopping" and mode != "now":
-            allowed = False  # an after-task stop is already under way; only `now` is left
-        if not allowed:
-            self._send_json({"error": controls["reason"] or "not available now"}, 409, cors)
+        # The checks and the write are sdd-control.py's `request()`, as its command line makes them (§5).
+        result = sdd_control.request(DashboardHandler.project, command, mode)
+        if not result.get("ok"):
+            self._send_json({"error": result["error"]}, 409, cors)
             return
-        request_id = write_control(logs_dir(proj), command, mode)
-        if not request_id:
-            self._send_json({"error": "a request is already pending"}, 409, cors)
-            return
-        self._send_json({"ok": True, "id": request_id}, 202, cors)
+        self._send_json({"ok": True, "id": result["id"]}, 202, cors)
 
     def _answer(self):
         """`POST /api/decisions/answer` `{"task": "T062", "answer": "…"}` (FR-033), after the §4.9

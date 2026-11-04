@@ -470,9 +470,13 @@ class CurrentRunTest(unittest.TestCase):
 
     def current(self):
         """The response without `controls`, which is all-false here: status.json has no live pid
-        (the controls table itself is RunControlTest's)."""
+        (the controls table itself is RunControlTest's; the reasons for a run without a live
+        supervisor are tests/test_sdd_control.py's)."""
         data = request(self, "GET", "/api/run/current")
-        self.assertEqual(data.pop("controls"), NO_CONTROLS)
+        controls = data.pop("controls")
+        self.assertEqual(sorted(controls), ["hold", "reason", "release", "resume", "stop"])
+        self.assertEqual({k: v for k, v in controls.items() if k != "reason"},
+                         {k: v for k, v in NO_CONTROLS.items() if k != "reason"})
         return data
 
     def test_none_without_run_json(self):
@@ -1486,8 +1490,8 @@ class FeaturePickerTest(unittest.TestCase):
         self.assertEqual(got["shown"], [["001-a", "002-b"]])
 
 
-NO_CONTROLS = {"stop": False, "resume": False, "hold": False, "release": False,
-               "reason": dash.NO_SUPERVISOR}
+# No run and no supervisor: nothing is possible and there is no reason (008 data-model §5).
+NO_CONTROLS = {"stop": False, "resume": False, "hold": False, "release": False, "reason": None}
 
 
 class RunControlTest(unittest.TestCase):
@@ -1648,7 +1652,7 @@ class RunControlTest(unittest.TestCase):
     def test_409_without_supervisor_writes_nothing(self):
         for command in ("stop", "resume", "hold", "release"):
             data = request(self, "POST", f"/api/run/{command}", {}, status=409)
-            self.assertEqual(data, {"error": dash.NO_SUPERVISOR})
+            self.assertEqual(data, {"error": "not available now"})
         self.assertEqual(list(self.logs.iterdir()), [])
 
     def test_409_when_a_request_is_pending(self):
@@ -2354,21 +2358,22 @@ class JobBannerTest(unittest.TestCase):
              "reason": "will stay paused after the reset at " + hhmm},
              "job": self.job("working", "paused", resets_at=self.RESETS_AT, keep_paused=True)},
              "Paused until %s: usage limit; stays paused" % hhmm),
-            ("held", {**run, "state": "paused", "controls": {**none, "reason": dash.NO_SUPERVISOR}, "job": self.job("held")},
+            ("held", {**run, "state": "paused", "controls": {**none, "reason": dash.sdd_control.SUPERVISOR_STOPPED},
+                      "job": self.job("held")},
              "Held after the usage reset: Continue to resume"),
             ("waiting", {"state": "none", "run_id": None, "workflow_dir": None,
-                         "controls": {**none, "reason": dash.NO_SUPERVISOR}, "job": self.job("waiting")},
+                         "controls": none, "job": self.job("waiting")},
              "Waiting on you: 2 items"),
-            ("interrupted", {**run, "state": "stale", "controls": {**none, "reason": dash.NO_SUPERVISOR},
+            ("interrupted", {**run, "state": "stale", "controls": {**none, "reason": dash.sdd_control.SUPERVISOR_STOPPED},
                              "job": self.job("working", "interrupted")},
              "Stopped unexpectedly: Continue to resume"),
         ]
         for state in ("stopped", "done", "failed"):
             rows.append((state, {"state": "none", "run_id": None, "workflow_dir": None,
-                                 "controls": {**none, "reason": dash.NO_SUPERVISOR}, "job": self.job(state)},
+                                 "controls": none, "job": self.job(state)},
                          "Phase 11 %s: 3 tasks done; Merge to bring them into main, or Drop" % state))
         rows.append(("no job", {"state": "none", "run_id": None, "workflow_dir": None,
-                                "controls": {**none, "reason": dash.NO_SUPERVISOR}}, "No job running"))
+                                "controls": none}, "No job running"))
         return rows
 
     def render(self, runs):
