@@ -71,6 +71,12 @@ views and routes to the dashboard; once this feature lands they are built on the
   limit and continues after the reset by itself. If such a run goes stale, the person can still take it over after
   confirming the session is no longer running it.
 
+### Session 2026-11-04 (after the 005 Job test)
+- Q: Can the person add a picture to a manual task's note, or only text? → A: Pictures too, in the new UI only
+  (user). Most manual steps produce text, which stays the default, but a visual review (T047) is clearer with a
+  screenshot. The old dashboard gets no upload, since it is retired at T055; until then screenshots go to the chat.
+  The pictures are committed with the task's record, so the agent that reads the record sees them (FR-032).
+
 ## Terms
 
 - **Server**: the standalone program that serves the UI and its API, keeps the project list, and starts, watches and
@@ -440,6 +446,13 @@ you" lists items of two features.
 - **FR-031**: The person MUST be able to reorder the roadmap and set or clear a feature's manual state from the UI;
   the file is saved and committed with a plain message, under the same rules as 003 FR-035.
 
+**Manual notes with pictures**
+- **FR-032**: A manual task's note box MUST accept pictures pasted or dropped into it (PNG, JPEG or WebP, up to 5
+  per note, at most 10 MB each), with a preview the person can remove before pressing **I did it**. Settling the
+  task MUST save each picture in the feature's `evidence/` folder, link it from the saved note (under the task's
+  `Record:` heading when it has one, else in `manual-notes.md`), and commit the pictures in the same commit as the
+  tick. A refused settle MUST leave no picture behind.
+
 **How the server is started**
 - **FR-024**: The person MUST be able to start the server with one command, from any folder. The server does not
   start at login; the person starts it after a reboot.
@@ -456,6 +469,8 @@ you" lists items of two features.
 - **Attachment**: project, run id, the session being watched, state (watching, taken over, closed, waiting for
   confirmation).
 - **Version warning**: what disagrees (server, engine copy, a project's run), both versions, minor or major.
+- **Evidence picture**: the task it belongs to, its file `specs/<feature>/evidence/<task id>-<n>.<ext>`, and the
+  note that links it.
 
 ## Success Criteria *(mandatory)*
 

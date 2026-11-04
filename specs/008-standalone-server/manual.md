@@ -62,10 +62,15 @@ Comes after T046 (the new UI is built). It covers what tests cannot judge.
 1. In a terminal, start the server: `sdd-server` (or the command the README gives). Open the URL it prints.
 2. Open this repo, then one other project (for example `~/private/sdd-toy`), with **Load project**.
 3. Visit every view in the nav for each project: Roadmap, Overview, Tasks, Jobs, Documents, Decisions, Status.
-4. For each view, note anything that looks wrong: layout, colors, spacing, wording, something hard to find.
-5. Tell Claude what you found. It adds each finding as a task at the end of `tasks.md`. If you found nothing, say
+4. For each view, note anything that looks wrong: layout, colors, spacing, wording, something hard to find. Take a
+   screenshot of each problem.
+5. In this card's note box, write one line per finding ("Roadmap: the bar overlaps the title on a phone") and paste
+   the screenshots into the box (up to 5; the new UI accepts pictures, FR-032). If you found nothing, write
    "nothing to change".
-6. Press **I did it** on this card.
+6. Press **I did it**. Your note and pictures are saved under `## UI review` in `research.md`. Claude turns each
+   finding into a task at the end of `tasks.md`.
+
+Record: research.md ## UI review
 
 ## T048 Reinstall the plugin and check the engine copy
 

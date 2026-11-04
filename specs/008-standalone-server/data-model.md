@@ -622,3 +622,35 @@ except for `write_answer` and `try_apply`, which call `sdd-decide.py` as today; 
   - `waiting_all` across two features;
   - `roadmap-save` validation and the commit;
   - each of `activate`'s three refusals, and a successful write that leaves `git status` clean (the file is ignored).
+
+## 16. Pictures in manual notes (FR-032)
+
+- **Engine** (`bin/sdd-manual.py`): `done` takes `--image <path>` (repeatable, at most 5). Each file is checked by
+  its first bytes, not its name: PNG (`\x89PNG\r\n\x1a\n`), JPEG (`\xff\xd8\xff`) or WebP (`RIFF` and `WEBP` at offset
+  8), each at most 10 MB. Anything else is refused before any write: "only PNG, JPEG or WebP pictures, at most 10 MB
+  each". A picture makes the note optional, as long as there is a note or at least one picture.
+- **Names**: `specs/<feature>/evidence/<task id>-<n>.<ext>`, with `n` counting up from the highest number already
+  there for that task (`T047-1.png`, `T047-2.jpg`), and `ext` from the detected type (`png`, `jpg`, `webp`).
+- **Links**: the saved note (the `Record:` heading's entry, 005 manual steps, else the `manual-notes.md` line) ends
+  with one line per picture, `![<task id> picture <n>](evidence/<file>)`, relative to the feature folder. Links in
+  `manual-notes.md` go on lines after the note's line.
+- **Commit**: the pictures join the files of the settle's one commit (`chore(manual): <task id> done …`). On any
+  refusal or failure the pictures written so far are deleted, together with the rollback the helper already does.
+- **Route**: `POST /api/p/<id>/manual/done` also takes `"images": [{"type": "image/png", "data": "<base64>"}]`. The
+  server decodes each into a temp file under the server's own state folder, calls the engine with `--image`, and
+  deletes the temp files afterwards. The body limit for this route is 60 MB. Too many pictures, a bad type or too
+  large a size → 400 with the engine's refusal text. The route goes through the request checks and the version lock
+  (§10, §11).
+- **UI** (`components/NoteBox.tsx`, used by the manual-task card of `views/Waiting.tsx` and the Roadmap's Waiting on
+  you list): paste (`paste` event with image items) or drop onto the note box adds a thumbnail with a remove button.
+  More than 5, a bad type or too large a size shows the refusal text under the box and adds nothing. **I did it**
+  sends the note and the pictures; **Skip** sends only the note (pictures are for evidence, not reasons).
+- **Tests**:
+  - `tests/test_sdd_manual.py`: a PNG and a JPEG are saved with the next free numbers, linked under the `Record:`
+    heading and committed with the tick (`git status` clean); without a `Record:` line the links follow the
+    `manual-notes.md` line; a picture alone (empty note) is accepted; a text file named `.png`, a sixth picture and
+    an 11 MB picture are each refused with nothing written; a failing commit leaves no picture behind.
+  - `tests/test_server_routes.py`: the route with two base64 pictures commits them; a bad type → 400 with the
+    text; the temp files are gone afterwards.
+  - `tests/server_ui/test_note_pictures.py`: pasting a PNG shows a thumbnail; removing it leaves none; I did it with
+    one picture ticks the task and the recorded note links `evidence/<task id>-1.png`.
