@@ -19,11 +19,13 @@ already has uncommitted changes, when the project is not a git repository, when 
 
 After the commit it calls `sdd_job.after_settle(project)` (spec 005 FR-016, data-model §10): a `waiting`
 Job whose scope now has a runnable task continues by itself. Its result is the `"job"` key of the output.
-Stdlib only; no model.
+From the shell it prints `settle`'s result as one JSON object with `"contract"` (008 data-model §1), or
+`{"contract", "error"}` with exit code 1 (contracts/engine-cli.md). Stdlib only; no model.
 """
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -200,14 +202,9 @@ def main(argv: list[str]) -> int:
         result = settle(Path(args[1]), Path(args[2]), args[3], args[0], args[4] if len(args) == 5 else "",
                         commit="--no-commit" not in argv)
     except Refused as e:
-        print(f"refused: {e}")
+        print(json.dumps({"contract": sdd_job.sdd_tasks.CONTRACT, "error": str(e)}, ensure_ascii=False))
         return 1
-    print(f"{result['task']} {result['action']}" + (f" in {result['commit']}" if result["commit"] else ""))
-    job = result["job"]
-    if job["started"]:
-        print("the job continues: its next run started")
-    elif job["reason"] not in ("no open job", "nothing was committed"):
-        print(f"the job did not continue: {job['reason']}")
+    print(json.dumps({"contract": sdd_job.sdd_tasks.CONTRACT, **result}, ensure_ascii=False))
     return 0
 
 

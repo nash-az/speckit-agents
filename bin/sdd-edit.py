@@ -10,15 +10,21 @@ Used by the dashboard's Docs editor and usable from the shell:
 it), and moves a temp file into place so a crash never leaves half a file. `commit()` commits that one
 file with the message as given, whatever else is changed in the tree. Both refuse, and change nothing,
 while a run is active (`.sdd/run.json`): the run guard only covers agents, so this is the person's guard.
-Stdlib only; no model.
+From the shell it prints the result of `state()` or `commit()` as one JSON object with `"contract"`
+(008 data-model §1), or `{"contract", "error"}` with exit code 1 (contracts/engine-cli.md). Stdlib only; no model.
 """
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location("sdd_tasks", Path(__file__).resolve().with_name("sdd-tasks.py"))
+sdd_tasks = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_tasks)
 
 EDITABLE = ("spec", "constitution")
 MAX_CHARS = 500_000
@@ -138,14 +144,12 @@ def main(argv: list[str]) -> int:
     try:
         if argv[0] == "state":
             result = state(project, feature, name)
-            print(f"{result['path']}: {'uncommitted edits' if result['dirty'] else 'clean'}"
-                  + (f" ({result['locked']})" if result["locked"] else ""))
         else:
             result = commit(project, feature, name, argv[4])
-            print(f"committed {result['file']} in {result['commit']}")
     except Refused as e:
-        print(f"refused: {e}")
+        print(json.dumps({"contract": sdd_tasks.CONTRACT, "error": str(e)}, ensure_ascii=False))
         return 1
+    print(json.dumps({"contract": sdd_tasks.CONTRACT, **result}, ensure_ascii=False))
     return 0
 
 

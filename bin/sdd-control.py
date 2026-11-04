@@ -136,7 +136,7 @@ def write_control(logs: Path, command: str, mode: str | None = None, request_id:
             target = logs / "control.json"
             if target.exists():
                 return False
-            control = {"id": request_id or uuid.uuid4().hex, "command": command}
+            control = {"contract": CONTRACT, "id": request_id or uuid.uuid4().hex, "command": command}
             if command == "stop":
                 control["mode"] = mode or "after-task"
             control["requested_at"] = int(time.time())

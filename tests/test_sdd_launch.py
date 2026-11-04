@@ -299,8 +299,9 @@ class LaunchJobTest(unittest.TestCase):
         out = subprocess.run([sys.executable, script, str(self.root), str(self.feature), "--job", "--dry-run"],
                              capture_output=True, text=True)
         self.assertEqual(out.returncode, 1)
-        self.assertEqual(out.stdout.strip(),
-                         "refused: the working tree has changes; commit or stash them first: stray.txt")
+        self.assertEqual(json.loads(out.stdout),
+                         {"contract": "1.0",
+                          "error": "the working tree has changes; commit or stash them first: stray.txt"})
         out = subprocess.run([sys.executable, script, str(self.root), str(self.feature), "--tasks", "T001"],
                              capture_output=True, text=True)
         self.assertEqual(out.returncode, 2)
@@ -517,8 +518,8 @@ class ContinueJobTest(unittest.TestCase):
                  limits={"max_tasks": None, "until": None, "max_runs": 1})
         out = subprocess.run([sys.executable, script, str(self.root), str(self.feature), "--continue", self.job],
                              capture_output=True, text=True)
-        self.assertEqual((out.returncode, out.stdout.strip()),
-                         (1, "refused: the limit max_runs is still reached; give a new value"))
+        self.assertEqual((out.returncode, json.loads(out.stdout)),
+                         (1, {"contract": "1.0", "error": "the limit max_runs is still reached; give a new value"}))
         out = subprocess.run([sys.executable, script, str(self.root), str(self.feature), "--continue", self.job,
                               "--title", "x"], capture_output=True, text=True)
         self.assertEqual(out.returncode, 2)

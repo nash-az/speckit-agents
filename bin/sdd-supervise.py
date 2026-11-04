@@ -222,7 +222,10 @@ class Cycle:
 
     def run(self) -> str:
         """Run until the process ends. Returns 'finished', 'paused', 'limit' or 'operator'."""
-        env = dict(os.environ, **self.args.profile_config.get("env", {}), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="0")
+        # SDD_SUPERVISED=1: the run's `session` command records `started_by: supervisor`, and the engine
+        # install step skips itself (008 data-model §2, §3).
+        env = dict(os.environ, **self.args.profile_config.get("env", {}), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="0",
+                   SDD_SUPERVISED="1")
         proc = subprocess.Popen(self.command(), cwd=self.args.project, env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
         reader = threading.Thread(target=self.read_stream, args=(proc.stdout,), daemon=True)
@@ -349,12 +352,30 @@ def sleep_until(target: float) -> None:
 JOB_ID: str | None = None  # set by --job; every status.json then names the Job (005 data-model §6)
 
 
+def engine_version() -> str:
+    """The engine this supervisor runs from (008 data-model §6): `plugin_version` of the `VERSION.json` next
+    to its own `bin/` (an engine copy, §2), or `"repo"` when there is none (a checkout or the plugin)."""
+    try:
+        version = json.loads((Path(__file__).resolve().parent.parent / "VERSION.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "repo"
+    value = version.get("plugin_version") if isinstance(version, dict) else None
+    return value if isinstance(value, str) and value else "repo"
+
+
 def write_status(path: Path, **fields) -> None:
+    """Write `status.json` atomically (`status.json.tmp`, then `os.replace`), so a reader never sees half
+    a file, with `contract` (008 data-model §1) and `engine_version` (§6)."""
     if JOB_ID:
         fields.setdefault("job", JOB_ID)
+    fields["contract"] = sdd_tasks.CONTRACT
+    fields["engine_version"] = engine_version()
     fields["pid"] = os.getpid()  # the dashboard checks that the supervisor is alive (data-model §12.1)
     fields["updated"] = int(time.time())
-    path.write_text(json.dumps(fields, indent=2) + "\n", encoding="utf-8")
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(fields, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def run_scope(run_args: str) -> dict:

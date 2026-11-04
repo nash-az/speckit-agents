@@ -17,10 +17,13 @@ other change, when the project is not a git repository, or when the task is not 
 If the commit fails, the files are put back. After the commit succeeds, `sdd-job.py`'s `after_settle` may
 continue a waiting Job (spec 005 FR-016); its result is the `"job"` key of `apply`'s result (data-model §10).
 The commit lands on the checked-out branch, which is the open Job's `auto/<id>` (FR-008). Stdlib only; no model.
+From the shell it prints `apply`'s result as one JSON object with `"contract"` (008 data-model §1), or
+`{"contract", "error"}` with exit code 1 (contracts/engine-cli.md).
 """
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -157,11 +160,9 @@ def main(argv: list[str]) -> int:
     try:
         result = apply(Path(args[0]), Path(args[1]), args[2], args[3], commit="--no-commit" not in argv)
     except Refused as e:
-        print(f"refused: {e}")
+        print(json.dumps({"contract": sdd_job.sdd_tasks.CONTRACT, "error": str(e)}, ensure_ascii=False))
         return 1
-    print(f"applied {result['task']}" + (f" in {result['commit']}" if result["commit"] else ""))
-    job = result["job"]
-    print("job: continued" if job["started"] else f"job: not continued ({job['reason']})")
+    print(json.dumps({"contract": sdd_job.sdd_tasks.CONTRACT, **result}, ensure_ascii=False))
     return 0
 
 

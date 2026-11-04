@@ -50,7 +50,7 @@ class HarvestTest(unittest.TestCase):
         self.write_feedback([json.dumps(entry(1)), json.dumps(entry(2))])
         first = self.run_harvest()
         log = self.plugin / "logs" / f"{self.today}-toy-feedback.md"
-        self.assertEqual(first, {"harvested": 2, "skipped": 0, "log": str(log)})
+        self.assertEqual(first, {"contract": "1.0", "harvested": 2, "skipped": 0, "log": str(log)})
         text = log.read_text(encoding="utf-8")
         self.assertIn(f"## Harvested {self.today}", text)
         self.assertIn("- 2026-10-28 20261028-0925: Guard refused a scratch write 1 (evidence: event e1)", text)

@@ -14,7 +14,7 @@ Functions so far: `load`, `save`, `list_jobs`, `open_job`, `new_id`, `default_ti
     bin/sdd-job.py merge <id> [project]    -> {"merged": true, "commit": "<sha>", "fast_forward": bool}
     bin/sdd-job.py drop <id> [project]     -> {"dropped": true}
 
-A refusal prints `refused: <reason>` and exits 1. Stdlib only; no model.
+A refusal prints `{"contract": "1.0", "error": "<reason>"}` and exits 1 (contracts/engine-cli.md). Stdlib only; no model.
 """
 from __future__ import annotations
 
@@ -77,10 +77,12 @@ def load(project, job_id: str) -> dict | None:
 
 
 def save(project, record: dict) -> Path:
-    """Write the record atomically (`<id>.json.tmp`, then `os.replace`); every key is kept."""
+    """Write the record atomically (`<id>.json.tmp`, then `os.replace`); every key is kept, and
+    `contract` is set to this engine's (008 data-model §1)."""
     job_id = record.get("id")
     if not _valid_id(job_id):
         raise ValueError(f"not a job id: {job_id!r}")
+    record["contract"] = sdd_tasks.CONTRACT
     directory = jobs_dir(project)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{job_id}.json"
@@ -496,9 +498,9 @@ def main(argv: list[str]) -> int:
         else:
             result = drop(project, job_id)
     except Refused as e:
-        print(f"refused: {e}")
+        print(json.dumps({"contract": sdd_tasks.CONTRACT, "error": str(e)}, ensure_ascii=False))
         return 1
-    print(json.dumps(result, ensure_ascii=False))
+    print(json.dumps({"contract": sdd_tasks.CONTRACT, **result}, ensure_ascii=False))
     return 0
 
 

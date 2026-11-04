@@ -23,6 +23,9 @@ project is not a git repository, or when no task is runnable. Stdlib only; no mo
 
 `continue_job()` continues a `waiting`, `interrupted`, `held` or `stopped` Job on its branch (005 FR-009,
 data-model §3 and §8); a Job stopped by a limit needs a new value for it. Counts are never reset.
+
+Each command prints one JSON object with `"contract"` (008 data-model §1); a refusal prints
+`{"contract", "error"}` and exits 1 (contracts/engine-cli.md).
 """
 from __future__ import annotations
 
@@ -466,9 +469,9 @@ def main(argv: list[str]) -> int:
             result = launch(args.project, args.feature, phases, args.no_converge, limits.get("max_tasks"),
                             args.dry_run)
     except Refused as e:
-        print(f"refused: {e}")
+        print(json.dumps({"contract": sdd_tasks.CONTRACT, "error": str(e)}, ensure_ascii=False))
         return 1
-    print(json.dumps(result))
+    print(json.dumps({"contract": sdd_tasks.CONTRACT, **result}))
     return 0
 
 

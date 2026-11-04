@@ -1600,7 +1600,8 @@ class RunControlTest(unittest.TestCase):
         control = json.loads(self.control_file().read_text(encoding="utf-8"))
         self.assertEqual(data, {"ok": True, "id": control["id"]})
         self.assertRegex(control["id"], r"^[0-9a-f]{32}$")
-        expected = {"id": control["id"], "command": command, "requested_at": control["requested_at"]}
+        expected = {"contract": "1.0", "id": control["id"], "command": command,
+                    "requested_at": control["requested_at"]}
         if mode:
             expected["mode"] = mode
         self.assertEqual(control, expected)

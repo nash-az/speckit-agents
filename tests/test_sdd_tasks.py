@@ -530,16 +530,18 @@ class SnapshotTest(unittest.TestCase):
     def test_cli_snapshot_and_changed(self):
         out = subprocess.run([sys.executable, str(SCRIPT), "snapshot", str(self.tasks)],
                              capture_output=True, text=True, check=True)
-        self.assertEqual(json.loads(out.stdout), self.old)
+        snapshot = json.loads(out.stdout)
+        self.assertEqual(snapshot, {"contract": "1.0", **self.old})
         run_json = self.dir / "run.json"
-        run_json.write_text(json.dumps({"task_snapshot": self.old}), encoding="utf-8")
+        # The skill stores the whole output as task_snapshot; its `contract` key is not a task.
+        run_json.write_text(json.dumps({"task_snapshot": snapshot}), encoding="utf-8")
         self.tasks.write_text(self.BASE.replace("`b.py`", "`c.py`"), encoding="utf-8")
         cmd = [sys.executable, str(SCRIPT), "changed", str(self.tasks), "--run-json", str(run_json)]
         out = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        self.assertEqual(json.loads(out.stdout), {"changed": ["T002"]})
+        self.assertEqual(json.loads(out.stdout), {"contract": "1.0", "changed": ["T002"]})
         run_json.write_text(json.dumps({"run_id": "x"}), encoding="utf-8")
         out = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        self.assertEqual(json.loads(out.stdout), {"changed": []})
+        self.assertEqual(json.loads(out.stdout), {"contract": "1.0", "changed": []})
 
 
 class CheckpointTest(unittest.TestCase):
@@ -714,7 +716,7 @@ class RunEventsTest(unittest.TestCase):
         project = self.write_listing("20261027-1401", [WF_TEST])
         out = subprocess.run([sys.executable, str(SCRIPT), "events", str(project), "20261027-1401"],
                              capture_output=True, text=True, check=True)
-        self.assertEqual(json.loads(out.stdout), sdd.run_events(project, "20261027-1401"))
+        self.assertEqual(json.loads(out.stdout), {"contract": "1.0", **sdd.run_events(project, "20261027-1401")})
 
 
 if __name__ == "__main__":

@@ -457,29 +457,31 @@ class MergeDropTest(unittest.TestCase):
         self.assertEqual((one["id"], one["runs"], one["shown"]["state"]), (JOB_ID, [], "done"))
 
         missing = self.cli("show", "20261031-0000", str(self.root))
-        self.assertEqual((missing.returncode, missing.stdout.strip()), (1, "refused: no such job: 20261031-0000"))
+        self.assertEqual((missing.returncode, json.loads(missing.stdout)),
+                         (1, {"contract": "1.0", "error": "no such job: 20261031-0000"}))
 
         (self.root / "b.txt").write_text("edited\n")
         dirty = self.cli("merge", JOB_ID, str(self.root))
         self.assertEqual(dirty.returncode, 1)
-        self.assertEqual(dirty.stdout.strip(),
-                         "refused: the working tree has changes; commit or stash them first: b.txt")
+        self.assertEqual(json.loads(dirty.stdout),
+                         {"contract": "1.0",
+                          "error": "the working tree has changes; commit or stash them first: b.txt"})
         self.git("checkout", "--", "b.txt")
 
         merged = self.cli("merge", JOB_ID, str(self.root))
         self.assertEqual(merged.returncode, 0, merged.stdout + merged.stderr)
         self.assertEqual(json.loads(merged.stdout),
-                         {"merged": True, "commit": self.job_commit, "fast_forward": True})
+                         {"contract": "1.0", "merged": True, "commit": self.job_commit, "fast_forward": True})
 
         again = self.cli("drop", JOB_ID, str(self.root))
-        self.assertEqual((again.returncode, again.stdout.strip()),
-                         (1, "refused: this job cannot be dropped in state merged"))
+        self.assertEqual((again.returncode, json.loads(again.stdout)),
+                         (1, {"contract": "1.0", "error": "this job cannot be dropped in state merged"}))
         self.assertEqual(self.cli().returncode, 2)
 
     def test_cli_drop(self):
         dropped = self.cli("drop", JOB_ID, str(self.root))
         self.assertEqual(dropped.returncode, 0, dropped.stdout + dropped.stderr)
-        self.assertEqual(json.loads(dropped.stdout), {"dropped": True})
+        self.assertEqual(json.loads(dropped.stdout), {"contract": "1.0", "dropped": True})
         self.assertEqual(self.branch(), "main")
 
 

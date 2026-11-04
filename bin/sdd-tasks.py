@@ -953,6 +953,7 @@ def main(argv: list[str]) -> int:
     else:
         result = load_config(args.config)
         result["errors"] = config_errors(result)
+    result = {"contract": CONTRACT, **result}  # data-model §1: every engine command's top-level object
     json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
     return code

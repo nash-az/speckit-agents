@@ -17,10 +17,13 @@ entry is rewritten in place; the other entries stay as they are. Each commits ju
 It refuses, and changes nothing, when a run is active (`.sdd/run.json`), when a file it would touch already
 has uncommitted changes, when the project is not a git repository, when the task has no open entry, or when
 the answer or reason is empty. If the commit fails the files are put back. Stdlib only; no model.
+From the shell it prints `settle`'s result as one JSON object with `"contract"` (008 data-model §1), or
+`{"contract", "error"}` with exit code 1 (contracts/engine-cli.md).
 """
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -188,11 +191,9 @@ def main(argv: list[str]) -> int:
         result = settle(Path(args[1]), Path(args[2]), args[3], args[0], args[4] if len(args) == 5 else "",
                         commit="--no-commit" not in argv)
     except Refused as e:
-        print(f"refused: {e}")
+        print(json.dumps({"contract": sdd_job.sdd_tasks.CONTRACT, "error": str(e)}, ensure_ascii=False))
         return 1
-    print(f"{result['task']} {result['action']}" + (f" in {result['commit']}" if result["commit"] else ""))
-    job = result["job"]
-    print("job: continued" if job["started"] else f"job: not started ({job['reason']})")
+    print(json.dumps({"contract": sdd_job.sdd_tasks.CONTRACT, **result}, ensure_ascii=False))
     return 0
 
 

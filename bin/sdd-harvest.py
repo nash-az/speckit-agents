@@ -17,8 +17,8 @@ Usage:
   (the directory above `bin/`); entries with those ids are skipped.
 - New entries are appended as `- <date> <run_id>: <text> (evidence: <evidence>)` under a
   `## Harvested <today>` heading in the log (default `logs/<YYYY-MM-DD>-<project dir name>-feedback.md`).
-- Prints `{"harvested": n, "skipped": m, "log": "<path>"}`; `skipped` counts bad lines and
-  already-harvested entries.
+- Prints `{"contract": "1.0", "harvested": n, "skipped": m, "log": "<path>"}`; `skipped` counts bad
+  lines and already-harvested entries.
 """
 
 from __future__ import annotations
@@ -30,6 +30,9 @@ import sys
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
+# 008 data-model §1. This script runs on its own (it may be copied without sdd-tasks.py), so it keeps
+# its own copy; tests/test_contract_field.py fails when it differs from sdd-tasks.py's CONTRACT.
+CONTRACT = "1.0"
 
 
 def load_ids(path: Path) -> list[str]:
@@ -121,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"not a directory: {project}", file=sys.stderr)
         return 2
     result = harvest(project, Path(args.log) if args.log else None)
-    print(json.dumps(result))
+    print(json.dumps({"contract": CONTRACT, **result}))
     return 0
 
 

@@ -262,6 +262,26 @@ class SuperviseTest(unittest.TestCase):
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "http://localhost:4000")
         self.assertEqual(env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"], "0")
 
+    def test_claude_runs_with_sdd_supervised(self):
+        """008 T008: the `claude -p` the supervisor starts has SDD_SUPERVISED=1 (data-model §3)."""
+        from unittest import mock
+        # The checks may themselves run under a supervisor: start this one without the variable.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("SDD_SUPERVISED", None)
+            out, calls, _ = self.supervise([[{"transcript": True}, *DONE]])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(json.loads((self.dir / "env0.json").read_text())["SDD_SUPERVISED"], "1")
+
+    def test_status_has_contract_and_engine_version(self):
+        """008 T008: status.json carries `contract` (§1) and `engine_version` (§6; "repo" in a checkout),
+        and is moved into place, so no `status.json.tmp` is left."""
+        out, _, _ = self.supervise([[{"transcript": True}, *DONE]])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        status_file = next((self.dir / "state").rglob("status.json"))
+        status = json.loads(status_file.read_text())
+        self.assertEqual((status["contract"], status["engine_version"]), ("1.0", "repo"))
+        self.assertFalse(status_file.with_name("status.json.tmp").exists())
+
     def test_without_a_profile_no_model_is_passed(self):
         out, calls, _ = self.supervise([[{"transcript": True}, *DONE]])
         self.assertEqual(out.returncode, 0, out.stdout)
