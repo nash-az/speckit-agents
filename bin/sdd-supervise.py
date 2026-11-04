@@ -65,13 +65,8 @@ def say(message: str) -> None:
     print(f"{time.strftime('%H:%M:%S')} supervise: {message}", flush=True)
 
 
-def state_dir(project: Path) -> Path:
-    """Logs live outside the project, so a run's clean-tree check never sees them."""
-    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    slug = re.sub(r"[^A-Za-z0-9]+", "-", str(project.resolve())).strip("-")
-    path = base / "speckit-agents" / slug
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+# Logs live outside the project; the helper lives in sdd-tasks.py (008 data-model §3).
+state_dir = sdd_tasks.state_dir
 
 
 class Usage:

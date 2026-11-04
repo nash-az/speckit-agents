@@ -2503,12 +2503,16 @@ class ReadOnlyTest(unittest.TestCase):
             hits = [n for n, line in enumerate(lines, 1) if re.search(pattern, line)]
             self.assertTrue(hits, pattern)
             self.assertEqual([n for n in hits if n not in writer], [], pattern)
-        # The only signal is the liveness probe `os.kill(pid, 0)` in supervisor_alive() (§12.3).
-        alive = self.function_lines(source, "supervisor_alive")
-        kills = [(n, line.strip()) for n, line in enumerate(lines, 1) if re.search(r"os\.kill", line)]
+        # The dashboard sends no signal; its liveness probe is sdd-tasks.py's supervisor_alive()
+        # (008 data-model §3), whose only signal is `os.kill(pid, 0)` (§12.3).
+        self.assertEqual([n for n, line in enumerate(lines, 1) if re.search(r"os\.kill", line)], [])
+        self.assertIs(dash.supervisor_alive, dash.sdd_tasks.supervisor_alive)
+        engine = (HERE.parent / "bin" / "sdd-tasks.py").read_text(encoding="utf-8")
+        probes = [*self.function_lines(engine, "supervisor_alive"), *self.function_lines(engine, "session_alive")]
+        kills = [(n, line.strip()) for n, line in enumerate(engine.splitlines(), 1) if re.search(r"os\.kill", line)]
         self.assertTrue(kills)
         for n, line in kills:
-            self.assertIn(n, alive, line)
+            self.assertIn(n, probes, line)
             self.assertEqual(line, "os.kill(pid, 0)")
 
     def test_write_control_leaves_the_project_unchanged(self):

@@ -11,6 +11,7 @@
   sdd-tasks.py snapshot <tasks.md>
   sdd-tasks.py changed  <tasks.md> --run-json .sdd/run.json
   sdd-tasks.py events   <project dir> <run id>
+  sdd-tasks.py session  --run-json .sdd/run.json
 
 Every command prints JSON on stdout. Only the standard library is used.
 """
@@ -18,8 +19,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -46,6 +50,117 @@ def contract_compare(theirs: str | None) -> str:
     if their_minor != ours_minor:
         return "minor"
     return "same"
+
+
+# --- Shared run state (008 data-model §3) -----------------------------------------------------
+# The supervisor, the dashboard and the server read the same files through these helpers.
+
+
+def state_dir(project: Path) -> Path:
+    """Logs live outside the project, so a run's clean-tree check never sees them."""
+    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", str(Path(project).resolve())).strip("-")
+    path = base / "speckit-agents" / slug
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_status(project):
+    """The supervisor's `status.json` for the project, or None."""
+    try:
+        status_file = state_dir(project) / "status.json"
+    except OSError:  # the state directory cannot be created (e.g. a sandbox): no supervisor
+        return None
+    try:
+        return json.loads(status_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def supervisor_alive(status) -> bool:
+    """True when `status.json` names a live process (003 data-model.md §12.3). Signal 0 only checks
+    that the process exists; no other signal is ever sent. `PermissionError` counts as alive."""
+    pid = status.get("pid") if isinstance(status, dict) else None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def process_started(pid: int) -> int | None:
+    """The start time of process `pid` in epoch seconds, from `ps -o lstart=`, or None."""
+    env = dict(os.environ, LC_ALL="C")
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
+                             text=True, env=env, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    try:
+        return int(time.mktime(time.strptime(out.stdout.strip(), "%a %b %d %H:%M:%S %Y")))
+    except (ValueError, OverflowError):
+        return None
+
+
+def session_alive(run) -> bool | None:
+    """Whether the session named in run.json's `session` still runs: None when there is none,
+    False when its pid is gone or now belongs to a process started at another time."""
+    session = run.get("session") if isinstance(run, dict) else None
+    if not isinstance(session, dict):
+        return None
+    pid, started = session.get("pid"), session.get("started")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    now_started = process_started(pid)
+    if isinstance(started, (int, float)) and not isinstance(started, bool) \
+            and now_started is not None and abs(now_started - started) > 1:
+        return False
+    return True
+
+
+def record_session(run_json: Path) -> tuple[dict, int]:
+    """The `session` command: merge `contract`, `started_by` and `session` into run.json."""
+    try:
+        run = json.loads(run_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"contract": CONTRACT, "error": f"cannot read {run_json}: {exc}"}, 1
+    if not isinstance(run, dict):
+        return {"contract": CONTRACT, "error": f"{run_json} is not a JSON object"}, 1
+    started_by = "supervisor" if os.environ.get("SDD_SUPERVISED") == "1" else "session"
+    session = None
+    error = None
+    raw_pid = os.environ.get("CLAUDE_PID", "").strip()
+    if raw_pid:
+        pid = int(raw_pid) if raw_pid.isdigit() else 0
+        started = process_started(pid) if pid > 0 else None
+        if started is None:
+            error = f"cannot read the start time of CLAUDE_PID {raw_pid!r}"
+        else:
+            session = {"pid": pid, "started": started}
+    run.update({"contract": CONTRACT, "started_by": started_by, "session": session})
+    tmp = run_json.with_name(run_json.name + ".tmp")
+    tmp.write_text(json.dumps(run, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, run_json)
+    result = {"contract": CONTRACT, "session": session, "started_by": started_by}
+    if error:
+        result["error"] = error
+    return result, 0
 
 
 TASK_RE = re.compile(r"^- \[(?P<mark>[ xX])\] (?P<id>T\d+[a-z]?)\b\s*(?P<rest>.*)$")
@@ -739,7 +854,11 @@ def main(argv: list[str]) -> int:
     p_events.add_argument("project", type=Path)
     p_events.add_argument("run_id")
 
+    p_session = sub.add_parser("session")
+    p_session.add_argument("--run-json", type=Path, required=True)
+
     args = parser.parse_args(argv)
+    code = 0
     if args.cmd == "parse":
         result = parse_tasks(args.tasks)
         result["blocked"] = parse_blocked(args.blocked)
@@ -761,12 +880,14 @@ def main(argv: list[str]) -> int:
         result = {"changed": changed(parse_tasks(args.tasks), run.get("task_snapshot") or {})}
     elif args.cmd == "events":
         result = run_events(args.project, args.run_id)
+    elif args.cmd == "session":
+        result, code = record_session(args.run_json)
     else:
         result = load_config(args.config)
         result["errors"] = config_errors(result)
     json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
-    return 0
+    return code
 
 
 if __name__ == "__main__":

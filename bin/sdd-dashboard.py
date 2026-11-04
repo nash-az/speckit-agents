@@ -91,17 +91,12 @@ sdd_edit = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_
 _spec = importlib.util.spec_from_file_location("sdd_job", Path(__file__).with_name("sdd-job.py"))
 sdd_job = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_job)
 
-# The supervisor's state directory comes from the supervisor itself, so both use the same one
-# (data-model.md §12.3).
-_spec = importlib.util.spec_from_file_location("sdd_supervise", Path(__file__).with_name("sdd-supervise.py"))
-sdd_supervise = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_supervise)
-
 DEFAULT_PORT = 8765
 
 
 def logs_dir(project: Path) -> Path:
     """The supervisor's state directory for the project (outside the project)."""
-    return sdd_supervise.state_dir(project)
+    return sdd_tasks.state_dir(project)
 
 
 def read_text(path):
@@ -361,29 +356,9 @@ def get_report(project, run_id):
     return read_text(report_file)
 
 
-def get_status(project):
-    try:
-        status_file = logs_dir(project) / "status.json"
-    except OSError:  # the state directory cannot be created (e.g. a sandbox): no supervisor
-        return None
-    return read_json(status_file)
-
-
-def supervisor_alive(status) -> bool:
-    """True when `status.json` names a live process (data-model.md §12.3). Signal 0 only checks
-    that the process exists; no other signal is ever sent. `PermissionError` counts as alive."""
-    pid = status.get("pid") if isinstance(status, dict) else None
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+# The supervisor's status and its liveness probe live in sdd-tasks.py (008 data-model §3).
+get_status = sdd_tasks.get_status
+supervisor_alive = sdd_tasks.supervisor_alive
 
 
 NO_SUPERVISOR = "no supervisor is running; start one with `python3 bin/sdd-supervise.py`"
