@@ -32,3 +32,7 @@
 
 ## 20261102-1150 (2026-11-02)
 - The fake `claude` (`tests/fake/claude`) writes a `run.json` with only `run_id`, so a hand-run Continue on a held Job is refused unless `branch` and `job` are added as a real `/sdd-run` writes them.
+
+## 20261104-1710 (2026-11-04)
+- The verifier holds every engine command to `specs/008-standalone-server/contracts/engine-cli.md`: refusals as well as successes must print one JSON object with `contract` (refusal: `{"contract", "error"}`, exit 1). Plain-text `refused: …` lines get a task rejected (T008, attempt 1). Update the tests that assert old output rather than keeping the old output.
+- `snapshot` output now carries a top-level `contract` key next to the task ids, so `task_snapshot` in `run.json` has one key that is not a task. `changed` ignores it.
