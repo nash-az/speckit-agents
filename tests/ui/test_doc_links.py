@@ -40,6 +40,8 @@ MANUAL = """# Manual steps
 1. Open a terminal.
 2. Run `make check` and see `research.md` for the record.
 
+Record: research.md ## Validation
+
 ## T0010 Not this one
 
 1. Wrong section.
@@ -133,10 +135,21 @@ class DocLinksTest(harness.UITestCase):
             self.assertEqual(steps.count(), 2)
             self.assertIn("Open a terminal.", steps.nth(0).inner_text())
             self.assertNotIn("Wrong section", card.inner_text())
-            self.assertEqual(card.locator(".manual-steps a.doc-ref", has_text="research.md").count(), 1)
+            self.assertEqual(card.locator(".manual-steps-fold a.doc-ref", has_text="research.md").count(), 1)
 
     def test_a_manual_task_without_steps_says_how_to_add_them(self):
         with harness.browser_page(self.dashboard.url + "#tasks", name=self.id()) as ui:
             note = ui.page.locator("#waiting-list .blocked-item", has_text="T003").locator(".manual-steps-none")
             note.wait_for(state="visible", timeout=TIMEOUT_MS)
             self.assertIn("## T003", note.inner_text())
+
+
+    def test_a_record_line_says_where_the_note_goes(self):
+        with harness.browser_page(self.dashboard.url + "#tasks", name=self.id()) as ui:
+            card = ui.page.locator("#waiting-list .blocked-item", has_text="T001")
+            record = card.locator(".manual-record")
+            record.wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertIn("## Validation", record.inner_text())
+            self.assertIn("research.md", record.inner_text())
+            self.assertNotIn("Record:", card.locator(".manual-steps-fold").inner_text())
+            self.assertIn("## Validation in research.md", card.locator("textarea.manual-note").get_attribute("placeholder"))

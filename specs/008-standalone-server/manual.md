@@ -1,7 +1,8 @@
 # Manual steps: Standalone server (008)
 
 Step-by-step instructions for the `[manual]` tasks in `tasks.md`. The dashboard shows each section on its task's card
-under "Waiting on you". When a step says "record", you can also paste the output to Claude and ask it to record it.
+under "Waiting on you". A section with a `Record:` line saves what you write in the card's note box under that heading,
+when you press **I did it**, in the same commit as the tick.
 
 ## T001 Prove that a headless run can name its session (research R2)
 
@@ -26,9 +27,11 @@ process. The server needs that to tell whether a run's session is still alive. T
    - `CLAUDECODE=1` and `CLAUDE_PID=<number>` → both are set.
    - `PS=` followed by a command containing `claude -p` → `CLAUDE_PID` is the `claude -p` process.
    - `none set` → neither is set. That matters too. Record it.
-4. Record the printed lines under `## R2 evidence (headless)` in `specs/008-standalone-server/research.md`, or paste
-   them to Claude and ask it to record them.
-5. Press **I did it** on this card (after the research note is committed, and not while a run is going).
+4. Copy the printed lines into this card's note box.
+5. Press **I did it** (not while a run is going). It saves the lines under `## R2 evidence (headless)` in
+   `research.md` and ticks the task, in one commit.
+
+Record: research.md ## R2 evidence (headless)
 
 ## T002 Prove that the plugin can be updated and installed without a terminal (research R11)
 
@@ -46,9 +49,11 @@ speckit-agents plugin at user scope. That is harmless, and open sessions keep th
 
 3. Look at what it printed. Each command prints some output, then an `exit code:` line. `0` means it worked. Anything
    else, or a prompt that waited for you to type, means it failed or needs a terminal.
-4. Record both outputs and exit codes under `## R11 evidence` in `specs/008-standalone-server/research.md`, with one
-   line: "they need a terminal" or "they do not need a terminal". Or paste it all to Claude to record.
-5. Press **I did it** on this card.
+4. Copy everything the block printed into this card's note box. Add one line at the end: "they need a terminal" or
+   "they do not need a terminal".
+5. Press **I did it**. It saves your note under `## R11 evidence` in `research.md` and ticks the task.
+
+Record: research.md ## R11 evidence
 
 ## T047 Look at the new UI yourself
 
@@ -73,7 +78,10 @@ Comes after T010 (the plugin refreshes its engine copy at session start).
 4. Run `cat ~/.local/share/speckit-agents/engine/current/VERSION.json`. It should name version `0.8.0`.
 5. Run `claude -p "hi"` once. Then run step 4 again and see whether the file's time changed (the hook fired).
    Expected: it fires, unless `SDD_SUPERVISED=1` is set.
-6. Record what you saw in `research.md` under R3, or paste it to Claude. Then press **I did it**.
+6. Write what you saw in this card's note box: the version in step 4, and whether the file's time changed in step 5.
+   Press **I did it**. It saves your note under `## R3 evidence (hook)` in `research.md`.
+
+Record: research.md ## R3 evidence (hook)
 
 ## T050 Point specs 004 and 006 at the new server
 
@@ -91,7 +99,10 @@ Comes after T051.
 
 1. Follow quickstart.md §5 step by step, in a toy project, with a real `claude` session.
 2. For each of its three steps, note whether you saw the expected result.
-3. Tell Claude what you saw, to record under `## Validation` in `research.md`. Then press **I did it**.
+3. Write that in this card's note box, one line per step, and press **I did it**. It saves the note under
+   `## Validation` in `research.md`.
+
+Record: research.md ## Validation
 
 ## T053 Install the plugin from the server (quickstart §9 item 3)
 
@@ -100,7 +111,10 @@ Comes after T051. It uses a test `HOME`, so your real setup does not change.
 1. Follow quickstart.md §9 item 3.
 2. Check that `claude plugin list --json` (with the same test `HOME`) shows the plugin, and that Install and Update are
    greyed out with a reason while a toy run is going.
-3. Tell Claude what you saw, to record under `## Validation` in `research.md`. Then press **I did it**.
+3. Write what you saw in this card's note box and press **I did it**. It saves the note under `## Validation` in
+   `research.md`.
+
+Record: research.md ## Validation
 
 ## T054 Decide that the new UI replaces the old one
 

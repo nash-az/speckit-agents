@@ -20,6 +20,8 @@ Merge brings its work into `main`.
 6. When the Job is **done** (the Jobs view says so), open it in the Jobs view and press **Merge**. Expected: its
    commits land on `main` and the Job shows as merged. If Merge reports a conflict, take a screenshot and stop.
 7. Back here, in this card's note box, write what you saw: "banner never showed a run id; Merge worked", or what went
-   wrong. Then press **I did it**. It ticks T022 and saves your note in `manual-notes.md`. Ask Claude to copy the note
-   under `## Validation` in `specs/005-jobs/research.md`.
+   wrong. Then press **I did it**. It ticks T022 and saves your note under `## Validation` in `research.md`, in one
+   commit.
    - **I did it** refuses while a run is going. Wait until the Job has finished.
+
+Record: research.md ## Validation

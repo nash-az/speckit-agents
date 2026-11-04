@@ -7,7 +7,9 @@ Used by the dashboard's "I did it" and "Skip" buttons and usable from the shell:
     bin/sdd-manual.py skip <project dir> <feature dir> <task id> "<reason>"
 
 `done` ticks the task in `<feature>/tasks.md`; a note is added as a line to `<feature>/manual-notes.md`
-(created when missing). `skip` appends a `status: wontfix` entry with the reason to
+(created when missing). When the task's section in `<feature>/manual.md` (the heading that starts with its id)
+has a line `Record: <file>.md ## <heading>`, the note is required and is also written, verbatim, under that
+heading of that file in the feature folder (the heading is added at the end when missing), in the same commit. `skip` appends a `status: wontfix` entry with the reason to
 `<feature>/BLOCKED.md`, so the task stays open in `tasks.md` but no run waits on it. Either one commits
 just the files it touched as `chore(manual): <task id> ...`.
 
@@ -32,6 +34,8 @@ _spec = importlib.util.spec_from_file_location("sdd_job", Path(__file__).with_na
 sdd_job = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(sdd_job)
 
 TASK_LINE = r"^- \[ \] {id}\b(?P<rest>.*)$"
+RECORD_LINE = re.compile(r"^Record:\s*`?(?P<file>[\w.-]+\.md)`?\s+`?(?P<heading>#{2,4} [^`]+?)`?\s*$", re.M)
+NOT_RECORDABLE = {"tasks.md", "BLOCKED.md", "spec.md", "manual.md", "manual-notes.md"}
 
 
 class Refused(Exception):
@@ -47,6 +51,51 @@ def _git(project: Path, *args: str) -> str:
 
 def _one_line(text: str) -> str:
     return " ".join(text.split())
+
+
+def manual_section(text: str, task_id: str) -> str | None:
+    """The section of manual.md whose heading starts with the task id, down to the next heading of the same
+    or a higher level (the dashboard's `manualSection`), or None."""
+    lines, start, level = text.splitlines(), None, 0
+    for i, line in enumerate(lines):
+        h = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if not h:
+            continue
+        if start is not None and len(h.group(1)) <= level:
+            return "\n".join(lines[start:i])
+        if start is None and (h.group(2) + " ").startswith(task_id + " "):
+            start, level = i, len(h.group(1))
+    return "\n".join(lines[start:]) if start is not None else None
+
+
+def record_target(feature: Path, task_id: str) -> tuple[Path, str] | None:
+    """`(file, heading)` from the task's `Record: <file>.md ## <heading>` line in manual.md, or None.
+    The file is a plain name in the feature folder, never tasks.md, BLOCKED.md, spec.md or the manual files."""
+    try:
+        section = manual_section((Path(feature) / "manual.md").read_text(encoding="utf-8"), task_id)
+    except OSError:
+        return None
+    m = RECORD_LINE.search(section or "")
+    if not m or m.group("file") in NOT_RECORDABLE:
+        return None
+    return Path(feature) / m.group("file"), m.group("heading").strip()
+
+
+def record_note(text: str, heading: str, task_id: str, today: str, note: str) -> str:
+    """text with the note under `heading`: at the end of that section, or a new section at the end."""
+    body = note.strip("\n")
+    entry = (f"From {task_id} ({today}), written in the dashboard:\n\n"
+             + (f"```\n{body}\n```\n" if "\n" in body else f"> {body}\n"))
+    lines = text.splitlines()
+    level = len(heading.split(" ", 1)[0])
+    at = next((i for i, l in enumerate(lines) if l.strip() == heading), None)
+    if at is None:
+        return text.rstrip("\n") + f"\n\n{heading}\n\n{entry}"
+    end = next((j for j in range(at + 1, len(lines))
+                if re.match(r"^(#{1,6})\s", lines[j]) and len(re.match(r"^(#+)", lines[j]).group(1)) <= level), len(lines))
+    head = "\n".join(lines[:end]).rstrip("\n")
+    tail = "\n".join(lines[end:])
+    return head + "\n\n" + entry + ("\n" + tail + ("\n" if text.endswith("\n") else "") if tail else "")
 
 
 def settle(project: Path, feature: Path, task_id: str, action: str, note: str = "", commit: bool = True) -> dict:
@@ -75,8 +124,13 @@ def settle(project: Path, feature: Path, task_id: str, action: str, note: str = 
     if not m or not re.search(r"\[[^\]]*\bmanual\b[^\]]*\]", m.group("rest"), re.I):
         raise Refused(f"{task_id} is not an open manual task")
 
+    record = record_target(feature, task_id) if action == "done" else None
+    if record and not note:
+        raise Refused(f"write what you found: it is saved under {record[1]} in {record[0].name}")
     targets = {"done": [tasks_path, feature / "manual-notes.md"] if note else [tasks_path],
                "skip": [feature / "BLOCKED.md"]}[action]
+    if record:
+        targets.append(record[0])
     if commit:
         rel = [str(p.relative_to(project)) for p in targets]
         dirty = _git(project, "status", "--porcelain", "--", *rel).rstrip("\n")  # keep the first line's leading space
@@ -100,6 +154,10 @@ def settle(project: Path, feature: Path, task_id: str, action: str, note: str = 
                 notes = feature / "manual-notes.md"
                 old = notes.read_text(encoding="utf-8") if notes.exists() else "# Notes from manual tasks\n"
                 write(notes, old.rstrip("\n") + f"\n- {task_id} ({today}): {_one_line(note)}\n")
+            if record:
+                path, heading = record
+                old = path.read_text(encoding="utf-8") if path.exists() else ""
+                write(path, record_note(old, heading, task_id, today, note))
             subject = f"chore(manual): {task_id} done" + (f" - {_one_line(note)[:50]}" if note else "")
         else:
             blocked = feature / "BLOCKED.md"

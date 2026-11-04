@@ -1615,6 +1615,7 @@ def build_html():
   .manual-steps-fold > summary { cursor: pointer; font-weight: 600; }
   .manual-steps-fold .markdown ol { padding-left: 1.5rem; }
   .manual-steps-fold .markdown li { margin: 0.25rem 0; }
+  .manual-record { margin: 0.5rem 0; font-size: 0.875rem; }
   .manual-steps-none { margin: 0.5rem 0; font-size: 0.8125rem; color: var(--text-muted, #8b93a1); }
   .markdown h3 { font-size: 1rem; color: var(--text-muted); }
   .markdown p { margin: 0.5rem 0; }
@@ -2362,9 +2363,21 @@ def build_html():
               '</code> section to the feature&#39;s <code>manual.md</code>.</div>';
             return;
           }
-          box.innerHTML = '<details class="manual-steps-fold" open><summary>Steps</summary><div class="markdown"></div></details>';
-          renderDoc(box.querySelector('.markdown'), section.replace(/^#{1,6}[^\\n]*\\n?/, ''), 'markdown');
+          // "Record: research.md ## Validation": the note is saved there by I did it (sdd-manual.py).
+          var rec = /^Record:\\s*`?([\\w.-]+\\.md)`?\\s+`?(#{2,4} [^`\\n]+?)`?\\s*$/m.exec(section);
+          var steps = section.replace(/^#{1,6}[^\\n]*\\n?/, '').replace(/^Record:.*$/m, '');
+          box.innerHTML = '<details class="manual-steps-fold" open><summary>Steps</summary><div class="markdown"></div></details>' +
+            (rec ? '<div class="manual-record">Your note below is saved under <code>' + escapeHtml(rec[2]) + '</code> in ' +
+              docRefHtml(rec[1].replace(/\\.md$/, ''), null, null, '<code>' + escapeHtml(rec[1]) + '</code>') +
+              ' when you press <b>I did it</b>, in the same commit as the tick.</div>' : '');
+          if (rec && !DOC_TITLES[rec[1].replace(/\\.md$/, '')]) box.querySelector('.manual-record a').outerHTML = '<code>' + escapeHtml(rec[1]) + '</code>';
+          renderDoc(box.querySelector('.markdown'), steps, 'markdown');
           linkDocRefsIn(box);
+          var input = document.getElementById('manual-note-' + id);
+          if (rec && input) {
+            input.placeholder = 'Paste what you found or the printed output. It is saved under ' + rec[2] + ' in ' + rec[1] + '.';
+            input.rows = 5;
+          }
         });
       });
     }

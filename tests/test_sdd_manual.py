@@ -55,6 +55,52 @@ class SettleTest(unittest.TestCase):
         self.assertIn("colours look off on mobile", notes)
         self.assertEqual(git(self.root, "status", "--porcelain").strip(), "")
 
+    def write_manual(self, record_line):
+        (self.feature / "manual.md").write_text(
+            "# Manual steps\n\n## T001 Look at the dashboard\n\n1. Look.\n\n" + record_line + "\n\n"
+            "## T002 Record audio\n\n1. Record.\n", encoding="utf-8")
+        (self.feature / "research.md").write_text(
+            "# Research\n\n## R1. First\n\nText.\n\n## Validation\n\nEarlier.\n\n## R9. Last\n\nEnd.\n", encoding="utf-8")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-q", "-m", "manual")
+
+    def test_a_record_line_saves_the_note_under_that_heading_in_the_same_commit(self):
+        self.write_manual("Record: `research.md` `## Validation`")
+        result = manual.settle(self.root, self.feature, "T001", "done", "line one\nline two")
+        self.assertEqual(sorted(result["files"]), ["specs/001-a/manual-notes.md", "specs/001-a/research.md",
+                                                   "specs/001-a/tasks.md"])
+        text = (self.feature / "research.md").read_text()
+        validation = text.split("## Validation", 1)[1].split("## R9. Last", 1)[0]
+        self.assertIn("Earlier.", validation)
+        self.assertIn("From T001 (", validation)
+        self.assertIn("```\nline one\nline two\n```", validation)  # verbatim, pasted output keeps its lines
+        self.assertTrue(text.rstrip().endswith("End."))
+        self.assertEqual(git(self.root, "status", "--porcelain").strip(), "")
+        self.assertEqual(len(git(self.root, "log", "--format=%h").split()), 3)  # init, manual, one settle commit
+
+    def test_a_missing_heading_is_added_at_the_end(self):
+        self.write_manual("Record: research.md ## R2 evidence (headless)")
+        manual.settle(self.root, self.feature, "T001", "done", "CLAUDE_PID=1")
+        text = (self.feature / "research.md").read_text()
+        self.assertTrue(text.rstrip().endswith("## R2 evidence (headless)\n\nFrom T001 (%s), written in the dashboard:\n\n"
+                                               "> CLAUDE_PID=1" % text.split("From T001 (")[1][:10]))
+
+    def test_a_record_line_needs_a_note(self):
+        self.write_manual("Record: research.md ## Validation")
+        with self.assertRaises(manual.Refused) as caught:
+            manual.settle(self.root, self.feature, "T001", "done")
+        self.assertEqual(str(caught.exception), "write what you found: it is saved under ## Validation in research.md")
+        self.assertIn("- [ ] T001", (self.feature / "tasks.md").read_text())
+
+    def test_record_lines_cannot_name_protected_files_or_another_tasks_section(self):
+        for line in ("Record: spec.md ## Notes", "Record: tasks.md ## Notes", "Record: ../x.md ## Notes"):
+            with self.subTest(line=line):
+                self.write_manual(line)
+                self.assertIsNone(manual.record_target(self.feature, "T001"))
+        self.write_manual("Record: research.md ## Validation")
+        self.assertIsNone(manual.record_target(self.feature, "T002"))
+        self.assertEqual(manual.record_target(self.feature, "T001"), (self.feature / "research.md", "## Validation"))
+
     def test_skip_adds_a_wontfix_entry_and_leaves_the_task_open(self):
         with self.assertRaises(manual.Refused):
             manual.settle(self.root, self.feature, "T002", "skip", "  ")
