@@ -171,3 +171,18 @@ PS=claude -p /env --permission-mode dontAsk --allowedTools Skill,Bash(env),Bash(
   Claude sessions, not to the server.
 - **Alternatives**: running `claude -p "/sdd-init"` from the server: a model in the setup path for no gain, and the
   write to `.claude/settings.json` would be refused headless anyway.
+
+## R11 evidence
+
+From T002 (2026-11-04), written in the dashboard:
+
+```
+claude plugin install speckit-agents@speckit-agents --scope user --json < /dev/null; echo "install exit code: $?"
+Checking for updates for plugin "speckit-agents@speckit-agents"…
+✔ Plugin "speckit-agents" updated from 0.1.0 to 0.8.0 for scope user. Restart to apply changes.
+update exit code: 0
+{"command":"install","outcome":"ok","plugin":"speckit-agents@speckit-agents","pluginId":"speckit-agents@speckit-agents","scope":"user","message":"Plugin \"speckit-agents@speckit-agents\" is already installed (scope: user) — it loads in place from /Users/nashwan.abouzidan/private/speckit-agents, so edits there take effect at the next session start or /reload-plugins","installedVersion":"0.8.0","availableVersion":"0.8.0"}
+install exit code: 0
+
+How would they not need a terminal if you ask me to open a terminal?
+```
