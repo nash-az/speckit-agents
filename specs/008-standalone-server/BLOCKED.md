@@ -10,3 +10,10 @@ Set `status: wontfix` to drop the task, or `status: moved` if it became work out
 - reason: skipped on 2026-11-04: the instructions are not clear, they should be detailed step-by-step
 - question:
 - answer:
+
+## T001
+- status: wontfix
+- tag: manual
+- reason: skipped on 2026-11-04: The instruction are not clear, they should be a detailed step-by-step
+- question:
+- answer:
