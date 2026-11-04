@@ -21,6 +21,24 @@ def tasks_by_id(parsed):
     return {t["id"]: t for p in parsed["phases"] for t in p["tasks"]}
 
 
+class ContractTest(unittest.TestCase):
+    """008 data-model §1: the engine's contract version and how another version compares."""
+
+    def test_contract_is_one_zero(self):
+        self.assertEqual(sdd.CONTRACT, "1.0")
+
+    def test_missing_or_malformed_counts_as_zero(self):
+        for value in (None, "", "x"):
+            self.assertEqual(sdd.contract_compare(value), "major", value)
+            self.assertEqual(sdd.contract_compare(value), sdd.contract_compare("0.0"), value)
+
+    def test_same_minor_major(self):
+        self.assertEqual(sdd.contract_compare("1.0"), "same")
+        self.assertEqual(sdd.contract_compare("1.3"), "minor")
+        self.assertEqual(sdd.contract_compare("2.0"), "major")
+        self.assertEqual(sdd.contract_compare("0.9"), "major")
+
+
 class ParseTest(unittest.TestCase):
     def setUp(self):
         self.parsed = sdd.parse_tasks(TASKS)

@@ -26,7 +26,7 @@
 
 ## Phase 2: Foundational engine (blocks every story)
 
-- [ ] T004 Implement §1's `CONTRACT` and `contract_compare` in `bin/sdd-tasks.py`, with §1's tests in `tests/test_sdd_tasks.py`.
+- [x] T004 Implement §1's `CONTRACT` and `contract_compare` in `bin/sdd-tasks.py`, with §1's tests in `tests/test_sdd_tasks.py`.
 - [ ] T005 After T004, move `state_dir`, `get_status` and `supervisor_alive` into `bin/sdd-tasks.py` and add `session_alive` and the `session` command per §3 (`bin/sdd-supervise.py` and `bin/sdd-dashboard.py` import the moved functions), with §3's tests in `tests/test_run_state.py`.
 - [ ] T006 After T005, implement §4 in `bin/sdd-tasks.py`: `current_state()` and the `state` command, then make `current_run()` in `bin/sdd-dashboard.py` return `current_state()` without the new keys, with §4's tests in `tests/test_run_state.py`; every test in `tests/test_sdd_dashboard.py` keeps passing.
 - [ ] T007 After T006, create `bin/sdd-control.py` per §5 (moving `write_control` and `run_controls` from `bin/sdd-dashboard.py`, whose `run_state` stays and calls the new module, and `read_control`, `send_control` from `bin/sdd-supervise.py`, adding the `flock`, the new rows and the CLI), update the old callers to import it, delete the old reason text and the dashboard tests that asserted it, with §5's tests in `tests/test_sdd_control.py`.

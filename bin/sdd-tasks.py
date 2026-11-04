@@ -23,6 +23,31 @@ import sys
 import tomllib
 from pathlib import Path
 
+# Version of the files and JSON output the engine shares with the server (008 data-model §1).
+# A different first number is a major change, a different second number a minor one.
+CONTRACT = "1.0"
+CONTRACT_RE = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)$")
+
+
+def _contract_parts(value) -> tuple[int, int]:
+    """(major, minor) of a contract string; None or a malformed value counts as 0.0."""
+    match = CONTRACT_RE.match(value) if isinstance(value, str) else None
+    if not match:
+        return (0, 0)
+    return (int(match["major"]), int(match["minor"]))
+
+
+def contract_compare(theirs: str | None) -> str:
+    """Compare another contract version with ours: "same", "minor" or "major"."""
+    ours_major, ours_minor = _contract_parts(CONTRACT)
+    their_major, their_minor = _contract_parts(theirs)
+    if their_major != ours_major:
+        return "major"
+    if their_minor != ours_minor:
+        return "minor"
+    return "same"
+
+
 TASK_RE = re.compile(r"^- \[(?P<mark>[ xX])\] (?P<id>T\d+[a-z]?)\b\s*(?P<rest>.*)$")
 PHASE_RE = re.compile(r"^## Phase (?P<num>[0-9]+[a-z]?)\s*[:\-–—]\s*(?P<title>.*)$")
 H2_RE = re.compile(r"^## ")
