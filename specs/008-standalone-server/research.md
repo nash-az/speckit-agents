@@ -35,6 +35,22 @@ unless marked as coming from the docs.
 - **Open, proven by a task (T001)**: that `CLAUDE_PID` is set, and is the `claude -p` process, in headless runs too.
   If it is not, headless runs record `session: null`, which is harmless (they are supervised and never adopted).
 
+## R2 evidence (headless)
+
+T001, run by the user on 2026-11-04 from their own terminal (Claude Code 2.1.318), in a temp git repo with a
+one-step `env` skill, after unsetting any inherited `CLAUDECODE`, `CLAUDE_PID` and `CLAUDE_CODE_SESSION_ID`:
+
+```
+CLAUDECODE=1
+CLAUDE_CODE_SESSION_ID=6c39f239-83ae-4685-8299-abfdf8609d4b
+CLAUDE_PID=91683
+PS=claude -p /env --permission-mode dontAsk --allowedTools Skill,Bash(env),Bash(ps:*)
+```
+
+- `CLAUDECODE` and `CLAUDE_PID` are set in headless runs too, and `CLAUDE_PID` is the `claude -p` process itself
+  (`ps -o command= -p $CLAUDE_PID` names it). `CLAUDE_CODE_SESSION_ID` is set as well.
+- So R2's decision holds for headless runs: they record a real `session`, not `session: null`.
+
 ## R3. The engine copy is refreshed by the plugin at session start
 
 - **Docs (via the claude-code-guide agent)**: The plugin's hooks module (a "mod") can register `session.start`. It
