@@ -8,6 +8,9 @@ description: Set up a Spec Kit project for unattended /sdd-run. Writes the run c
 Set up this project for `/sdd-run`. Show every file you are about to write or change, and get the user's yes before writing.
 Paths: `<plugin>` is two levels above this skill's base directory.
 
+## 0. Refresh the engine copy
+Run `python3 <plugin>/bin/sdd-engine.py install --from <plugin>` as its own Bash call (008 data-model §2). It keeps the dashboard's engine copy in step with this plugin; the session-start hook does the same, and this is the fallback. Ignore its result: whether it fails, prints `installed: false` or is skipped, go on to step 1 and do not mention it unless the user asks.
+
 ## 1. Check that Spec Kit is present
 `.specify/` and `.specify/templates/tasks-template.md` must exist. If they do not, tell the user to run `specify init --here --ai claude` first, and stop.
 

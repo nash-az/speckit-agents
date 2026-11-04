@@ -64,5 +64,70 @@ class SddRunJobArgsTest(unittest.TestCase):
         self.assertIn("beside `feature`", section)
 
 
+ENGINE_INSTALL = "`python3 <plugin>/bin/sdd-engine.py install --from <plugin>`"
+
+
+def section(text, start, end):
+    i = text.index(start)
+    return text[i:text.index(end, i)]
+
+
+class EngineStepZeroTest(unittest.TestCase):
+    """Step 0 of `/sdd-run` and `/sdd-init` refreshes the engine copy (008 data-model §2)."""
+
+    def check_step_zero(self, rel):
+        text = read(rel)
+        step = section(text, "## 0. ", "## 1. ")
+        self.assertIn(ENGINE_INSTALL, step)
+        self.assertIn("Ignore its result", step)
+        self.assertLess(text.index("## 0. "), text.index("## 1. "))
+
+    def test_sdd_run_step_zero(self):
+        self.check_step_zero("skills/sdd-run/SKILL.md")
+
+    def test_sdd_init_step_zero(self):
+        self.check_step_zero("skills/sdd-init/SKILL.md")
+
+
+class SddRunSessionTest(unittest.TestCase):
+    """`/sdd-run` step 6 records the session and the Workflow task (008 data-model §3)."""
+
+    def setUp(self):
+        self.text = read("skills/sdd-run/SKILL.md")
+        self.step6 = section(self.text, "## 6. Start", "## 7. ")
+
+    def test_session_command_right_after_run_json(self):
+        write = section(self.step6, "2. Write `.sdd/run.json`", "3. Call **Workflow**")
+        command = "`python3 <helper> session --run-json .sdd/run.json`"
+        self.assertIn(command, write)
+        self.assertIn("as its own Bash call", write[write.index(command):])
+        self.assertIn("Right after writing it", write)
+
+    def test_workflow_task_beside_workflow_dir(self):
+        call = section(self.step6, "3. Call **Workflow**", "4. Tell the user")
+        self.assertIn("`workflow_dir`", call)
+        self.assertIn('"workflow_task": "<the task id the Workflow tool returned>"', call)
+        self.assertIn("beside `workflow_dir`", call)
+
+
+class SddStatusStateTest(unittest.TestCase):
+    """`/sdd-status` step 4 reads the run state from the engine (008 data-model §4, §11)."""
+
+    def setUp(self):
+        text = read("skills/sdd-status/SKILL.md")
+        self.step4 = section(text, "4. Give the run state", "5. Give the latest")
+
+    def test_calls_state_command(self):
+        self.assertIn("`python3 <helper> state --project .`", self.step4)
+        self.assertIn("as its own Bash call", self.step4)
+
+    def test_reports_state_and_origin(self):
+        self.assertIn("report `state` and `origin`", self.step4)
+
+    def test_contract_mismatch_line(self):
+        self.assertIn("read `contract` from `.sdd/run.json`", self.step4)
+        self.assertIn("When it is not the same as the `contract` in the `state` output, add one line", self.step4)
+
+
 if __name__ == "__main__":
     unittest.main()

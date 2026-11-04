@@ -16,6 +16,9 @@ Paths: this skill's base directory is `<plugin>/skills/sdd-run`, so `<plugin>` i
 
 Arguments (`$ARGUMENTS`): `--phases a,b` runs exactly those phase ids and skips step 2. `--tasks a,b` keeps only those task ids: pass it to the plan step (step 3) like `--phases` (with both, both apply), and it skips step 2. `--job <id>` says the run belongs to that Job (data-model §5 of `specs/005-jobs/`): step 6 writes `"job": "<id>"` into `.sdd/run.json` and into `.sdd/runs/<run id>/workflows.json`. `--no-converge` skips step 2. `--max-tasks N` caps how many tasks it attempts. `--profile NAME` names the `[profiles.NAME]` table of `.sdd/config.toml` the run was launched with (step 1 checks it; the report records it). `--yes` skips the confirmation.
 
+## 0. Refresh the engine copy
+Run `python3 <plugin>/bin/sdd-engine.py install --from <plugin>` as its own Bash call (008 data-model §2). It keeps the dashboard's engine copy in step with this plugin; the session-start hook does the same, and this is the fallback. Ignore its result: whether it fails, prints `installed: false` or is skipped in a supervised run, go on to step 1 and do not mention it unless the user asks.
+
 ## 1. Preflight. Stop and tell the user at the first failure.
 1. `.sdd/config.toml` exists. If it does not, say to run `/sdd-init` first.
    Load the config: `python3 <helper> config`. If its `errors` list is not empty, stop: print each entry on its own line and say to fix `.sdd/config.toml`, then start `/sdd-run` again (data-model §3.8).
@@ -82,6 +85,7 @@ Remind the user that permission prompts stop an unattended run, and that a headl
    If step 2 changed `tasks.md`, commit it on the new branch as `chore(sdd): converge and tag tasks`, with the commit trailer.
 2. Write `.sdd/run.json` with the keys `run_id`, `branch`, `protected_branches` and `protected_paths`, all taken from the config, `phases`: the list of phase ids you planned, and `task_snapshot`: the JSON output of `python3 <helper> snapshot <tasks>`, taken after any converge-and-tag commit (data-model §3.6, §11). A later resume compares the tasks against it.
    With `--job <id>`, also write the key `"job": "<id>"` (005 data-model §5); without it, leave the key out.
+   Right after writing it, run `python3 <helper> session --run-json .sdd/run.json` as its own Bash call, exactly as written (008 data-model §3). It adds `contract`, `started_by` and `session` to `run.json` and keeps every other key, so the dashboard can tell this session's run from a supervised one. If its output has `error` or `session: null`, go on: the run works without it.
    From here on, the plugin's guard refuses pushes, branch switches, history rewrites, commits on protected branches and edits to protected paths, for every subagent.
 3. Call **Workflow** with `name: "speckit-agents:sdd-run"` and these `args`. Pass them as a JSON object, never as a string, and never pass this skill's own arguments (`--yes`, …) as `args`:
    ```json
@@ -95,6 +99,7 @@ Remind the user that permission prompts stop an unattended run, and that a headl
    ```
    `taskAllow` gives per-task permission overrides (for example a `[dep:ok]` task may add a dependency even when `[allow] dependencies = false`). Build it from the tasks' tags: a task tagged `[dep:ok]` gets `{ dependencies: true }`, one tagged `[download:ok]` gets `{ downloads: true }`.
    The Workflow result names the run's `Transcript dir`. Add it to `.sdd/run.json` as `workflow_dir` right away: if the run is cut off, the next `/sdd-run` reads its journal there and resumes instead of starting the tasks over.
+   In the same write, add `"workflow_task": "<the task id the Workflow tool returned>"` beside `workflow_dir` (008 data-model §3), and keep every other key of `run.json`, including what the `session` command wrote.
    At the same moment, record the directory in `.sdd/runs/<run id>/workflows.json`, `{"workflow_dirs": ["<absolute transcript dir>", …], "feature": "<the feature folder name, e.g. 004-feedback-chat>"}`, oldest first: create the file (and its directory) if it is missing, and when resuming, append the new directory to its list. With `--job <id>`, add `"job": "<id>"` beside `feature` (005 data-model §5); without it, leave the key out. `python3 <helper> events . <run id>` reads the run's events from these directories.
 4. Tell the user in one line that the run started, on which branch, and that `/workflows` shows progress. Then end your turn. The workflow notifies you when it finishes.
 
