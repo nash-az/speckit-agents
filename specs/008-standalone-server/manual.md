@@ -132,20 +132,20 @@ Comes after T047 and T060.
 
 What it proves: a local Ollama model can work inside `claude -p` with Claude Code's prompt and tools: it writes a file
 and runs a command. Your Claude login is not used: the command points Claude Code at Ollama with a dummy token. Takes
-a few minutes, mostly while the model loads.
+about 5–10 minutes, mostly while the 30 GB model loads and reads Claude Code's prompt.
 
 1. Open your own terminal app (Terminal or iTerm), **not** Claude Code.
-2. Paste this whole block and press Enter. It makes a copy of `qwen3:30b-a3b` with a 64k context (Claude Code's
+2. Paste this whole block and press Enter. It makes a copy of `qwen3.6:27b-q8_0` with a 64k context (Claude Code's
    prompt is about 20k tokens, and Ollama's default context would cut it), makes a throwaway git repo, and gives the
    model one small task:
 
    ```sh
    repo=$(mktemp -d "${TMPDIR:-/tmp}/r13-proof.XXXXXX") && cd "$repo" && git init -q
-   printf 'FROM qwen3:30b-a3b\nPARAMETER num_ctx 65536\n' > Modelfile && ollama create qwen3-30b-64k -f Modelfile
+   printf 'FROM qwen3.6:27b-q8_0\nPARAMETER num_ctx 65536\n' > Modelfile && ollama create qwen3.6-27b-64k -f Modelfile
    start=$(date +%s)
    env -u CLAUDECODE ANTHROPIC_BASE_URL=http://127.0.0.1:11434 ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY= \
      claude -p "Create hello.py that prints exactly: hello from local. Then run it with python3 and show the output." \
-     --model qwen3-30b-64k --permission-mode acceptEdits --allowedTools "Write,Bash(python3:*)" --output-format json \
+     --model qwen3.6-27b-64k --permission-mode acceptEdits --allowedTools "Write,Bash(python3:*)" --output-format json \
      > out.json 2> err.txt; echo "claude exit code: $?"; echo "seconds: $(( $(date +%s) - start ))"
    python3 -c 'import json; d=json.load(open("out.json")); print("is_error:", d.get("is_error")); print("turns:", d.get("num_turns")); print("result:", str(d.get("result"))[:400])' || head -c 1500 out.json err.txt
    echo "hello.py: $(python3 hello.py 2>&1)"
@@ -171,7 +171,7 @@ It uses your Claude account for the verifier, so it uses a little of your usage.
 2. Paste this line and press Enter:
 
    ```sh
-   sh ~/private/speckit-agents/scripts/r13-proof.sh ollama:qwen3-30b-64k
+   sh ~/private/speckit-agents/scripts/r13-proof.sh ollama:qwen3.6-27b-64k
    ```
 
    It builds a one-task toy project in a temp folder, starts a Job there and waits for it to finish. Leave the

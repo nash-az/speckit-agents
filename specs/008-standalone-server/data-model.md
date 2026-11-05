@@ -673,7 +673,10 @@ except for `write_answer` and `try_apply`, which call `sdd-decide.py` as today; 
   with Ollama's `GET /api/tags` and `POST /api/show` at `OLLAMA_HOST` (default `http://127.0.0.1:11434`):
   - Ollama not answering → refused with `"Ollama is not running at <host>"`;
   - model not listed → refused with `"<model> is not in Ollama"`;
-  - `tools` not in its capabilities → refused with `"<model> cannot use tools"`.
+  - `tools` not in its capabilities → refused with `"<model> cannot use tools"`;
+  - its size (`size` in `/api/tags`) above the GPU memory limit → refused with `"<model> needs <n> GB; this machine
+    gives the GPU <m> GB"`. On macOS the limit is `iogpu.wired_limit_mb` when it is above 0, else 75% of
+    `hw.memsize`. Elsewhere there is no size check; Ollama's own error is shown.
   A refused check leaves the Job `waiting`, with the reason.
 - **Router** (`bin/sdd-router.py`, standard library only): started by the supervisor for a run with a local
   implementer, on 127.0.0.1 with a port the OS picks, and stopped with the run. The run's `claude -p` gets
@@ -690,7 +693,7 @@ except for `write_answer` and `try_apply`, which call `sdd-decide.py` as today; 
   - The `Host` header must be `127.0.0.1:<port>` (else 421). The router logs one line per request (time, route
     `local`/`anthropic`, model, status) to `state_dir/router.log`, never bodies or headers.
 - **Server**: `GET …/models` gives `{"default": {"implementer", "verifier"}, "aliases": ["opus", "sonnet", "haiku"],
-  "local": [{"name", "tools", "context"}] | null, "local_reason": str | null}`. `local` lists Ollama's models,
+  "local": [{"name", "tools", "context", "size_gb", "fits"}] | null, "local_reason": str | null}`. `local` lists Ollama's models,
   prefixed `ollama:`. When Ollama does not answer, `local` is `null` and `local_reason` says why.
   Each default is the `[agents]` value, or `null` for "the run's model". `POST …/jobs/start` and
   `…/jobs/<id>/continue` accept `"models"?: {"implementer"?, "verifier"?}` (a string, or `null` for the default) and
@@ -699,7 +702,8 @@ except for `write_answer` and `try_apply`, which call `sdd-decide.py` as today; 
   options "Project default (<name>)", `opus`, `sonnet`, `haiku` and "Other…", which shows a text field. The Continue
   dialog shows the same two selects, set to the Job's current choice, with the note "Applies from the next run". The
   Job card shows "Implementer: <name> · Verifier: <name>", where a default shows as "<name> (project)". The
-  Implementer select has a **Local (Ollama)** group: models without tool use are disabled, with "no tool use"; when
+  Implementer select has a **Local (Ollama)** group: models without tool use are disabled, with "no tool use", and
+  models over the limit with "too large for this machine"; when
   `local` is null, the group has one disabled line with `local_reason`.
 - **Tests**:
   - `tests/test_sdd_launch.py`: `--implementer-model sonnet` stores it. `--continue … --verifier-model default`
@@ -713,7 +717,8 @@ except for `write_answer` and `try_apply`, which call `sdd-decide.py` as today; 
     chunks with its headers; a prompt over `num_ctx` gives the 400 text; a bad `Host` gives 421; the log has no
     header values.
   - `tests/test_supervise.py`: a Job with a local implementer starts the router and passes `ANTHROPIC_BASE_URL`;
-    Ollama down, a missing model and a model without tools each refuse the run with the texts above.
+    Ollama down, a missing model, a model without tools and a model over the memory limit each refuse the run with
+    the texts above.
   - `tests/server_ui/test_job_models.py`: choosing `sonnet` and "Other…" `claude-opus-5-5` starts a Job whose card
     shows both; Continue with the project default shows "(project)".
 

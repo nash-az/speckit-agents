@@ -483,12 +483,12 @@ you" lists items of two features.
   MUST show it ("Implementer: sonnet · Verifier: opus"), and the run report MUST list each role's model and whether
   it came from the Job or the project. The same choice MUST be possible from the command line.
 - **FR-035**: The implementer model MAY be a local Ollama model, named `ollama:<model>`. The implementer select MUST
-  list the local models in their own group. A model without tool use MUST be shown but not choosable, with the note
-  "no tool use". When Ollama is not running, the group MUST say so. The verifier select MUST NOT offer local models.
+  list the local models in their own group. A model without tool use, or too large for the machine's GPU memory, MUST be shown
+  but not choosable, with the note "no tool use" or "too large for this machine". When Ollama is not running, the group MUST say so. The verifier select MUST NOT offer local models.
   A run with a local implementer MUST send only that model's requests to Ollama, without the person's credentials;
   every other request (the run's session, the verifier, the commit step) MUST stay on the person's Claude account.
-  The run MUST be refused before it starts, with a reason, when Ollama is not running, the model is gone, or the
-  model lacks tool use. A request larger than the model's context MUST fail with a clear error, never be cut
+  The run MUST be refused before it starts, with a reason, when Ollama is not running, the model is gone, the
+  model lacks tool use, or it is too large for the machine. A request larger than the model's context MUST fail with a clear error, never be cut
   silently. Local models are best effort; Anthropic does not support them.
 
 **How the server is started**

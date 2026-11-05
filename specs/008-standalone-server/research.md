@@ -192,6 +192,18 @@ PS=claude -p /env --permission-mode dontAsk --allowedTools Skill,Bash(env),Bash(
   - On this machine, Ollama 0.34.2 answers `POST /v1/messages` in the Anthropic format. `qwen3:30b-a3b` returned a
     correct `tool_use` block for a `Read` tool. `ollama show` lists `tools` for `qwen3:30b-a3b`,
     `nemotron-3-super` and `qwen3:0.6b`, and not for `deepseek-coder-v2:236b`, `gemma3:27b` or `starcoder:3b`.
+  - Tool use is not enough: the model must also fit. This Mac (M2 Max, 64 GB) lets the GPU use about 75% of memory
+    (`iogpu.wired_limit_mb` is 0, the default). `nemotron-3-super` (86 GB) and `deepseek-coder-v2:236b` (132 GB)
+    would be paged from disk, far too slow for an agent. The person removed the DeepSeek model.
+  - Choice for the proofs (2026-11-05, the person asked for the best result over speed): `qwen3.6:27b-q8_0`
+    (30 GB, tools and thinking). It reports 77.2% on SWE-bench Verified, against about 60% for Nemotron 3 Super
+    (OpenHands) and 70.6% for `qwen3-coder-next` (52 GB). These are vendor and third-party numbers from different
+    harnesses, so they rank the models rather than measure them. Q8 is used over the default Q4 for quality; bf16
+    (56 GB) would leave no room for context.
+  - `qwen3.6:27b-q8_0` on this Mac (2026-11-05): given `Read`, `Edit` and `Bash` and asked to fix a failing test, it
+    answered `stop_reason: tool_use` with two correct `Read` calls (the test file, then the source), in 39 s including
+    the first load. Ollama loaded it 100% on the GPU at 46 GB with its default 256K context. That is close to the
+    ~48 GB limit, so the proofs use a 64k-context copy (`num_ctx 65536`), which needs less memory.
 - **Decision**: a model router, `bin/sdd-router.py` (data-model §17), run by the supervisor for a Job whose
   implementer is local. It listens on 127.0.0.1 only. The run's `claude -p` gets `ANTHROPIC_BASE_URL` pointing at
   it. A request whose `model` starts with `ollama:` goes to Ollama, with the prefix and every credential header
