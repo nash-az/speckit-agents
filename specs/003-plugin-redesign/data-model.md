@@ -325,10 +325,11 @@ Start `/sdd-run` to resume or clean it up." `/sdd-status` applies the same rules
 `GET /api/runs/<id>/tasks/<task_id>/log` (validate both ids; task id `^T\d+[a-z]?$`):
 1. `workflow_dir` from `.sdd/run.json` when its `run_id` equals `<id>`; otherwise →
    `{"available": false, "reason": "run is not active"}`.
-2. The task's agent: the newest event for the task in `run_events()` (§3.9) whose `workflow` is the
-   last directory. Its `agent_id` names the transcript (the journal maps labels to agent ids,
-   research.md D7). No such event → not available.
-3. The file is `<workflow_dir>/agent-<agent_id>.jsonl`.
+2. The task's agent: the newest `started` journal entry whose label (any kind: impl, eval, verify,
+   commit, repair) names the task, searching the run's workflow directories (§3.9) newest first, so a
+   run resumed in a new session still shows the running agent. Its `agentId` names the transcript
+   (research.md D7). No such entry → not available.
+3. The file is `<that directory>/agent-<agent_id>.jsonl`.
 4. Return `{"available": true, "label": ..., "lines": [last 200 readable lines, each truncated to 2000 chars]}`.
    A transcript record becomes text: `text` blocks as written, `tool_use` as `> Tool: description|command|path`,
    `tool_result` as `< output` (`< error: ...` when it failed); request, attachment and empty-thinking records

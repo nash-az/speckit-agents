@@ -172,6 +172,57 @@ PS=claude -p /env --permission-mode dontAsk --allowedTools Skill,Bash(env),Bash(
 - **Alternatives**: running `claude -p "/sdd-init"` from the server: a model in the setup path for no gain, and the
   write to `.claude/settings.json` would be refused headless anyway.
 
+## R13. A local implementer model through a model router (user, 2026-11-05)
+
+- **Need**: the implementer of a Job may be a local Ollama model, while the verifier and the run's own session stay
+  on Claude under the person's subscription (FR-034).
+- **Evidence**:
+  - Claude Code docs, fetched 2026-11-05. `ANTHROPIC_BASE_URL` applies to the whole session; there is no per-agent or
+    per-model address (code.claude.com/docs/en/model-config.md, sub-agents.md). A run's agents are one session, so
+    pointing the run at Ollama would move the verifier there too, and would send the subscription login to Ollama.
+  - With `ANTHROPIC_BASE_URL` set to a gateway that forwards to Anthropic, a saved claude.ai login stays the
+    credential and its usage limits apply. The gateway must forward the OAuth `anthropic-beta` value
+    (llm-gateway.md "Subscriptions and gateways", llm-gateway-protocol.md "Request headers"). Claude Code posts to
+    `/v1/messages?beta=true`.
+  - Anthropic does not support non-Claude models through a gateway (llm-gateway.md). This is best effort, as in
+    003 data-model §9. An unknown model id is treated as a current Claude model: a 200K context is assumed and
+    `thinking: {"type": "adaptive"}` is sent (llm-gateway-protocol.md).
+  - The Agent tool's per-call `model` takes aliases only (sub-agents.md). The docs do not say whether the
+    Workflow `agent()` `model` option is the same parameter.
+  - On this machine, Ollama 0.34.2 answers `POST /v1/messages` in the Anthropic format. `qwen3:30b-a3b` returned a
+    correct `tool_use` block for a `Read` tool. `ollama show` lists `tools` for `qwen3:30b-a3b`,
+    `nemotron-3-super` and `qwen3:0.6b`, and not for `deepseek-coder-v2:236b`, `gemma3:27b` or `starcoder:3b`.
+  - Tool use is not enough: the model must also fit. This Mac (M2 Max, 64 GB) lets the GPU use about 75% of memory
+    (`iogpu.wired_limit_mb` is 0, the default). `nemotron-3-super` (86 GB) and `deepseek-coder-v2:236b` (132 GB)
+    would be paged from disk, far too slow for an agent. The person removed the DeepSeek model.
+  - Choice for the proofs (2026-11-05, the person asked for the best result over speed): `qwen3.6:27b-q8_0`
+    (30 GB, tools and thinking). It reports 77.2% on SWE-bench Verified, against about 60% for Nemotron 3 Super
+    (OpenHands) and 70.6% for `qwen3-coder-next` (52 GB). These are vendor and third-party numbers from different
+    harnesses, so they rank the models rather than measure them. Q8 is used over the default Q4 for quality; bf16
+    (56 GB) would leave no room for context.
+  - `qwen3.6:27b-q8_0` on this Mac (2026-11-05): given `Read`, `Edit` and `Bash` and asked to fix a failing test, it
+    answered `stop_reason: tool_use` with two correct `Read` calls (the test file, then the source), in 39 s including
+    the first load. Ollama loaded it 100% on the GPU at 46 GB with its default 256K context. That is close to the
+    ~48 GB limit, so the proofs use a 64k-context copy (`num_ctx 65536`), which needs less memory.
+- **Decision**: a model router, `bin/sdd-router.py` (data-model §17), run by the supervisor for a Job whose
+  implementer is local. It listens on 127.0.0.1 only. The run's `claude -p` gets `ANTHROPIC_BASE_URL` pointing at
+  it. A request whose `model` starts with `ollama:` goes to Ollama, with the prefix and every credential header
+  removed. Any other request goes to `https://api.anthropic.com` unchanged, headers included. Local models may
+  implement, never verify, so a Claude model checks what a local one wrote.
+- **Unknowns, proved by tasks**:
+  - (a) whether `agent()` passes a full name such as `ollama:qwen3:30b-a3b`. If not, the run maps the `haiku` alias
+    to the local model (`ANTHROPIC_DEFAULT_HAIKU_MODEL`) and the implementer uses `haiku`;
+  - (b) whether the subscription works through the router and the supervisor still reads the usage limits;
+  - (c) whether a local model finishes a real task with Claude Code's prompt and tools. That prompt is about 20k
+    tokens, and Ollama silently cuts input beyond the model's `num_ctx`, so the router refuses a request larger than
+    the model's context instead of passing it on.
+  T070 proves (c), T073 proves (a) and (b).
+- **Alternatives**:
+  - the whole run on Ollama (a profile with `ANTHROPIC_BASE_URL`): the verifier would be local too, and the login
+    would go to Ollama;
+  - a separate `claude -p` per implementer step: a nested `claude -p` cannot start its sandbox inside a run (T001);
+  - LiteLLM or another gateway: a dependency to install and configure for one prefix rule.
+
 ## R11 evidence
 
 From T002 (2026-11-04), written in the dashboard:
@@ -193,3 +244,5 @@ How would they not need a terminal if you ask me to open a terminal?
   --json` printed one JSON object (`outcome`, `installedVersion`, `availableVersion`), which the server can parse.
 - **Also found:** this install is a directory marketplace. The plugin "loads in place from" the checkout, so edits
   take effect at the next session start or `/reload-plugins`, with no cached copy to refresh.
+
+## R13 evidence

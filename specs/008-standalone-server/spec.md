@@ -76,6 +76,18 @@ views and routes to the dashboard; once this feature lands they are built on the
   (user). Most manual steps produce text, which stays the default, but a visual review (T047) is clearer with a
   screenshot. The old dashboard gets no upload, since it is retired at T055; until then screenshots go to the chat.
   The pictures are committed with the task's record, so the agent that reads the record sees them (FR-032).
+- Q: Where do a run's technical log and its step events belong? → A: The log under the Job, the steps under the
+  task (user). Each view answers one question: Jobs answers "what is the machine doing", so it shows the live output
+  of the agent working now (implementer, verifier or commit) and the run-level events; Tasks answers "where does each
+  piece of work stand", so a task shows its own steps in plain sentences and links to its log in Jobs. The old
+  dashboard shows the transcript on the task card and the step events under the run, the other way round (FR-033).
+- Q: Can the person choose which AI model writes and checks the code? → A: Yes, per Job, from the UI (user). Start
+  job offers an implementer model and a verifier model; each defaults to the project's `[agents]` entry, else the
+  run's model. Continue can change them for the Job's next runs. The project-wide `[agents]` table stays the default
+  (FR-034).
+- Q: Can the implementer be a local model? → A: Yes, an Ollama model (user). The verifier stays on Claude. A small
+  router sends local requests to Ollama and the rest to Anthropic, because a Claude Code session has one API address
+  (research R13).
 
 ## Terms
 
@@ -452,6 +464,32 @@ you" lists items of two features.
   task MUST save each picture in the feature's `evidence/` folder, link it from the saved note (under the task's
   `Record:` heading when it has one, else in `manual-notes.md`), and commit the pictures in the same commit as the
   tick. A refused settle MUST leave no picture behind.
+
+**Where logs and events are shown**
+- **FR-033**: A Job with a run going MUST show, on its card in Jobs, the live output of the agent working on the
+  running task (any agent kind: implementer, evaluator, verifier, commit, repair), found across every session of the
+  run, newest first, updated without a reload. Before the first agent starts it MUST say the run is preparing (the
+  project checks run first), never stay blank. The run detail in Jobs MUST list the run-level events (started,
+  paused at a usage limit, resumed in a new session, checks failed, stopped, finished); a task's own step events
+  (implementation started, sent to the verifier, approved, committed with its hash, blocked with its reason) MUST be
+  shown on that task in Tasks, as plain sentences newest last, with a **View log** link that opens the task's
+  output in Jobs. Tasks MUST NOT show the full transcript on the task card.
+
+**Models per Job**
+- **FR-034**: Start job MUST let the person choose the implementer model (it also writes the code of repairs) and the
+  verifier model, each from: the project default (shown by name: the `[agents]` entry, else "the run's model"),
+  `opus`, `sonnet`, `haiku`, or another model name typed in. Continue MUST let the person change both for the Job's
+  next runs; a run that is going keeps the models it started with. The Job record MUST keep the choice, the Job card
+  MUST show it ("Implementer: sonnet · Verifier: opus"), and the run report MUST list each role's model and whether
+  it came from the Job or the project. The same choice MUST be possible from the command line.
+- **FR-035**: The implementer model MAY be a local Ollama model, named `ollama:<model>`. The implementer select MUST
+  list the local models in their own group. A model without tool use, or too large for the machine's GPU memory, MUST be shown
+  but not choosable, with the note "no tool use" or "too large for this machine". When Ollama is not running, the group MUST say so. The verifier select MUST NOT offer local models.
+  A run with a local implementer MUST send only that model's requests to Ollama, without the person's credentials;
+  every other request (the run's session, the verifier, the commit step) MUST stay on the person's Claude account.
+  The run MUST be refused before it starts, with a reason, when Ollama is not running, the model is gone, the
+  model lacks tool use, or it is too large for the machine. A request larger than the model's context MUST fail with a clear error, never be cut
+  silently. Local models are best effort; Anthropic does not support them.
 
 **How the server is started**
 - **FR-024**: The person MUST be able to start the server with one command, from any folder. The server does not
