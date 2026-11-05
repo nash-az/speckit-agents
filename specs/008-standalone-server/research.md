@@ -172,6 +172,45 @@ PS=claude -p /env --permission-mode dontAsk --allowedTools Skill,Bash(env),Bash(
 - **Alternatives**: running `claude -p "/sdd-init"` from the server: a model in the setup path for no gain, and the
   write to `.claude/settings.json` would be refused headless anyway.
 
+## R13. A local implementer model through a model router (user, 2026-11-05)
+
+- **Need**: the implementer of a Job may be a local Ollama model, while the verifier and the run's own session stay
+  on Claude under the person's subscription (FR-034).
+- **Evidence**:
+  - Claude Code docs, fetched 2026-11-05. `ANTHROPIC_BASE_URL` applies to the whole session; there is no per-agent or
+    per-model address (code.claude.com/docs/en/model-config.md, sub-agents.md). A run's agents are one session, so
+    pointing the run at Ollama would move the verifier there too, and would send the subscription login to Ollama.
+  - With `ANTHROPIC_BASE_URL` set to a gateway that forwards to Anthropic, a saved claude.ai login stays the
+    credential and its usage limits apply. The gateway must forward the OAuth `anthropic-beta` value
+    (llm-gateway.md "Subscriptions and gateways", llm-gateway-protocol.md "Request headers"). Claude Code posts to
+    `/v1/messages?beta=true`.
+  - Anthropic does not support non-Claude models through a gateway (llm-gateway.md). This is best effort, as in
+    003 data-model §9. An unknown model id is treated as a current Claude model: a 200K context is assumed and
+    `thinking: {"type": "adaptive"}` is sent (llm-gateway-protocol.md).
+  - The Agent tool's per-call `model` takes aliases only (sub-agents.md). The docs do not say whether the
+    Workflow `agent()` `model` option is the same parameter.
+  - On this machine, Ollama 0.34.2 answers `POST /v1/messages` in the Anthropic format. `qwen3:30b-a3b` returned a
+    correct `tool_use` block for a `Read` tool. `ollama show` lists `tools` for `qwen3:30b-a3b`,
+    `nemotron-3-super` and `qwen3:0.6b`, and not for `deepseek-coder-v2:236b`, `gemma3:27b` or `starcoder:3b`.
+- **Decision**: a model router, `bin/sdd-router.py` (data-model §17), run by the supervisor for a Job whose
+  implementer is local. It listens on 127.0.0.1 only. The run's `claude -p` gets `ANTHROPIC_BASE_URL` pointing at
+  it. A request whose `model` starts with `ollama:` goes to Ollama, with the prefix and every credential header
+  removed. Any other request goes to `https://api.anthropic.com` unchanged, headers included. Local models may
+  implement, never verify, so a Claude model checks what a local one wrote.
+- **Unknowns, proved by tasks**:
+  - (a) whether `agent()` passes a full name such as `ollama:qwen3:30b-a3b`. If not, the run maps the `haiku` alias
+    to the local model (`ANTHROPIC_DEFAULT_HAIKU_MODEL`) and the implementer uses `haiku`;
+  - (b) whether the subscription works through the router and the supervisor still reads the usage limits;
+  - (c) whether a local model finishes a real task with Claude Code's prompt and tools. That prompt is about 20k
+    tokens, and Ollama silently cuts input beyond the model's `num_ctx`, so the router refuses a request larger than
+    the model's context instead of passing it on.
+  T070 proves (c), T073 proves (a) and (b).
+- **Alternatives**:
+  - the whole run on Ollama (a profile with `ANTHROPIC_BASE_URL`): the verifier would be local too, and the login
+    would go to Ollama;
+  - a separate `claude -p` per implementer step: a nested `claude -p` cannot start its sandbox inside a run (T001);
+  - LiteLLM or another gateway: a dependency to install and configure for one prefix rule.
+
 ## R11 evidence
 
 From T002 (2026-11-04), written in the dashboard:
@@ -193,3 +232,5 @@ How would they not need a terminal if you ask me to open a terminal?
   --json` printed one JSON object (`outcome`, `installedVersion`, `availableVersion`), which the server can parse.
 - **Also found:** this install is a directory marketplace. The plugin "loads in place from" the checkout, so edits
   take effect at the next session start or `/reload-plugins`, with no cached copy to refresh.
+
+## R13 evidence

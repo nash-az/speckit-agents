@@ -85,6 +85,9 @@ views and routes to the dashboard; once this feature lands they are built on the
   job offers an implementer model and a verifier model; each defaults to the project's `[agents]` entry, else the
   run's model. Continue can change them for the Job's next runs. The project-wide `[agents]` table stays the default
   (FR-034).
+- Q: Can the implementer be a local model? → A: Yes, an Ollama model (user). The verifier stays on Claude. A small
+  router sends local requests to Ollama and the rest to Anthropic, because a Claude Code session has one API address
+  (research R13).
 
 ## Terms
 
@@ -479,6 +482,14 @@ you" lists items of two features.
   next runs; a run that is going keeps the models it started with. The Job record MUST keep the choice, the Job card
   MUST show it ("Implementer: sonnet · Verifier: opus"), and the run report MUST list each role's model and whether
   it came from the Job or the project. The same choice MUST be possible from the command line.
+- **FR-035**: The implementer model MAY be a local Ollama model, named `ollama:<model>`. The implementer select MUST
+  list the local models in their own group. A model without tool use MUST be shown but not choosable, with the note
+  "no tool use". When Ollama is not running, the group MUST say so. The verifier select MUST NOT offer local models.
+  A run with a local implementer MUST send only that model's requests to Ollama, without the person's credentials;
+  every other request (the run's session, the verifier, the commit step) MUST stay on the person's Claude account.
+  The run MUST be refused before it starts, with a reason, when Ollama is not running, the model is gone, or the
+  model lacks tool use. A request larger than the model's context MUST fail with a clear error, never be cut
+  silently. Local models are best effort; Anthropic does not support them.
 
 **How the server is started**
 - **FR-024**: The person MUST be able to start the server with one command, from any folder. The server does not

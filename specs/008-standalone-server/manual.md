@@ -127,3 +127,57 @@ Comes after T047 and T060.
 1. Check that the tests pass (ask Claude, or look at the last run report in the Jobs view).
 2. Check that T047 found nothing blocking.
 3. If both hold, press **I did it**. If not, write in the note what is still missing and press **Skip**, or leave it open.
+
+## T070 Prove that a local model can do a small task in Claude Code (research R13 (c))
+
+What it proves: a local Ollama model can work inside `claude -p` with Claude Code's prompt and tools: it writes a file
+and runs a command. Your Claude login is not used: the command points Claude Code at Ollama with a dummy token. Takes
+a few minutes, mostly while the model loads.
+
+1. Open your own terminal app (Terminal or iTerm), **not** Claude Code.
+2. Paste this whole block and press Enter. It makes a copy of `qwen3:30b-a3b` with a 64k context (Claude Code's
+   prompt is about 20k tokens, and Ollama's default context would cut it), makes a throwaway git repo, and gives the
+   model one small task:
+
+   ```sh
+   repo=$(mktemp -d "${TMPDIR:-/tmp}/r13-proof.XXXXXX") && cd "$repo" && git init -q
+   printf 'FROM qwen3:30b-a3b\nPARAMETER num_ctx 65536\n' > Modelfile && ollama create qwen3-30b-64k -f Modelfile
+   start=$(date +%s)
+   env -u CLAUDECODE ANTHROPIC_BASE_URL=http://127.0.0.1:11434 ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY= \
+     claude -p "Create hello.py that prints exactly: hello from local. Then run it with python3 and show the output." \
+     --model qwen3-30b-64k --permission-mode acceptEdits --allowedTools "Write,Bash(python3:*)" --output-format json \
+     > out.json 2> err.txt; echo "claude exit code: $?"; echo "seconds: $(( $(date +%s) - start ))"
+   python3 -c 'import json; d=json.load(open("out.json")); print("is_error:", d.get("is_error")); print("turns:", d.get("num_turns")); print("result:", str(d.get("result"))[:400])' || head -c 1500 out.json err.txt
+   echo "hello.py: $(python3 hello.py 2>&1)"
+   ```
+
+3. Copy everything the block printed, from the `ollama create` lines to the `hello.py:` line, into this card's note
+   box.
+4. Press **I did it** (not while a run is going). It saves the output under `## R13 evidence` in `research.md` and
+   ticks the task, in one commit.
+
+Record: research.md ## R13 evidence
+
+## T073 Prove a Job with a local implementer and a Claude verifier (research R13 (a) and (b))
+
+What it proves:
+- the run sends the implementer's requests to Ollama and the verifier's to Claude;
+- your subscription works through the router;
+- the run still sees your usage limits.
+
+It uses your Claude account for the verifier, so it uses a little of your usage. Takes about 5–10 minutes.
+
+1. Open your own terminal app, **not** Claude Code.
+2. Paste this line and press Enter:
+
+   ```sh
+   sh ~/private/speckit-agents/scripts/r13-proof.sh ollama:qwen3-30b-64k
+   ```
+
+   It builds a one-task toy project in a temp folder, starts a Job there and waits for it to finish. Leave the
+   terminal open until it prints `== done ==`.
+3. Copy everything it printed into this card's note box.
+4. Press **I did it**. It saves the output under `## R13 evidence` in `research.md` and ticks the task.
+
+Record: research.md ## R13 evidence
+

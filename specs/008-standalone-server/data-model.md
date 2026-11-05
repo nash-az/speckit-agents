@@ -668,20 +668,52 @@ except for `write_answer` and `try_apply`, which call `sdd-decide.py` as today; 
   table overlaid with the Job's non-null `models`. The workflow already gives the implementer's model to repair calls
   (003 quickstart §4). The run report's Models line lists each role as `implementer = sonnet (job)`,
   `verifier = opus (project)` or `= the run's model`.
-- **Server**: `GET …/models` gives `{"default": {"implementer", "verifier"}, "aliases": ["opus", "sonnet", "haiku"]}`.
+- **Local implementer** (FR-035, research R13): `models.implementer` may be `ollama:<model>`; `models.verifier` may
+  not (`"models.verifier: local models cannot verify"`). Before each run, `bin/sdd-supervise.py` checks the model
+  with Ollama's `GET /api/tags` and `POST /api/show` at `OLLAMA_HOST` (default `http://127.0.0.1:11434`):
+  - Ollama not answering → refused with `"Ollama is not running at <host>"`;
+  - model not listed → refused with `"<model> is not in Ollama"`;
+  - `tools` not in its capabilities → refused with `"<model> cannot use tools"`.
+  A refused check leaves the Job `waiting`, with the reason.
+- **Router** (`bin/sdd-router.py`, standard library only): started by the supervisor for a run with a local
+  implementer, on 127.0.0.1 with a port the OS picks, and stopped with the run. The run's `claude -p` gets
+  `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`.
+  - A request whose JSON body has `model` starting `ollama:` goes to `<OLLAMA_HOST>/v1/messages` (path without the
+    query string). The prefix is removed from `model`, and `authorization`, `x-api-key`, `cookie` and
+    `anthropic-beta` are dropped. The estimated input (characters / 4) is compared with the model's context
+    (`num_ctx` from `/api/show`, else its `context_length`). When the estimate is larger, the router answers 400 in
+    the Anthropic error format: `"<model>: the prompt (~<n> tokens) is larger than its context (<m>); raise
+    num_ctx"`. `…/count_tokens` for a local model is answered from the same estimate.
+  - Any other request is forwarded to `https://api.anthropic.com` unchanged (method, path, query, headers, body),
+    and the answer comes back unchanged, streamed, headers included, so the usage-limit headers still reach the
+    session.
+  - The `Host` header must be `127.0.0.1:<port>` (else 421). The router logs one line per request (time, route
+    `local`/`anthropic`, model, status) to `state_dir/router.log`, never bodies or headers.
+- **Server**: `GET …/models` gives `{"default": {"implementer", "verifier"}, "aliases": ["opus", "sonnet", "haiku"],
+  "local": [{"name", "tools", "context"}] | null, "local_reason": str | null}`. `local` lists Ollama's models,
+  prefixed `ollama:`. When Ollama does not answer, `local` is `null` and `local_reason` says why.
   Each default is the `[agents]` value, or `null` for "the run's model". `POST …/jobs/start` and
   `…/jobs/<id>/continue` accept `"models"?: {"implementer"?, "verifier"?}` (a string, or `null` for the default) and
   pass the flags on. A bad name → 400 with the engine's refusal text.
 - **UI** (`views/Jobs.tsx`): Start job has two selects, **Implementer model** and **Verifier model**. Each has the
   options "Project default (<name>)", `opus`, `sonnet`, `haiku` and "Other…", which shows a text field. The Continue
   dialog shows the same two selects, set to the Job's current choice, with the note "Applies from the next run". The
-  Job card shows "Implementer: <name> · Verifier: <name>", where a default shows as "<name> (project)".
+  Job card shows "Implementer: <name> · Verifier: <name>", where a default shows as "<name> (project)". The
+  Implementer select has a **Local (Ollama)** group: models without tool use are disabled, with "no tool use"; when
+  `local` is null, the group has one disabled line with `local_reason`.
 - **Tests**:
   - `tests/test_sdd_launch.py`: `--implementer-model sonnet` stores it. `--continue … --verifier-model default`
     stores `null`. A name with a space is refused and nothing is written.
   - `tests/workflow.test.mjs`: Job models overlaid on `[agents]` reach the implementer, repair and verifier calls.
     A `null` leaves the `[agents]` value.
   - `tests/test_server_routes.py`: `models` in jobs/start reaches the record; a bad name gives 400.
+  - `tests/test_sdd_router.py` (a fake Ollama and a fake Anthropic, each a local HTTP server; the upstream URL is a
+    test hook): an `ollama:` request reaches the fake Ollama with the prefix and the credential headers gone; any
+    other request reaches the fake Anthropic with every header and the query string; a streamed answer comes back in
+    chunks with its headers; a prompt over `num_ctx` gives the 400 text; a bad `Host` gives 421; the log has no
+    header values.
+  - `tests/test_supervise.py`: a Job with a local implementer starts the router and passes `ANTHROPIC_BASE_URL`;
+    Ollama down, a missing model and a model without tools each refuse the run with the texts above.
   - `tests/server_ui/test_job_models.py`: choosing `sonnet` and "Other…" `claude-opus-5-5` starts a Job whose card
     shows both; Continue with the project default shows "(project)".
 
