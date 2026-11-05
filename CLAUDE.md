@@ -31,7 +31,30 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 - **`templates/`**: `sdd-config.toml`, `settings.json` (sandbox and allow/deny rules), `agent-tags.md`.
 
 ## Progress
-- **Handoff (evening of 2026-11-02) — start here.** Read `logs/2026-11-02-lessons.md` first. Build order:
+- **Handoff (2026-11-05) — start here.** Read `logs/2026-11-05-lessons.md` first. Build order: `.sdd/roadmap.toml`.
+  - **State:** checkout on `main` (`916a0da`), clean, nothing pushed (no remote). `.specify/feature.json` points at
+    008. No run or Job is going. The dashboard runs from the checkout on port 8765 (started by the operator session;
+    restart with `python3 bin/sdd-dashboard.py --project . --port 8765` if it is gone). The plugin loads in place from
+    this checkout (a directory marketplace, research R11 evidence), so edits apply at the next session start; the
+    plugin-cache note in the 2026-11-02 handoff is stale.
+  - **005:** only T022 is open. Both Jobs on 008 ran and were merged; the person pastes the banner texts and the
+    Merge message into T022's note box and presses I did it (steps in `specs/005-jobs/manual.md`). Then check the
+    note says the banner never showed a run id.
+  - **008:** 73 tasks, 11 done (Phases 1–2: T001–T011). New since 2026-11-02: FR-032 to FR-035, R13, data-model
+    §16–§17, T061–T073. Next manual task: **T070** (the person's terminal: `qwen3.6:27b-q8_0` does a small task in
+    `claude -p` through Ollama; the model is downloaded). Next runs: Phase 3 onward, started by the person from Jobs.
+  - **The person's decisions (2026-11-04/05):** the technical log goes under the Job, step events under the task, in
+    008's UI (FR-033; the old dashboard only got the Job log panel). Model per Job for implementer and verifier, from
+    the UI (FR-034). The implementer may be a local Ollama model, the verifier stays Claude (FR-035). Best result
+    over speed: `qwen3.6:27b-q8_0`. `manual.md` and `research.md` stay read-only in the UI: Claude edits them, and the
+    note box records results under `Record:` headings. Pictures in notes only in 008 (FR-032).
+  - **Open bugs and on hold:** Stop after current task during start-up stops before any task; no Preparing state in
+    the old dashboard (008 has it); `/sdd-run` resume deletes and rebuilds `run.json`.
+  - **Later (ask first):** delete the 8 merged `auto/*` branches; the stale worktree
+    `.claude/worktrees/agent-a8daf0fca12087451` has uncommitted edits (CLAUDE.md, README.md, agents/), so read them
+    before removing it.
+  - Tests: 589 Python, 24 node, all passing on `main`.
+- **Handoff (evening of 2026-11-02, superseded by the one above).** Read `logs/2026-11-02-lessons.md` first. Build order:
   `.sdd/roadmap.toml` (005, 008, 006, 004, 007; 001/002 superseded, 003 done), not memory.
   - **State:** checkout on `main`, clean, nothing pushed (no remote). The plugin is reinstalled from `cc98e18`
     (cache `~/.claude/plugins/cache/speckit-agents/speckit-agents/0.1.0`, identical to the repo); open Claude sessions
