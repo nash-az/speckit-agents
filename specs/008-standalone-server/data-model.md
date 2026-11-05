@@ -654,3 +654,34 @@ except for `write_answer` and `try_apply`, which call `sdd-decide.py` as today; 
     text; the temp files are gone afterwards.
   - `tests/server_ui/test_note_pictures.py`: pasting a PNG shows a thumbnail; removing it leaves none; I did it with
     one picture ticks the task and the recorded note links `evidence/<task id>-1.png`.
+
+## 17. Models per Job (FR-034)
+
+- **Job record** (005 §1) gains `"models": {"implementer": str | null, "verifier": str | null}`. `null` means the
+  project default: `[agents]` in `.sdd/config.toml` (003 §3.7), else the run's model. A record without `models`
+  reads as both `null`. A value is a non-empty string of at most 200 characters with no whitespace; aliases, Claude
+  ids, Bedrock ARNs and Vertex names all pass, as in 003 §3.7. Anything else is refused with
+  `"models.<role>: not a model name"`.
+- **Engine**: `bin/sdd-launch.py --job` and `--continue` take `--implementer-model NAME|default` and
+  `--verifier-model NAME|default` (`default` stores `null`). `--continue` changes them for the next runs only;
+  `/sdd-run` reads them when it starts. With `--job <id>`, `/sdd-run` builds `agentModels` as the config's `[agents]`
+  table overlaid with the Job's non-null `models`. The workflow already gives the implementer's model to repair calls
+  (003 quickstart §4). The run report's Models line lists each role as `implementer = sonnet (job)`,
+  `verifier = opus (project)` or `= the run's model`.
+- **Server**: `GET …/models` gives `{"default": {"implementer", "verifier"}, "aliases": ["opus", "sonnet", "haiku"]}`.
+  Each default is the `[agents]` value, or `null` for "the run's model". `POST …/jobs/start` and
+  `…/jobs/<id>/continue` accept `"models"?: {"implementer"?, "verifier"?}` (a string, or `null` for the default) and
+  pass the flags on. A bad name → 400 with the engine's refusal text.
+- **UI** (`views/Jobs.tsx`): Start job has two selects, **Implementer model** and **Verifier model**. Each has the
+  options "Project default (<name>)", `opus`, `sonnet`, `haiku` and "Other…", which shows a text field. The Continue
+  dialog shows the same two selects, set to the Job's current choice, with the note "Applies from the next run". The
+  Job card shows "Implementer: <name> · Verifier: <name>", where a default shows as "<name> (project)".
+- **Tests**:
+  - `tests/test_sdd_launch.py`: `--implementer-model sonnet` stores it. `--continue … --verifier-model default`
+    stores `null`. A name with a space is refused and nothing is written.
+  - `tests/workflow.test.mjs`: Job models overlaid on `[agents]` reach the implementer, repair and verifier calls.
+    A `null` leaves the `[agents]` value.
+  - `tests/test_server_routes.py`: `models` in jobs/start reaches the record; a bad name gives 400.
+  - `tests/server_ui/test_job_models.py`: choosing `sonnet` and "Other…" `claude-opus-5-5` starts a Job whose card
+    shows both; Continue with the project default shows "(project)".
+

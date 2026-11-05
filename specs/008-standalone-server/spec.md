@@ -81,6 +81,10 @@ views and routes to the dashboard; once this feature lands they are built on the
   of the agent working now (implementer, verifier or commit) and the run-level events; Tasks answers "where does each
   piece of work stand", so a task shows its own steps in plain sentences and links to its log in Jobs. The old
   dashboard shows the transcript on the task card and the step events under the run, the other way round (FR-033).
+- Q: Can the person choose which AI model writes and checks the code? → A: Yes, per Job, from the UI (user). Start
+  job offers an implementer model and a verifier model; each defaults to the project's `[agents]` entry, else the
+  run's model. Continue can change them for the Job's next runs. The project-wide `[agents]` table stays the default
+  (FR-034).
 
 ## Terms
 
@@ -467,6 +471,14 @@ you" lists items of two features.
   (implementation started, sent to the verifier, approved, committed with its hash, blocked with its reason) MUST be
   shown on that task in Tasks, as plain sentences newest last, with a **View log** link that opens the task's
   output in Jobs. Tasks MUST NOT show the full transcript on the task card.
+
+**Models per Job**
+- **FR-034**: Start job MUST let the person choose the implementer model (it also writes the code of repairs) and the
+  verifier model, each from: the project default (shown by name: the `[agents]` entry, else "the run's model"),
+  `opus`, `sonnet`, `haiku`, or another model name typed in. Continue MUST let the person change both for the Job's
+  next runs; a run that is going keeps the models it started with. The Job record MUST keep the choice, the Job card
+  MUST show it ("Implementer: sonnet · Verifier: opus"), and the run report MUST list each role's model and whether
+  it came from the Job or the project. The same choice MUST be possible from the command line.
 
 **How the server is started**
 - **FR-024**: The person MUST be able to start the server with one command, from any folder. The server does not

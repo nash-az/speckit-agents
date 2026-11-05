@@ -44,6 +44,8 @@ Changes and additions under the prefix:
 | POST `…/feature/activate` | `{"feature"}` | 200, or 409 with the exact refusal text (data-model §15) |
 | POST `…/run/adopt` | `{"confirm_closed"?: bool}` | 202 `{"pid"}`, or 409 `{"error"}` (data-model §7) |
 | POST `…/run/start`, `…/jobs/start`, `…/jobs/<id>/continue` | as before | also 409 `{"error": "cap reached: <holders>"}` (data-model §8) |
+| GET `…/models` | | `{"default": {"implementer", "verifier"}, "aliases": [...]}` (data-model §17) |
+| POST `…/jobs/start`, `…/jobs/<id>/continue` | as before, plus `"models"?: {"implementer"?, "verifier"?}` (a name, or `null` for the project default) | as before; 400 with the refusal text for a bad name (data-model §17) |
 | POST `…/manual/done` | as before, plus `"images"?: [{"type", "data"}]` (base64; at most 5, 10 MB each) | as before; 400 with the refusal text for a bad picture (data-model §16) |
 | any write route | as before | also 409 `{"error": "version mismatch: …"}` on a major mismatch (data-model §11) |
 

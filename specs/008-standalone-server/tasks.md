@@ -125,7 +125,12 @@
 - [ ] T062 After T061, after T017, accept `images` in `POST /api/p/<id>/manual/done` in `server/app.py` per §16 and contracts/server-api.md (base64 to temp files, `--image`, temp files removed, 60 MB body limit for this route), with §16's route tests in `tests/test_server_routes.py`.
 - [ ] T063 [ui] After T062, after T041, add `components/NoteBox.tsx` per §16 (paste or drop pictures, thumbnails with remove, the refusal text under the box, I did it sends them, Skip does not) and use it in the manual-task card of `views/Waiting.tsx` and the Roadmap's Waiting on you list, and rebuild `server/static/`.
 - [ ] T064 After T063, after T044, add `tests/server_ui/test_note_pictures.py` per §16 (paste shows a thumbnail, remove clears it, I did it with one picture ticks the task and links `evidence/<task id>-1.png`).
-- [ ] T047 [manual] After T046, after T064, look at the new UI in your own browser (`sdd-server`, each view on this repo and one other project) and note what tests cannot judge (layout, colors, spacing, wording); add findings as tasks at the end of this file, or write "nothing to change" here.
+- [ ] T065 After T008, add `--implementer-model` and `--verifier-model` (a name or `default`) to `bin/sdd-launch.py` `--job` and `--continue`, storing the Job record's `models` per §17, with the refusal for a bad name; tests in `tests/test_sdd_launch.py` per §17.
+- [ ] T066 After T065, in `skills/sdd-run/SKILL.md` build `agentModels` as `[agents]` overlaid with the Job's non-null `models` when `--job` is given, and list each role's model and its source in the report's Models line per §17; tests in `tests/workflow.test.mjs` (Job models reach implementer, repair and verifier calls).
+- [ ] T067 After T065, after T017, add `GET …/models` and accept `models` in `POST …/jobs/start` and `…/jobs/<id>/continue` in `server/app.py` per §17 and contracts/server-api.md; tests in `tests/test_server_routes.py`.
+- [ ] T068 [ui] After T067, after T040, add the Implementer model and Verifier model selects to Start job and Continue in `views/Jobs.tsx`, and the models line on the Job card per §17, and rebuild `server/static/`.
+- [ ] T069 After T068, after T044, add `tests/server_ui/test_job_models.py` per §17.
+- [ ] T047 [manual] After T046, after T064, after T069, look at the new UI in your own browser (`sdd-server`, each view on this repo and one other project) and note what tests cannot judge (layout, colors, spacing, wording); add findings as tasks at the end of this file, or write "nothing to change" here.
 
 ---
 
