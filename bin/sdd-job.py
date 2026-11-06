@@ -792,7 +792,7 @@ def after_settle(project) -> dict:
             return {"started": False, "reason": "no task in the scope is runnable"}
         launcher = _launcher()
         try:
-            launcher.continue_job(project, record["id"])
+            launcher.continue_job(project, record["id"], from_waiting=True)
         except launcher.Refused as e:
             return {"started": False, "reason": str(e)}
         return {"started": True, "reason": None}

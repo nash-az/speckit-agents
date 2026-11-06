@@ -21,8 +21,10 @@ project is not a git repository, or when no task is runnable. Stdlib only; no mo
     bin/sdd-launch.py <project dir> <feature dir> --continue <id> [--max-tasks N|none] [--until EPOCH|none]
                       [--max-runs N|none]
 
-`continue_job()` continues a `waiting`, `interrupted`, `held` or `stopped` Job on its branch (005 FR-009,
-data-model §3 and §8); a Job stopped by a limit needs a new value for it. Counts are never reset.
+`continue_job()` continues a run shown `suspended` (009) on its branch (005 FR-009, data-model §3 and §8);
+a run stopped by a limit needs a new value for it. Counts are never reset. A new run is refused while another
+is open: "a run is suspended: Continue or Drop it first", "a run needs merge: <title>" or "another run is
+going: <title>" (`open_run_refusal`).
 
 Each command prints one JSON object with `"contract"` (008 data-model §1); a refusal prints
 `{"contract", "error"}` and exits 1 (contracts/engine-cli.md).
@@ -89,8 +91,26 @@ def _git_output(project: Path, *args: str):
     return result.returncode, result.stdout.strip()
 
 
+def open_run_refusal(project: Path) -> str | None:
+    """Why a new run cannot start while another is open (009 FR, plan step 4), else None: the newest open run
+    (`sdd-job.py` `open_run`) shown `suspended` -> "a run is suspended: Continue or Drop it first"; ended with
+    landing `needs-merge` or `pending` -> "a run needs merge: <title>"; working or paused -> "another run is
+    going: <title>"."""
+    other = sdd_job.open_run(project)
+    if other is None:
+        return None
+    title = other.get("title") or other.get("id")
+    shown = sdd_job.shown_state(project, other)
+    if shown["state"] == "suspended":
+        return "a run is suspended: Continue or Drop it first"
+    if shown["state"] == "ended":
+        return f"a run needs merge: {title}"
+    return f"another run is going: {title}"
+
+
 def preview(project: Path, feature: Path) -> dict:
-    """What a run would do, and `can_start` / `reason`. Never changes anything."""
+    """What a run would do, and `can_start` / `reason`. Never changes anything. An open run refuses with
+    `open_run_refusal`'s text, as `launch_job` does."""
     project, feature = Path(project).resolve(), Path(feature).resolve()
     parsed = sdd_tasks.parse_tasks(feature / "tasks.md")
     blocked = sdd_tasks.parse_blocked_entries(feature / "BLOCKED.md")
@@ -104,6 +124,10 @@ def preview(project: Path, feature: Path) -> dict:
               "can_start": True, "reason": None, "resumes": None}
 
     run_json = project / ".sdd" / "run.json"
+    refusal = open_run_refusal(project)
+    if refusal:
+        result.update(can_start=False, reason=refusal)
+        return result
     if _supervisor_running(project):
         result.update(can_start=False, reason="a supervised run is already in progress")
         return result
@@ -243,14 +267,15 @@ def launch_job(project: Path, feature: Path, scope: dict | None, limits: dict | 
     """Start a Job (005 FR-003, data-model §8): the record, the branch `auto/<id>`, and the supervisor
     with `--job <id>` (no `--max-wait-hours 0`: a Job waits for any usage reset, research R7).
 
-    Refuses, changing nothing, when another Job is open, when a run is active, when the project is not a
-    git repository, when the tree has changes, or when the scope has no runnable task."""
+    Refuses, changing nothing, when another run is open (`open_run_refusal`: suspended, needs merge, or
+    going), when a run is active, when the project is not a git repository, when the tree has changes, or
+    when the scope has no runnable task."""
     project, feature = Path(project).resolve(), Path(feature).resolve()
     scope = _check_scope(scope)
     limits = _check_limits(limits)
-    other = sdd_job.open_job(project)
-    if other is not None:
-        raise Refused(f"another job is open: {other.get('title') or other.get('id')}")
+    refusal = open_run_refusal(project)
+    if refusal:
+        raise Refused(refusal)
     if _supervisor_running(project) or (project / ".sdd" / "run.json").exists():
         raise Refused("a run is active")
     code, _ = _git_output(project, "rev-parse", "--is-inside-work-tree")
@@ -303,14 +328,15 @@ def launch_job(project: Path, feature: Path, scope: dict | None, limits: dict | 
     return {"job": job_id, "branch": branch, "pid": pid, "log": log}
 
 
-CONTINUABLE_STATES = ("waiting", "interrupted", "held", "stopped")
+CONTINUABLE_STATES = ("suspended",)
 
 
 def _limit_in_reason(record: dict) -> str | None:
-    """The limit a `stopped` Job was stopped by, from its reason ("max_tasks 10 reached",
+    """The limit a `stopped` (005) or `suspended` run was stopped by, from its reason ("max_tasks 10 reached",
     "until 18:00 reached", "max_runs 20 reached"; `sdd-supervise.py` `limit_reason`), else None."""
     reason = record.get("reason")
-    if record.get("state") != "stopped" or not isinstance(reason, str) or not reason.endswith(" reached"):
+    if (record.get("state") not in ("stopped", "suspended") or not isinstance(reason, str)
+            or not reason.endswith(" reached")):
         return None
     name = reason.split(" ", 1)[0]
     return name if name in sdd_job.LIMIT_NAMES else None
@@ -328,22 +354,23 @@ def _read_run_json(project: Path) -> dict | None:
     return data if isinstance(data, dict) else {}
 
 
-def continue_job(project: Path, job_id: str, new_limits: dict | None = None) -> dict:
-    """Continue a Job (005 FR-009, data-model §3 and §8): from shown `waiting`, `interrupted`, `held` or
-    `stopped`, set `working` and start `sdd-supervise.py --job <id>` detached.
+def continue_job(project: Path, job_id: str, new_limits: dict | None = None, *, from_waiting: bool = False) -> dict:
+    """Continue a run (005 FR-009, data-model §3 and §8; 009): only from shown `suspended` (`sdd-job.py`
+    `shown_state`), set `working` and start `sdd-supervise.py --job <id>` detached. `from_waiting` (only
+    `sdd-job.py` `after_settle`'s 005 path) also accepts a 005 record whose stored state is `waiting`.
 
     `new_limits` holds only the limits the person changes (`max_tasks`, `until`, `max_runs`; null = none);
     the others and every count (runs, ticked scope tasks) are kept. A Job stopped by a limit needs a new value
-    for that limit. Refuses, changing nothing, as `launch_job` does except "another job is open". When
+    for that limit. Refuses, changing nothing, as `launch_job` does except the open-run refusals. When
     resuming (`.sdd/run.json` belongs to the Job's branch) the tree may have changes, but the checkout must
     already be on the Job's branch; otherwise the tree must be clean and the Job's branch is checked out."""
     project = Path(project).resolve()
     record = sdd_job.load(project, job_id)
     if record is None:
         raise Refused(f"no such job: {job_id}")
-    shown = sdd_job.display_state(project, record)["state"]
-    if shown not in CONTINUABLE_STATES:
-        raise Refused(f"this job cannot be continued in state {shown}")
+    shown = sdd_job.shown_state(project, record)["state"]
+    if shown not in CONTINUABLE_STATES and not (from_waiting and record.get("state") == "waiting"):
+        raise Refused(f"this run cannot be continued: it is {shown}")
     new_limits = dict(new_limits or {})
     unknown = sorted(set(new_limits) - set(sdd_job.LIMIT_NAMES))
     if unknown:

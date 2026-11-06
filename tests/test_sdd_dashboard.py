@@ -2095,9 +2095,12 @@ class JobsRouteTest(unittest.TestCase):
         self.assertEqual((data["runnable"], data["held"]), (1, 1))
         self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")  # the dry run changed nothing
         self.assertEqual(dash.sdd_job.list_jobs(self.root), [])
-        self.record("20261031-1012", "waiting")
+        self.record("20261031-1012", "waiting")  # a 005 record without its run.json: ended, landing pending
         data = request(self, "GET", "/api/jobs/plan")
-        self.assertEqual((data["can_start"], data["reason"]), (False, "another job is open: Job 20261031-1012"))
+        self.assertEqual((data["can_start"], data["reason"]), (False, "a run needs merge: Job 20261031-1012"))
+        self.record("20261031-1012", "suspended")
+        data = request(self, "GET", "/api/jobs/plan")
+        self.assertEqual((data["can_start"], data["reason"]), (False, "a run is suspended: Continue or Drop it first"))
 
     def test_start_creates_the_job_and_a_second_start_is_refused(self):
         self.init_git()
@@ -2111,7 +2114,13 @@ class JobsRouteTest(unittest.TestCase):
         command = self.spawned.call_args.args[0]
         self.assertEqual(command[-2:], ["--job", data["job"]])
         refused = request(self, "POST", "/api/jobs/start", {}, status=409)
-        self.assertEqual(refused, {"error": "another job is open: First"})
+        # the first run's supervisor is mocked and never wrote status.json: it reads as ended without landing
+        self.assertEqual(refused, {"error": "a run needs merge: First"})
+        sdd_state = dash.sdd_launch.sdd_supervise.state_dir(self.root)
+        sdd_state.mkdir(parents=True, exist_ok=True)
+        (sdd_state / "status.json").write_text(json.dumps({"state": "running", "pid": os.getpid()}))
+        refused = request(self, "POST", "/api/jobs/start", {}, status=409)
+        self.assertEqual(refused, {"error": "another run is going: First"})
 
     def test_start_refusal_and_bad_bodies(self):
         self.init_git()
@@ -2143,7 +2152,7 @@ class JobsRouteTest(unittest.TestCase):
         self.init_git()
         self.record("20261031-1012", "done")
         data = request(self, "POST", "/api/jobs/20261031-1012/continue", {}, status=409)
-        self.assertEqual(data, {"error": "this job cannot be continued in state done"})
+        self.assertEqual(data, {"error": "this run cannot be continued: it is ended"})
         self.assertEqual(self.spawned.call_count, 0)
 
     def test_merge_and_drop(self):
@@ -2297,13 +2306,13 @@ class JobsViewTest(unittest.TestCase):
     def test_start_job_panel_and_body(self):
         plan = "{phases: [{id: '1', title: 'Setup', runnable: 2, task_list: [{id: 'T001', text: 'First <b>'}, {id: 'T002', text: 'Second'}]}, {id: '2', title: 'Core', runnable: 1, task_list: [{id: 'T003', text: 'Third'}]}], runnable: 3, held: 1, can_start: true, reason: null}"
         got = self.run_js("[startJobHtml(" + plan + "), startJobHtml({phases: [], runnable: 0, held: 0, can_start: false,"
-                          " reason: 'another job is open: Phase 11'})]")
+                          " reason: 'another run is going: Phase 11'})]")
         panel, refused = got
         for needle in ("3 runnable, 1 held.", 'id="start-all-btn"', 'id="start-none-btn"', '<details class="start-phase" data-phase="1">',
                        'class="start-task-box" value="T002" checked', "<b>T001</b> First &lt;b&gt;", 'id="start-max-tasks"', 'id="start-until"', 'id="start-max-runs"', 'id="start-title"',
                        'id="start-job-btn"', "Phase 1: Setup", "2 tasks", "1 task<"):
             self.assertIn(needle, panel)
-        self.assertIn("Cannot start: another job is open: Phase 11", refused)
+        self.assertIn("Cannot start: another run is going: Phase 11", refused)
         self.assertNotIn("start-job-btn", refused)
         self.assertNotIn('id="start-tasks"', panel)  # the typed task list is gone
         now = "new Date(2026, 9, 31, 17, 0, 0).getTime()"

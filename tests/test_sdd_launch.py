@@ -223,13 +223,57 @@ class LaunchJobTest(unittest.TestCase):
         self.assertIsNone(launch.sdd_job.open_job(self.root))
         self.popen.assert_not_called()
 
-    def test_refuses_when_another_job_is_open(self):
-        launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Phase 9", "state": "waiting"})
-        with self.assertRaises(launch.Refused) as caught:
-            self.start()
-        self.assertEqual(str(caught.exception), "another job is open: Phase 9")
+    def refused_by_open_run(self, text):
+        """launch_job, its dry run (job_plan's) and preview() all refuse with `text`; nothing is changed."""
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run), self.assertRaises(launch.Refused) as caught:
+                self.start(dry_run=dry_run)
+            self.assertEqual(str(caught.exception), text)
+        info = launch.preview(self.root, self.feature)
+        self.assertEqual((info["can_start"], info["reason"]), (False, text))
         self.assertEqual(self.branch(), "main")
         self.popen.assert_not_called()
+
+    def test_refuses_while_a_run_is_suspended(self):
+        launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Phase 9", "state": "suspended",
+                                        "reason": "the run was cut off"})
+        self.refused_by_open_run("a run is suspended: Continue or Drop it first")
+
+    def test_a_005_record_with_its_own_run_json_is_suspended(self):
+        launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Phase 9", "state": "waiting",
+                                        "branch": "auto/20261030-0900"})
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"run_id": "r", "branch": "auto/20261030-0900"}))
+        self.refused_by_open_run("a run is suspended: Continue or Drop it first")
+
+    def test_refuses_while_a_run_needs_merge(self):
+        for landing in ({"state": "needs-merge", "files": ["a.py"]}, {"state": "pending", "commit": None,
+                                                                       "files": []}):
+            with self.subTest(landing=landing["state"]):
+                launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Phase 9", "state": "ended",
+                                                "outcome": "done", "landing": landing})
+                self.refused_by_open_run("a run needs merge: Phase 9")
+        # a 005 record that ended without being merged reads as ended with landing pending
+        launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Phase 9", "state": "waiting"})
+        self.refused_by_open_run("a run needs merge: Phase 9")
+
+    def test_refuses_while_another_run_is_going(self):
+        launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Phase 9", "state": "working"})
+        logs = launch.sdd_supervise.state_dir(self.root)
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "status.json").write_text(json.dumps({"state": "running", "pid": os.getpid()}))
+        self.refused_by_open_run("another run is going: Phase 9")
+        (logs / "status.json").write_text(json.dumps({"state": "waiting", "pid": os.getpid(),
+                                                      "resets_at": 1793450000}))
+        self.refused_by_open_run("another run is going: Phase 9")
+
+    def test_an_ended_and_landed_run_does_not_block(self):
+        for landing in ("landed", "nothing", "not-landed"):
+            with self.subTest(landing=landing):
+                launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Old", "state": "ended",
+                                                "outcome": "done", "landing": {"state": landing}})
+                self.assertIsNone(launch.open_run_refusal(self.root))
+                self.assertTrue(launch.preview(self.root, self.feature)["can_start"])
+                self.assertIsNone(self.start(dry_run=True)["pid"])
 
     def test_a_merged_or_dropped_job_does_not_block(self):
         launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Old", "state": "merged"})
@@ -308,8 +352,8 @@ class LaunchJobTest(unittest.TestCase):
 
 
 class ContinueJobTest(unittest.TestCase):
-    """continue_job() (005 FR-009, data-model §3 and §8): allowed and refused states, the limit rule,
-    counts kept, and resuming an interrupted run with its work in the tree."""
+    """continue_job() (005 FR-009, data-model §3 and §8; 009 T007): only a run shown `suspended` continues,
+    the limit rule, counts kept, and resuming an interrupted run with its work in the tree."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -364,33 +408,58 @@ class ContinueJobTest(unittest.TestCase):
         path.write_text(path.read_text().replace(f"- [ ] {task_id}", f"- [x] {task_id}"))
         git(self.root, "commit", "-qam", f"tick {task_id}")
 
-    def test_each_allowed_state_continues_on_the_jobs_branch(self):
+    def run_json(self):
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"run_id": "20261031-1100",
+                                                                 "branch": self.job_branch}))
+
+    def check_started(self, resumes):
+        result = launch.continue_job(self.root, self.job)
+        self.assertEqual((result["job"], result["pid"], result["resumes"]), (self.job, 4444, resumes))
+        self.assertEqual(self.branch(), self.job_branch)
+        self.assertEqual((self.record()["state"], self.record()["reason"]), ("working", None))
+        cmd = self.popen.call_args.args[0]
+        self.assertEqual(cmd[2:], ["--project", str(self.root), "--job", self.job])
+        self.assertNotIn("--max-wait-hours", cmd)
+        self.assertTrue(self.popen.call_args.kwargs["start_new_session"])
+        self.popen.reset_mock()
+
+    def test_a_suspended_run_continues_on_the_jobs_branch(self):
+        self.set(state="suspended", reason="the run was cut off")
+        git(self.root, "switch", "-q", "main")
+        self.check_started(None)
+
+    def test_each_run_shown_suspended_resumes(self):
+        # 005 states and a `working` run with no supervisor read as suspended while the run's run.json exists
         for state, reason in (("waiting", "only items that need you are left"), ("working", None),
-                              ("held", "kept paused at the usage reset"), ("stopped", "stopped by you")):
+                              ("held", "kept paused at the usage reset"), ("stopped", "stopped by you"),
+                              ("suspended", "the run was cut off")):
             with self.subTest(state=state):
                 self.set(state=state, reason=reason)
-                git(self.root, "switch", "-q", "main")
-                result = launch.continue_job(self.root, self.job)
-                self.assertEqual((result["job"], result["pid"], result["resumes"]), (self.job, 4444, None))
-                self.assertEqual(self.branch(), self.job_branch)
-                self.assertEqual((self.record()["state"], self.record()["reason"]), ("working", None))
-                cmd = self.popen.call_args.args[0]
-                self.assertEqual(cmd[2:], ["--project", str(self.root), "--job", self.job])
-                self.assertNotIn("--max-wait-hours", cmd)
-                self.assertTrue(self.popen.call_args.kwargs["start_new_session"])
-                self.popen.reset_mock()
+                self.run_json()
+                self.assertEqual(launch.sdd_job.shown_state(self.root, self.record())["state"], "suspended")
+                self.check_started("20261031-1100")
 
     def test_refused_states(self):
-        for state in ("done", "failed", "merged", "dropped"):
+        for state in ("done", "failed", "merged", "dropped", "waiting", "stopped", "held"):
             with self.subTest(state=state):
-                self.set(state=state)
-                self.refused(f"this job cannot be continued in state {state}")
+                self.set(state=state)  # no run.json of its own: these read as ended
+                self.refused("this run cannot be continued: it is ended")
                 self.assertEqual(self.record()["state"], state)
+        self.set(state="ended", outcome="done", landing={"state": "pending", "commit": None, "files": []})
+        self.refused("this run cannot be continued: it is ended")
         self.set(state="working")
         self.status(state="running", pid=os.getpid())
-        self.refused("this job cannot be continued in state working")
+        self.refused("this run cannot be continued: it is working")
         self.status(state="waiting", pid=os.getpid(), resets_at=1793450000)
-        self.refused("this job cannot be continued in state paused")
+        self.refused("this run cannot be continued: it is paused")
+
+    def test_from_waiting_keeps_the_005_after_settle_path(self):
+        self.set(state="waiting", reason="only items that need you are left")
+        git(self.root, "switch", "-q", "main")
+        self.refused("this run cannot be continued: it is ended")
+        result = launch.continue_job(self.root, self.job, from_waiting=True)
+        self.assertEqual((result["pid"], result["resumes"]), (4444, None))
+        self.assertEqual((self.branch(), self.record()["state"]), (self.job_branch, "working"))
 
     def test_unknown_job(self):
         with self.assertRaises(launch.Refused) as caught:
@@ -398,52 +467,65 @@ class ContinueJobTest(unittest.TestCase):
         self.assertEqual(str(caught.exception), "no such job: 20990101-0000")
 
     def test_refuses_while_a_supervisor_is_running_for_a_stored_state(self):
-        self.set(state="stopped", reason="stopped by you")
+        self.set(state="suspended", reason="the run was cut off")
         self.status(state="running", pid=os.getpid())
         self.refused("a run is active")
 
     def test_refuses_a_dirty_tree_when_not_resuming(self):
-        self.set(state="stopped", reason="stopped by you")
+        self.set(state="suspended", reason="the run was cut off")
         git(self.root, "switch", "-q", "main")
         (self.root / "stray.txt").write_text("mine")
         self.refused("the working tree has changes; commit or stash them first: stray.txt")
-        self.assertEqual((self.branch(), self.record()["state"]), ("main", "stopped"))
+        self.assertEqual((self.branch(), self.record()["state"]), ("main", "suspended"))
 
     def test_refuses_when_no_scope_task_is_runnable_and_switches_back(self):
         git(self.root, "switch", "-q", self.job_branch)
         self.tick("T001")
         self.tick("T003")
         git(self.root, "switch", "-q", "main")
-        self.set(state="waiting", reason="only items that need you are left")
+        self.set(state="suspended", reason="the run was cut off")
         self.refused("no task in the scope is runnable")
-        self.assertEqual((self.branch(), self.record()["state"]), ("main", "waiting"))
+        self.assertEqual((self.branch(), self.record()["state"]), ("main", "suspended"))
+
+    def test_a_suspended_run_with_nothing_left_is_refused_and_kept(self):
+        git(self.root, "switch", "-q", self.job_branch)
+        for task_id in ("T001", "T003", "T004"):  # T002 is done in the fixture
+            self.tick(task_id)
+        git(self.root, "switch", "-q", "main")
+        self.set(state="suspended", reason="the run was cut off")
+        self.refused("no task in the scope is runnable")
+        self.assertEqual((self.branch(), self.record()["state"]), ("main", "suspended"))
 
     def test_continue_with_nothing_left_makes_the_job_done(self):
+        # the 005 path (`after_settle` passes from_waiting) keeps finishing a waiting Job with nothing left
         git(self.root, "switch", "-q", self.job_branch)
         for task_id in ("T001", "T003", "T004"):  # T002 is done in the fixture
             self.tick(task_id)
         git(self.root, "switch", "-q", "main")
         self.set(state="waiting", reason="only items that need you are left")
-        self.refused("nothing is left to run: the job is now done, so Merge it")
+        with self.assertRaises(launch.Refused) as caught:
+            launch.continue_job(self.root, self.job, from_waiting=True)
+        self.assertEqual(str(caught.exception), "nothing is left to run: the job is now done, so Merge it")
+        self.popen.assert_not_called()
         self.assertEqual((self.branch(), self.record()["state"]), ("main", "done"))
 
     def test_refuses_outside_a_git_repository(self):
         with tempfile.TemporaryDirectory() as other:
             project = Path(other).resolve()
-            launch.sdd_job.save(project, {"id": "20261031-0900", "state": "stopped", "reason": "stopped by you",
+            launch.sdd_job.save(project, {"id": "20261031-0900", "state": "suspended", "reason": "stopped by you",
                                           "branch": "auto/20261031-0900", "feature": "001-a"})
             with self.assertRaises(launch.Refused) as caught:
                 launch.continue_job(project, "20261031-0900")
         self.assertEqual(str(caught.exception), "the project is not a git repository")
 
     def test_a_run_of_another_branch_is_active(self):
-        self.set(state="waiting")
+        self.set(state="suspended")
         (self.root / ".sdd" / "run.json").write_text(json.dumps({"run_id": "x", "branch": "auto/other"}))
         self.refused("a run is active")
 
     def test_a_limit_stopped_job_needs_a_new_value_for_that_limit(self):
         self.tick("T001")
-        self.set(state="stopped", reason="max_tasks 1 reached", limits={"max_tasks": 1, "until": None, "max_runs": 20})
+        self.set(state="suspended",reason="max_tasks 1 reached", limits={"max_tasks": 1, "until": None, "max_runs": 20})
         self.refused("the limit max_tasks is still reached; give a new value")
         self.refused("the limit max_tasks is still reached; give a new value", {"max_runs": 30})
         self.refused("the limit max_tasks is still reached; give a new value", {"max_tasks": 1})
@@ -453,13 +535,13 @@ class ContinueJobTest(unittest.TestCase):
         self.assertEqual(self.record()["state"], "working")
 
     def test_none_removes_the_limit(self):
-        self.set(state="stopped", reason="max_runs 2 reached", runs=["r1", "r2"],
+        self.set(state="suspended",reason="max_runs 2 reached", runs=["r1", "r2"],
                  limits={"max_tasks": None, "until": None, "max_runs": 2})
         launch.continue_job(self.root, self.job, {"max_runs": None})
         self.assertEqual(self.record()["limits"]["max_runs"], None)
 
     def test_until_must_be_later_than_now(self):
-        self.set(state="stopped", reason="until 09:00 reached",
+        self.set(state="suspended",reason="until 09:00 reached",
                  limits={"max_tasks": None, "until": 1000, "max_runs": 20})
         self.refused("the limit until is still reached; give a new value", {"until": 2000})
         later = int(launch.time.time()) + 3600
@@ -467,14 +549,14 @@ class ContinueJobTest(unittest.TestCase):
         self.assertEqual(self.record()["limits"]["until"], later)
 
     def test_another_reached_limit_is_refused_too(self):
-        self.set(state="stopped", reason="stopped by you", runs=["r1", "r2"],
+        self.set(state="suspended",reason="stopped by you", runs=["r1", "r2"],
                  limits={"max_tasks": None, "until": None, "max_runs": 2})
         self.refused("the limit max_runs is still reached; give a new value")
 
     def test_counts_are_not_reset(self):
         self.tick("T001")
         before = self.record()["scope_tasks"]
-        self.set(state="stopped", reason="max_runs 2 reached", runs=["r1", "r2"], no_progress_runs=1,
+        self.set(state="suspended",reason="max_runs 2 reached", runs=["r1", "r2"], no_progress_runs=1,
                  limits={"max_tasks": 3, "until": None, "max_runs": 2})
         self.refused("the limit max_runs is still reached; give a new value", {"max_runs": 2})
         launch.continue_job(self.root, self.job, {"max_runs": 3})
@@ -485,7 +567,7 @@ class ContinueJobTest(unittest.TestCase):
         self.assertEqual(record["limits"], {"max_tasks": 3, "until": None, "max_runs": 3})
 
     def test_bad_new_limits(self):
-        self.set(state="stopped", reason="stopped by you")
+        self.set(state="suspended",reason="stopped by you")
         for limits, text in (({"max_tasks": 0}, "max tasks must be a whole number from 1 to 500"),
                              ({"speed": 1}, "unknown limit: speed")):
             with self.subTest(limits=limits):
@@ -514,7 +596,7 @@ class ContinueJobTest(unittest.TestCase):
 
     def test_cli_continue(self):
         script = str(HERE.parent / "bin" / "sdd-launch.py")
-        self.set(state="stopped", reason="max_runs 1 reached", runs=["r1"],
+        self.set(state="suspended",reason="max_runs 1 reached", runs=["r1"],
                  limits={"max_tasks": None, "until": None, "max_runs": 1})
         out = subprocess.run([sys.executable, script, str(self.root), str(self.feature), "--continue", self.job],
                              capture_output=True, text=True)
