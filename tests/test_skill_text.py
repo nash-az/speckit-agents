@@ -154,5 +154,30 @@ class SddStatusStateTest(unittest.TestCase):
         self.assertIn("When it is not the same as the `contract` in the `state` output, add one line", self.step4)
 
 
+SUMMARY_PARAGRAPH = (
+    "Every task gets a plain-language summary on the line right below it, indented by exactly two spaces: "
+    "one sentence a person reads on the task card, with no file paths, function names or task ids "
+    "(for example: The dashboard shows each run's state in words.). "
+    "The task line itself stays exact, for the implementer."
+)
+
+
+class AgentTagsSummaryTest(unittest.TestCase):
+    """The agent tags ask for a summary line under every task (009 T015)."""
+
+    def test_template_holds_summary_paragraph(self):
+        text = read("templates/agent-tags.md")
+        self.assertIn("indented by exactly two spaces", text)
+        self.assertIn(SUMMARY_PARAGRAPH, text)
+
+    def test_override_holds_same_paragraph(self):
+        self.assertIn(SUMMARY_PARAGRAPH, read(".specify/templates/overrides/tasks-template.md"))
+
+    def test_override_section_matches_template(self):
+        override = read(".specify/templates/overrides/tasks-template.md")
+        part = section(override, "## Agent tags", "## Path Conventions")
+        self.assertEqual(part.strip(), read("templates/agent-tags.md").strip())
+
+
 if __name__ == "__main__":
     unittest.main()

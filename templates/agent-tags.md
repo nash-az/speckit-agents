@@ -23,3 +23,5 @@ Unattended runs (`/sdd-run` from speckit-agents) read extra tags written after `
 - `[ui]` — changes what the user sees; verified by build and tests during the run and listed for a person to look at.
 
 A task that the run would otherwise have to guess at is better split into the code part (untagged) and the person's part (`[manual]` or `[decision]`).
+
+Every task gets a plain-language summary on the line right below it, indented by exactly two spaces: one sentence a person reads on the task card, with no file paths, function names or task ids (for example: The dashboard shows each run's state in words.). The task line itself stays exact, for the implementer.
