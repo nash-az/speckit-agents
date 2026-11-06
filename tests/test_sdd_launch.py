@@ -53,6 +53,15 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual((info["runnable"], info["held"]), (2, 1))
         self.assertIsNone(info["resumes"])
 
+    def test_preview_items_carry_the_summary(self):
+        (self.feature / "tasks.md").write_text(
+            "## Phase 1: Setup\n\n- [ ] T001 Do a thing in `bin/x.py`\n  The thing gets done.\n- [ ] T005 No summary\n",
+            encoding="utf-8")
+        info = launch.preview(self.root, self.feature)
+        self.assertEqual(info["phases"][0]["task_list"],
+                         [{"id": "T001", "text": "Do a thing in `bin/x.py`", "summary": "The thing gets done."},
+                          {"id": "T005", "text": "No summary", "summary": None}])
+
     def test_dry_run_builds_the_supervisor_command(self):
         result = launch.launch(self.root, self.feature, ["2"], True, 3, dry_run=True)
         self.assertEqual(result["run_args"], "--no-converge --phases 2 --max-tasks 3")

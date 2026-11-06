@@ -60,12 +60,18 @@ MARKUP_TASK_ID = "T014"
 MARKUP_TEXT = '<img src="x" onerror="window.sddImgRan = true">'
 MARKUP_TASK = "- [ ] %s Show %s as text\n" % (MARKUP_TASK_ID, MARKUP_TEXT)
 
+# A task with a plain-language summary (009 FR-029): the card shows the summary, the exact text behind Details.
+SUMMARY_TASK_ID = "T015"
+SUMMARY_EXACT = "In `bin/z.py` add `zap()` and call it from `main`"
+SUMMARY_TEXT = "The page explains it in plain words."
+SUMMARY_TASK = "- [ ] %s %s\n  %s\n" % (SUMMARY_TASK_ID, SUMMARY_EXACT, SUMMARY_TEXT)
+
 
 def build_views_project(root):
     """The harness toy project with a task whose text is markup, a spec.md and one finished run."""
     root = harness.build_toy_project(root)
     feature = root / "specs" / "001-only"
-    (feature / "tasks.md").write_text(harness.fixtures.STATUS_TASKS + MARKUP_TASK, encoding="utf-8")
+    (feature / "tasks.md").write_text(harness.fixtures.STATUS_TASKS + MARKUP_TASK + SUMMARY_TASK, encoding="utf-8")
     (feature / "spec.md").write_text(SPEC, encoding="utf-8")
     wf = harness.fixtures.write_workflow_dir(root.resolve().parent / "transcripts" / "wf_views")
     harness.fixtures.write_run(root, RUN_ID, [wf])
@@ -186,6 +192,31 @@ class ViewsTest(harness.UITestCase):
             self.assertEqual(text.locator("img").count(), 0, "the task text became an element")
             self.assertEqual(ui.page.locator("#tasks-list img").count(), 0)
             self.assertIsNone(ui.page.evaluate("window.sddImgRan"), "the task text's onerror ran")
+
+    def test_details_opens_the_exact_text_and_stays_open_after_a_refresh(self):
+        tasks = {t["id"]: t for p in self.api("/api/project/tasks")["phases"] for t in p["tasks"]}
+        self.assertEqual(tasks[SUMMARY_TASK_ID]["summary"], SUMMARY_TEXT)
+        exact = SUMMARY_EXACT.replace("`", "")
+        with self.open_view("tasks") as ui:
+            card = ui.page.locator('#tasks-list .task-card[data-task-card="%s"]' % SUMMARY_TASK_ID)
+            card.wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertEqual(card.locator(":scope > .task-text").inner_text().strip(), SUMMARY_TEXT)
+            details = card.locator('details.task-details[data-details-task="%s"]' % SUMMARY_TASK_ID)
+            self.assertFalse(details.evaluate("d => d.open"))
+            self.assertFalse(details.locator(".task-text").is_visible(), "the exact text shows before Details is opened")
+            details.locator("summary").click()
+            self.assertTrue(details.evaluate("d => d.open"))
+            self.assertEqual(details.locator(".task-text").inner_text().strip(), exact)
+            self.assertEqual(details.locator(".task-text code").count(), 3)
+            self.assertNotIn("log-open", card.get_attribute("class"), "clicking Details opened the card's history")
+            # The next 3 s redraw replaces the element; the new one is open too.
+            details.evaluate("d => { d.__old = true; }")
+            ui.page.wait_for_function(
+                "() => { var d = document.querySelector('[data-details-task=\"%s\"]'); return d && !d.__old; }"
+                % SUMMARY_TASK_ID, timeout=TIMEOUT_MS)
+            self.assertTrue(details.evaluate("d => d.open"), "Details closed on the refresh")
+            self.assertTrue(details.locator(".task-text").is_visible())
+            self.assertNotIn("log-open", card.get_attribute("class"))
 
     def test_runs_view_lists_sessions_without_a_run_as_earlier_runs(self):
         runs = self.api("/api/runs")

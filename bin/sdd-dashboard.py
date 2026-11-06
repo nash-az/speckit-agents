@@ -1179,6 +1179,11 @@ def build_html():
   .task-id { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 700; color: var(--accent); margin-bottom: 0.25rem; display: block; }
   .task-not-yet { font-size: 0.8125rem; color: var(--text-muted); margin-bottom: 0.5rem; }
   .task-text { font-size: 0.875rem; color: var(--text); margin-bottom: 0.5rem; line-height: 1.4; }
+  .task-details { margin: -0.25rem 0 0.5rem; font-size: 0.8125rem; }
+  .task-details > summary { cursor: pointer; color: var(--text-muted); user-select: none; }
+  .task-details > summary:hover { color: var(--text); }
+  .task-details[open] > summary { margin-bottom: 0.25rem; }
+  .task-details .task-text { color: var(--text-muted); margin-bottom: 0; }
   .task-tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
   .task-tag { font-size: 0.6875rem; padding: 0.125rem 0.5rem; border-radius: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
   .tag-P { background: rgba(59,130,246,0.15); color: var(--accent); }
@@ -1909,11 +1914,23 @@ def build_html():
       });
     }
 
+    // {task id: true} for the Details expanders that are open, so the 3 s redraw keeps them open.
+    var openDetails = {};
+
+    // A task's main text (009 FR-029): its plain-language summary, not cut, with the exact text behind a
+    // "Details" expander; a task without a summary shows its exact text as before.
+    function taskTextHtml(t) {
+      if (!t.summary) return '<div class="task-text">' + inlineCode(t.text) + '</div>';
+      return '<div class="task-text">' + escapeHtml(t.summary) + '</div>' +
+        '<details class="task-details" data-details-task="' + escapeHtml(t.id) + '"' + (openDetails[t.id] ? ' open' : '') +
+        '><summary>Details</summary><div class="task-text">' + inlineCode(t.text) + '</div></details>';
+    }
+
     function taskCardHtml(t) {
       return '<div class="task-card' + (taskStatusKey(t) === 'done' ? ' task-done' : '') + (openLogs[t.id] ? ' log-open' : '') +
         '" data-task-card="' + escapeHtml(t.id) + '">' +
         '<div class="task-head"><span class="task-id">' + escapeHtml(t.id) + '</span>' + taskBadge(t) + '</div>' +
-        '<div class="task-text">' + inlineCode(t.text) + '</div>' +
+        taskTextHtml(t) +
         (t.notYet ? '<div class="task-not-yet">Not yet: you can do this once the earlier phases are finished (' + t.notYet +
           (t.notYet === 1 ? ' task' : ' tasks') + ' left).</div>' : '') +
         '<div class="task-tags">' + tagsHtml(t.tags) + taskRunChipHtml(t.id) + '</div>' +
@@ -1931,7 +1948,7 @@ def build_html():
       return '<div class="blocked-item">' +
         '<div class="blocked-header"><div class="blocked-id">' + escapeHtml(t.id) + '</div>' + taskBadge(t) + '</div>' +
         (phaseTitle ? '<div class="blocked-phase">' + escapeHtml(phaseTitle) + '</div>' : '') +
-        '<div class="task-text">' + inlineCode(t.text) + '</div>' +
+        taskTextHtml(t) +
         (t.status_reason ? '<div class="blocked-reason">' + escapeHtml(t.status_reason) + '</div>' : '') +
         (ask ? blockedQuestionHtml(ask) : '') +
         (taskStatusKey(t) === 'held' && t.status_tag === 'manual' ? '<div class="manual-steps" data-steps-task="' + escapeHtml(t.id) + '"></div>' + manualActionsHtml(t) : '') +
@@ -3114,8 +3131,11 @@ def build_html():
       if (!plan.can_start) return head + '<div class="start-reason">Cannot start: ' + escapeHtml(plan.reason) + '</div>';
       var phases = (plan.phases || []).map(function(p) {
         var tasks = (p.task_list || []).map(function(t) {
-          var text = String(t.text || '');
-          if (text.length > 110) text = text.slice(0, 107) + '...';
+          var text = String(t.summary || '');
+          if (!text) {
+            text = String(t.text || '');
+            if (text.length > 110) text = text.slice(0, 107) + '...';
+          }
           return '<label class="start-task"><input type="checkbox" class="start-task-box" value="' + escapeHtml(t.id) + '" checked> ' +
             '<b>' + escapeHtml(t.id) + '</b> ' + escapeHtml(text) + '</label>';
         }).join('');
@@ -3334,7 +3354,7 @@ def build_html():
       if (t.classList.contains('decision-submit')) saveDecision(t.getAttribute('data-task'));
       if (t.classList.contains('decision-apply')) applyDecision(t.getAttribute('data-task'));
       var card = t.closest ? t.closest('[data-task-card]') : null;
-      if (card && !t.closest('.live-output, .task-history, button, a, textarea, [data-run], [data-open-job]') &&!(window.getSelection && String(window.getSelection()))) {
+      if (card && !t.closest('.live-output, .task-history, .task-details, button, a, textarea, [data-run], [data-open-job]') &&!(window.getSelection && String(window.getSelection()))) {
         var tid = card.getAttribute('data-task-card');
         if (openLogs[tid]) delete openLogs[tid]; else openLogs[tid] = true;
         loadTasks();
@@ -3911,6 +3931,14 @@ def build_html():
       document.addEventListener('toggle', function(ev) {
         var d = ev.target;
         if (d && d.classList && d.classList.contains('done-fold')) openDone[d.getAttribute('data-phase')] = d.open;
+      }, true);
+
+      // The same for a task's Details expander (009 FR-029), keyed by its task id.
+      document.addEventListener('toggle', function(ev) {
+        var d = ev.target;
+        if (!d || !d.classList || !d.classList.contains('task-details')) return;
+        var id = d.getAttribute('data-details-task');
+        if (d.open) openDetails[id] = true; else delete openDetails[id];
       }, true);
 
       window.addEventListener('beforeunload', function(ev) { if (editorChanged()) { ev.preventDefault(); ev.returnValue = ''; } });

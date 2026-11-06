@@ -118,7 +118,8 @@ def preview(project: Path, feature: Path) -> dict:
     plan = sdd_tasks.plan(parsed, blocked, config, None, None)
     phases = [{"id": p["id"], "title": p["title"],
                "runnable": sum(len(g) for g in p["groups"]),
-               "task_list": [{"id": t["id"], "text": t.get("text", "")} for t in p["tasks"].values()]}
+               "task_list": [{"id": t["id"], "text": t.get("text", ""), "summary": t.get("summary")}
+                             for t in p["tasks"].values()]}
               for p in plan["phases"]]
     result = {"phases": phases, "runnable": plan["runnable"], "held": len(plan["held"]),
               "can_start": True, "reason": None, "resumes": None}

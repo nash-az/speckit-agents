@@ -268,6 +268,17 @@ class HandlerTest(unittest.TestCase):
         self.assertEqual(tasks["T007"]["question"], "Which API should it call?")
         self.assertEqual(data["phases"][0]["status"], "blocked")
 
+    def test_tasks_endpoint_gives_each_task_its_summary(self):
+        path = self.root / "specs" / "001-only" / "tasks.md"
+        path.write_text(path.read_text(encoding="utf-8").replace(
+            "- [x] T001 Done already in `a.py`\n",
+            "- [x] T001 Done already in `a.py`\n  The first task in plain words.\n"), encoding="utf-8")
+        data = self.get("/api/project/tasks")
+        tasks = {t["id"]: t for p in data["phases"] for t in p["tasks"]}
+        self.assertEqual(tasks["T001"]["summary"], "The first task in plain words.")
+        self.assertEqual(tasks["T001"]["text"], "Done already in `a.py`")
+        self.assertTrue(all(t["summary"] is None for i, t in tasks.items() if i != "T001"))
+
     def test_blocked_endpoint(self):
         data = self.get("/api/project/blocked")
         self.assertEqual({e["id"] for e in data["entries"]}, {"T007", "T008", "T009", "T010"})
@@ -1234,6 +1245,27 @@ class TasksViewTest(unittest.TestCase):
         self.assertIn("task-done", done)
         self.assertIn(queued_badge, queued)
 
+    def test_task_card_shows_the_summary_with_the_exact_text_behind_details(self):
+        got = self.run_js(
+            "[taskCardHtml({id: 'T1', text: 'Edit `bin/x.py` and ' + 'more '.repeat(40), summary: 'The <b> thing ' + 'works '.repeat(40),"
+            " tags: [], status: null, done: false}),"
+            " taskCardHtml({id: 'T2', text: 'Edit `bin/y.py`', summary: null, tags: [], status: null, done: false}),"
+            " (function() { openDetails.T1 = true; return taskCardHtml({id: 'T1', text: 'a', summary: 's', tags: []}); })(),"
+            " waitingItemHtml({id: 'T3', text: 'Exact `t`', summary: 'Plain', tags: [], status: 'held', status_tag: 'decision'})]")
+        with_summary, without, reopened, waiting = got
+        self.assertIn('<div class="task-text">The &lt;b&gt; thing ' + 'works ' * 40 + '</div>', with_summary)
+        self.assertIn('<details class="task-details" data-details-task="T1"><summary>Details</summary>'
+                      '<div class="task-text">Edit <code>bin/x.py</code> and ', with_summary)
+        self.assertNotIn("task-details", without)
+        self.assertIn('<div class="task-text">Edit <code>bin/y.py</code></div>', without)
+        self.assertIn('<details class="task-details" data-details-task="T1" open>', reopened)
+        self.assertIn('<div class="task-text">Plain</div><details class="task-details" data-details-task="T3">', waiting)
+        self.assertIn('<code>t</code>', waiting)
+
+    def test_clicks_inside_details_do_not_toggle_the_history(self):
+        self.assertIn("t.closest('.live-output, .task-history, .task-details,", self.html)
+        self.assertIn(".task-details > summary {", self.html)
+
     HISTORY = ("{task: 'T010', entries: ["
                "{ts: '2026-11-06T09:00:00', run: '20261106-0900', run_title: 'Phase 5', step: 'started', attempt: 1},"
                "{ts: '2026-11-06T09:01:00', run: '20261106-0900', run_title: 'Phase 5', step: 'implemented', attempt: 2,"
@@ -2071,7 +2103,7 @@ class StartRunTest(unittest.TestCase):
         data = request(self, "GET", "/api/run/plan")
         self.assertTrue(data["can_start"])
         self.assertEqual(data["phases"], [{"id": "1", "title": "A", "runnable": 1,
-                                         "task_list": [{"id": "T001", "text": "Do it"}]}])
+                                         "task_list": [{"id": "T001", "text": "Do it", "summary": None}]}])
         self.assertEqual((data["runnable"], data["held"]), (1, 1))
 
     def test_start_calls_the_launcher_and_answers_202(self):
@@ -2227,7 +2259,7 @@ class JobsRouteTest(unittest.TestCase):
         self.assertEqual(set(data), {"phases", "runnable", "held", "can_start", "reason"})
         self.assertEqual((data["can_start"], data["reason"]), (True, None))
         self.assertEqual(data["phases"], [{"id": "1", "title": "A", "runnable": 1,
-                                         "task_list": [{"id": "T001", "text": "Do it"}]}])
+                                         "task_list": [{"id": "T001", "text": "Do it", "summary": None}]}])
         self.assertEqual((data["runnable"], data["held"]), (1, 1))
         self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")  # the dry run changed nothing
         self.assertEqual(dash.sdd_job.list_jobs(self.root), [])
@@ -2578,7 +2610,14 @@ class JobsViewTest(unittest.TestCase):
         self.assertIn("Cannot start: another run is going: Phase 11", refused)
         self.assertNotIn("start-job-btn", refused)
         self.assertNotIn('id="start-tasks"', panel)  # the typed task list is gone
-        now = "new Date(2026, 9, 31, 17, 0, 0).getTime()"
+        long_summary = "The <i> run " + "keeps going " * 20
+        got = self.run_js("startJobHtml({phases: [{id: '1', title: 'Setup', runnable: 2, task_list: ["
+                          "{id: 'T001', text: 'x'.repeat(200), summary: " + json.dumps(long_summary) + "},"
+                          " {id: 'T002', text: 'y'.repeat(200), summary: null}]}], runnable: 2, held: 0, can_start: true, reason: null})")
+        self.assertIn("<b>T001</b> " + long_summary.replace("<", "&lt;").replace(">", "&gt;") + "</label>", got)
+        self.assertNotIn("x" * 10, got)
+        self.assertIn("<b>T002</b> " + "y" * 107 + "...</label>", got)
+        now ="new Date(2026, 9, 31, 17, 0, 0).getTime()"
         got = self.run_js("[startJobBody({scope: 'phases', phases: [{id: '3', runnable: 2}, {id: '4', runnable: 1}, {id: '5', runnable: 1}],"
                           " max_tasks: '4', until: '', max_runs: '', title: ''}, %s),"
                           " startJobBody({scope: 'tasks', tasks: 't061, T063', max_runs: 'none', title: ' Mine '}, %s),"
