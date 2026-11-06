@@ -2249,6 +2249,30 @@ class JobsRouteTest(unittest.TestCase):
         view = dash.sdd_views.job_view(self.root, dash.sdd_job.load(self.root, "20261028-0900"))
         self.assertIsNone(view["summary"])
 
+    def test_a_suspended_run_names_its_changed_files(self):
+        """009 T029 (FR-010): `job_view` gives a suspended run the paths `git status` shows outside `.sdd/`
+        (an edit and an untracked file); [] for a run not shown suspended and for a project without git."""
+        (self.root / "app.py").write_text("x = 1\n", encoding="utf-8")
+        self.record("20261027-0900", "suspended", reason="stopped by you")
+        self.record("20261028-0900", "ended", outcome="done",
+                    landing={"state": "landed", "commit": "e" * 40, "files": []})
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"job": "20261027-0900"}), encoding="utf-8")
+        suspended = dash.sdd_job.load(self.root, "20261027-0900")
+        self.assertEqual(dash.sdd_views.job_view(self.root, suspended)["changed_files"], [])  # not a repository
+        self.init_git()
+        (self.root / "app.py").write_text("x = 2\n", encoding="utf-8")
+        (self.root / "new dir").mkdir()
+        (self.root / "new dir" / "new.py").write_text("y = 1\n", encoding="utf-8")
+        (self.root / ".sdd" / "scratch.txt").write_text("not shown\n", encoding="utf-8")
+        view = dash.sdd_views.job_view(self.root, suspended)
+        self.assertEqual(view["shown"]["state"], "suspended")
+        self.assertEqual(sorted(view["changed_files"]), ["app.py", "new dir/new.py"])
+        ended = dash.sdd_views.job_view(self.root, dash.sdd_job.load(self.root, "20261028-0900"))
+        self.assertEqual(ended["changed_files"], [])
+        for n in range(25):
+            (self.root / f"extra{n:02d}.py").write_text("", encoding="utf-8")
+        self.assertEqual(len(dash.sdd_views.job_view(self.root, suspended)["changed_files"]), 20)
+
     def test_one_job_with_its_runs_and_runs_name_their_job(self):
         self.record("20261031-1012", "waiting", runs=["20261031-1012"])
         wf = write_workflow_dir(Path(self.tmp.name).resolve() / "transcripts" / "wf_job")
@@ -2708,10 +2732,19 @@ class JobsViewTest(unittest.TestCase):
                           " jobDoneText(" + self.JOB + ", 'merge', {ok: false, status: 409,"
                           "   body: {error: 'the merge conflicts in: a.py'}})]")
         self.assertEqual(got, [
-            "Drop Phase 11? The half-done work is stashed and saved in the task's history; finished tasks land on main.",
+            "Drop Phase 11? The half-done work on T014 is stashed and saved in the task's history: no changed files."
+            " Finished tasks land on main.",
             "Run continues", "Run dropped; the half-done work is in the stash", "Landed on main (abcdef1)",
             "Nothing to land on main", "Merged into main (abcdef1)",
             "Could not merge the run: the merge conflicts in: a.py"])
+        got = self.run_js("[jobDropQuestion(Object.assign({}, " + self.JOB + ", {in_flight: ['T014', 'T015'],"
+                          "   changed_files: ['bin/x.py', 'tests/test_x.py']})),"
+                          " jobDropQuestion(Object.assign({}, " + self.JOB + ", {in_flight: []}))]")
+        self.assertEqual(got, [
+            "Drop Phase 11? The half-done work on T014, T015 is stashed and saved in the task's history:"
+            " bin/x.py, tests/test_x.py. Finished tasks land on main.",
+            "Drop Phase 11? The half-done work on its last task is stashed and saved in the task's history:"
+            " no changed files. Finished tasks land on main."])
 
     def test_limit_values(self):
         now = "new Date(2026, 9, 31, 17, 0, 0).getTime()"

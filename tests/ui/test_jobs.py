@@ -293,8 +293,9 @@ class JobsViewTest(unittest.TestCase):
             ui.page.wait_for_timeout(500)  # a POST, had one been sent, would have landed by now
             self.assertEqual(len(asked), 1, "Drop did not ask for confirmation")
             self.assertEqual(asked[0][0], "confirm")
-            self.assertEqual(asked[0][1], "Drop %s? The half-done work is stashed and saved in the task's history; "
-                                          "finished tasks land on main." % JOB_TITLE)
+            # the toy project is not a git repository and its run.json has no journal: no files, no tasks named
+            self.assertEqual(asked[0][1], "Drop %s? The half-done work on its last task is stashed and saved in the"
+                                          " task's history: no changed files. Finished tasks land on main." % JOB_TITLE)
             self.assertEqual(ui.drop_posts, [])
             self.assertEqual(self.drop.calls, [])
 

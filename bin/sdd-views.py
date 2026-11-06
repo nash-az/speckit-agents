@@ -219,6 +219,37 @@ def _in_flight(project, record) -> list:
         return []
 
 
+CHANGED_FILES_MAX = 20
+
+
+def _changed_files(project) -> list:
+    """The changed paths outside `.sdd/` (`status --porcelain`), at most CHANGED_FILES_MAX (untracked
+    files one by one); [] when the status fails or the project is not a repository. Drop names them
+    (009 FR-010)."""
+    try:  # a read-only status through sdd-job.py's helper (this module runs no process itself)
+        out = sdd_job._git(project, "status", "--porcelain", "-z", "--untracked-files=all")
+    except OSError:
+        return []
+    if out.returncode != 0:
+        return []
+    files, entries = [], out.stdout.split("\0")
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        if entry[0] in "RC":  # -z gives a rename's old path as the next entry
+            i += 1
+        path = entry[3:]
+        if path == ".sdd" or path.startswith(".sdd/"):
+            continue
+        files.append(path)
+        if len(files) == CHANGED_FILES_MAX:
+            break
+    return files
+
+
 def _run_summary(project, run_id):
     """The run's summary (`.sdd/runs/<run id>.json`, 009 data-model §6) as a dict, or None when the run id
     is not in the run id form or the file is missing or unreadable."""
@@ -237,17 +268,20 @@ def _tasks_done(summary):
 def job_view(project, record):
     """A run as `/api/jobs` gives it (009 plan "Shown state"; 005 data-model §9): the record plus `shown`
     (sdd-job.py `shown_state`), `progress` (None when tasks.md cannot be read), `in_flight` (the tasks a
-    suspended run was on, else []), `summary` (an ended run's `.sdd/runs/<id>.json`, 009 data-model §6, else
+    suspended run was on, else []), `changed_files` (a suspended run's changed paths outside `.sdd/`, at
+    most 20, else []; Drop's confirm, FR-010), `summary` (an ended run's `.sdd/runs/<id>.json`, 009 data-model §6, else
     None; the past-run card, FR-021) and `tasks_done` (the tasks that summary lists as done, else None)."""
     try:
         counts = sdd_job.progress(project, record)
     except (OSError, ValueError, KeyError, TypeError):
         counts = None
     shown = sdd_job.shown_state(project, record)
-    in_flight = _in_flight(project, record) if shown["state"] == "suspended" else []
+    suspended = shown["state"] == "suspended"
+    in_flight = _in_flight(project, record) if suspended else []
+    changed_files = _changed_files(project) if suspended else []
     summary = _run_summary(project, record.get("id")) if shown["state"] == "ended" else None
-    return {**record, "shown": shown, "progress": counts, "in_flight": in_flight, "summary": summary,
-            "tasks_done": _tasks_done(summary)}
+    return {**record, "shown": shown, "progress": counts, "in_flight": in_flight, "changed_files": changed_files,
+            "summary": summary, "tasks_done": _tasks_done(summary)}
 
 
 def list_job_views(project):

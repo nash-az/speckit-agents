@@ -3225,8 +3225,10 @@ def build_html():
     // The question Drop asks before dropping a suspended run (009 FR-010).
     function jobDropQuestion(job) {
       var base = (job.base && job.base.branch) || 'the base branch';
-      return 'Drop ' + (job.title || 'this run') + '? The half-done work is stashed and saved in the task\\'s history; ' +
-        'finished tasks land on ' + base + '.';
+      var tasks = (job.in_flight || []).join(', ') || 'its last task';
+      var files = (job.changed_files || []).join(', ') || 'no changed files';
+      return 'Drop ' + (job.title || 'this run') + '? The half-done work on ' + tasks +
+        ' is stashed and saved in the task\\'s history: ' + files + '. Finished tasks land on ' + base + '.';
     }
 
     // The toast after a card button: `r` is postJSON's answer ({ok, status, body}).
