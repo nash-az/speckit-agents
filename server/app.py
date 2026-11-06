@@ -15,7 +15,8 @@ What lives here:
 - `Handler`: the request checks of §10 (Host 421; POST Origin 403 and Content-Type 415; the guarded
   GETs), the `X-SDD-Contract` header on every response (§1), the 503 for every route except
   `GET /api/server` and `GET /api/projects` while there is no engine (§6), and a small route table
-  (`route()`) that later modules fill.
+  (`route()`) that the server modules in SERVER_MODULES fill (`load_server_modules()`; T014 adds
+  `projects.py`, the project list).
 """
 
 from __future__ import annotations
@@ -248,6 +249,25 @@ def route(method: str, pattern: str):
     return register
 
 
+# Server modules whose `ROUTES` (method, pattern, fn) join the table, loaded once from this folder.
+SERVER_MODULES = ("projects",)
+LOADED: dict = {}
+_load_lock = threading.Lock()
+
+
+def load_server_modules() -> dict:
+    """Load each of SERVER_MODULES once with `server_module()` and add its routes; returns
+    `{name: module}`."""
+    with _load_lock:
+        for name in SERVER_MODULES:
+            if name not in LOADED:
+                module = server_module(name)
+                for method, pattern, fn in module.ROUTES:
+                    route(method, pattern)(fn)
+                LOADED[name] = module
+        return LOADED
+
+
 def find_route(method: str, path: str):
     for m, pattern, fn in ROUTES:
         if m == method:
@@ -270,6 +290,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     """Every request: the §10 checks first, then the engine gate, then the route table."""
 
     engines: EngineHolder | None = None
+    projects = None  # the projects.Store on `<server state dir>/projects.json`, set by make_server()
     port = DEFAULT_PORT  # the server's own port, for the allowed Origins
     protocol_version = "HTTP/1.0"
 
@@ -375,8 +396,11 @@ def get_server(handler: Handler, match):  # noqa: ARG001
 
 def make_server(port: int, engines: EngineHolder) -> http.server.ThreadingHTTPServer:
     """A `ThreadingHTTPServer` on 127.0.0.1:`port` (0 = any free port). Localhost only, no auth:
-    do not add a host option. Raises OSError when the port is busy."""
-    handler = type("BoundHandler", (Handler,), {"engines": engines})
+    do not add a host option. Raises OSError when the port is busy. The project list lives in
+    `<server state dir>/projects.json` (§6)."""
+    modules = load_server_modules()
+    store = modules["projects"].Store(server_state_dir() / "projects.json", CONTRACT)
+    handler = type("BoundHandler", (Handler,), {"engines": engines, "projects": store})
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
     handler.port = server.server_address[1]
