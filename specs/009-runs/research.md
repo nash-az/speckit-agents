@@ -46,7 +46,8 @@ Decisions for the amendment after run `20261106-1204` and its analyze pass. Each
   starts through the supervisor: `bin/sdd-launch.py` (`launch_job`, `continue_job`) or the dashboard's Start run,
   which call it. The supervisor already sets `SDD_SUPERVISED=1` for its `claude -p` (`bin/sdd-supervise.py:292-295`)
   and `sdd-tasks.py session` records `started_by` from it (`bin/sdd-tasks.py:146`). `/sdd-run` gets one preflight
-  item: run `printenv SDD_SUPERVISED`; when it does not print `1`, say "This run is not started through the
+  item: run `python3 -c "import os; print(os.environ.get('SDD_SUPERVISED', ''))"` (allowed by `Bash(python3 *)`;
+  `printenv` is not on the allowlist in dontAsk mode); when it does not print `1`, or the call is denied or fails, say "This run is not started through the
   supervisor, so it has no usage-limit protection. Runs are started with the launcher (bin/sdd-launch.py) or Start
   run in the dashboard." and go on. It never starts a supervisor.
 - **Rationale**: FR-027, SC-008, constitution v1.2.0 "Development". Run `20261106-1204` (a direct Workflow call)
