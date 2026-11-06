@@ -13,7 +13,7 @@ Functions: `load`, `save`, `list_jobs`, `new_id`, `default_title`, `scope_args`,
 
     bin/sdd-job.py list [project]          -> [record + shown (shown_state) + progress, ...]
     bin/sdd-job.py show <id> [project]     -> record + shown (shown_state) + progress
-    bin/sdd-job.py land <id> [project]     -> {"landed": bool, "commit", "fast_forward": bool, "landing"} (land)
+    bin/sdd-job.py land <id> [project]     -> {"landed": bool, "commit", "fast_forward": bool, "landing", "summary"} (land)
     bin/sdd-job.py merge <id> [project]    -> the same as land (a 009 run: merge = land)
     bin/sdd-job.py drop <id> [project]     -> {"dropped": true, "tasks", "stash", "end"} (drop_suspended; a run
                                               not shown suspended is refused "this run cannot be dropped: ...")
@@ -440,7 +440,9 @@ def land(project, run_id: str) -> dict:
     possible, else one merge commit "merge: run <title>". A branch with no commit the base lacks gets landing
     `nothing`. On a conflict the merge is aborted, the checkout goes back to the run's branch, the landing is
     stored as `needs-merge` with the files, and `Refused` names them. Other refusals change nothing. Never
-    forces, pushes or deletes a branch. Returns `{"landed", "commit", "fast_forward", "landing"}`."""
+    forces, pushes or deletes a branch. Once the landing is `landed` or `nothing`, the run summary is written
+    and committed on the base (`sdd-history.py` `commit_summary`, research R2), so the base's HEAD is then the
+    summary commit. Returns `{"landed", "commit", "fast_forward", "landing", "summary"}` (+ "summary_error")."""
     project = Path(project)
     stored = load(project, run_id)
     if stored is None:
@@ -460,7 +462,8 @@ def land(project, run_id: str) -> dict:
         _switch(project, base)
         record.update(state="ended", landing=_landing("nothing"), ended=ended)
         save(project, record)
-        return {"landed": False, "commit": None, "fast_forward": False, "landing": record["landing"]}
+        return _with_summary(project, record, {"landed": False, "commit": None, "fast_forward": False,
+                                               "landing": record["landing"]})
     _switch(project, base)
     fast_forward = _git(project, "merge", "--ff-only", branch).returncode == 0
     if not fast_forward:
@@ -477,7 +480,22 @@ def land(project, run_id: str) -> dict:
     commit = _git(project, "rev-parse", "HEAD").stdout.strip()
     record.update(state="ended", landing=_landing("landed", commit), merge_commit=commit, ended=ended)
     save(project, record)
-    return {"landed": True, "commit": commit, "fast_forward": fast_forward, "landing": record["landing"]}
+    return _with_summary(project, record, {"landed": True, "commit": commit, "fast_forward": fast_forward,
+                                           "landing": record["landing"]})
+
+
+def _with_summary(project: Path, record: dict, result: dict) -> dict:
+    """Once the landing is final, write and commit the run summary on the base (research R2, data-model §6).
+    Adds "summary" (its path, or None) to `result`; a failure is kept as "summary_error"."""
+    result["summary"] = None
+    try:
+        done = sdd_history.commit_summary(project, record)
+        result["summary"] = done.get("path")
+        if done.get("error"):
+            result["summary_error"] = done["error"]
+    except Exception as e:  # the landing has happened; a summary problem must not undo or hide it
+        result["summary_error"] = str(e)
+    return result
 
 
 def land_ready(project, run_id: str) -> str | None:
@@ -510,7 +528,8 @@ def land_ready(project, run_id: str) -> str | None:
 
 def end(project, run_id: str, outcome: str, reason: str | None) -> dict:
     """End the run (plan "Engine changes" 2): store `ended` with the outcome and reason, commit the task
-    histories and the summary (`sdd-history.py` `finalize`), then `land`. A refusal from `land` is kept as the
+    histories and missing session reports on the run branch (`sdd-history.py` `finalize`), then `land`, which
+    commits the summary on the base once the landing is final. A refusal from `land` is kept as the
     landing (`needs-merge` stays; any other refusal stores `pending` with its `reason`). Never raises.
     Returns `{"finalize", "land"}`."""
     out: dict = {"finalize": None, "land": None}

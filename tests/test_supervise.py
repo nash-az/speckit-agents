@@ -759,7 +759,7 @@ class JobTest(unittest.TestCase):
         self.assertEqual(status["job"], JOB_ID)
         self.assertEqual(status["landing"]["state"], "landed")
         self.assertEqual(self.git_out("rev-parse", "--abbrev-ref", "HEAD"), "main", "the run landed on its base")
-        self.assertEqual(self.git_out("rev-parse", "main"), record["landing"]["commit"])
+        self.assertEqual(self.git_out("rev-parse", "main^"), record["landing"]["commit"])
         self.assertIn("- [x] T003", self.git_out("show", "main:specs/005-jobs/tasks.md"))
 
     def test_only_person_items_left_is_waiting(self):
@@ -1008,7 +1008,7 @@ class JobTest(unittest.TestCase):
         self.assertFalse((self.project / ".sdd" / "run.json").exists(), "the session was closed")
         self.assertTrue((self.project / ".sdd" / "runs" / "r1" / "run.json").exists(), "and its run.json archived")
         self.assertEqual(self.git_out("rev-parse", "--abbrev-ref", "HEAD"), "main")
-        self.assertEqual(self.git_out("rev-parse", "main"), record["landing"]["commit"])
+        self.assertEqual(self.git_out("rev-parse", "main^"), record["landing"]["commit"])
         self.assertIn("feat(T001): first", self.git_out("log", "--format=%s", "main"))
         tasks = self.git_out("show", "main:specs/005-jobs/tasks.md")
         self.assertIn("- [x] T001", tasks)

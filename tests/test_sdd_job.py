@@ -518,7 +518,8 @@ class RunCliTest(GitProjectCase):
         self.assertEqual(merged.returncode, 0, merged.stdout + merged.stderr)
         self.assertEqual(json.loads(merged.stdout),
                          {"contract": "1.0", "landed": True, "commit": self.job_commit, "fast_forward": True,
-                          "landing": {"state": "landed", "commit": self.job_commit, "files": []}})
+                          "landing": {"state": "landed", "commit": self.job_commit, "files": []},
+                          "summary": f".sdd/runs/{JOB_ID}.json"})
         self.assertEqual(self.branch(), "main")
         saved = job.load(self.root, JOB_ID)
         self.assertEqual((saved["state"], saved["landing"]["state"]), ("ended", "landed"))
@@ -592,9 +593,9 @@ class LandTest(GitProjectCase):
         result = job.land(self.root, JOB_ID)
         landing = {"state": "landed", "commit": self.job_commit, "files": []}
         self.assertEqual(result, {"landed": True, "commit": self.job_commit, "fast_forward": True,
-                                  "landing": landing})
+                                  "landing": landing, "summary": f".sdd/runs/{JOB_ID}.json"})
         self.assertEqual(self.branch(), "main")
-        self.assertEqual(self.head("main"), self.job_commit)
+        self.assertEqual(self.head("main^"), self.job_commit)
         self.assertEqual(self.head(f"auto/{JOB_ID}"), self.job_commit)  # branch kept
         saved = job.load(self.root, JOB_ID)
         self.assertEqual((saved["state"], saved["landing"], saved["merge_commit"]),
@@ -614,9 +615,9 @@ class LandTest(GitProjectCase):
         self.assertFalse(result["fast_forward"])
         self.assertTrue(result["landed"])
         self.assertEqual(self.branch(), "main")
-        self.assertEqual(result["commit"], self.head("main"))
-        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "merge: run Phase 11")
-        self.assertEqual(self.git("log", "-1", "--format=%P").split(), [moved, self.job_commit])
+        self.assertEqual(result["commit"], self.head("main^"))
+        self.assertEqual(self.git("log", "-1", "--format=%s", "main^").strip(), "merge: run Phase 11")
+        self.assertEqual(self.git("log", "-1", "--format=%P", "main^").split(), [moved, self.job_commit])
         saved = job.load(self.root, JOB_ID)
         self.assertEqual((saved["landing"], saved["merge_commit"]),
                          ({"state": "landed", "commit": result["commit"], "files": []}, result["commit"]))
@@ -647,9 +648,10 @@ class LandTest(GitProjectCase):
         self.git("switch", "-q", f"auto/{JOB_ID}")
         result = job.land(self.root, JOB_ID)
         nothing = {"state": "nothing", "commit": None, "files": []}
-        self.assertEqual(result, {"landed": False, "commit": None, "fast_forward": False, "landing": nothing})
+        self.assertEqual(result, {"landed": False, "commit": None, "fast_forward": False, "landing": nothing,
+                                  "summary": f".sdd/runs/{JOB_ID}.json"})
         self.assertEqual(self.branch(), "main")
-        self.assertEqual(self.head("main"), self.job_commit)
+        self.assertEqual(self.head("main^"), self.job_commit)
         self.assertEqual(job.load(self.root, JOB_ID)["landing"], nothing)
 
     def test_refuses_a_run_that_has_not_ended(self):
@@ -722,18 +724,51 @@ class LandTest(GitProjectCase):
 
     # end and suspend
 
-    def test_end_commits_the_summary_before_landing(self):
+    def test_end_commits_histories_before_landing_and_the_summary_after(self):
+        """009 research R2: histories on the run branch before landing, the summary on the base after it."""
         self.set_record(state="working", outcome=None, landing=None)
+        job.sdd_history.record_step(self.root, job.load(self.root, JOB_ID), "T001", "suspended", reason="cut off")
         result = job.end(self.root, JOB_ID, "done", None)
-        self.assertIsNotNone(result["finalize"]["commit"])
-        self.assertIn(f".sdd/runs/{JOB_ID}.json", result["finalize"]["files"])
+        self.assertEqual(result["finalize"]["files"], [".sdd/tasks/003-plugin-redesign/T001.jsonl"])
         self.assertTrue(result["land"]["landed"])
+        self.assertEqual(result["land"]["summary"], f".sdd/runs/{JOB_ID}.json")
         self.assertEqual(self.branch(), "main")
-        self.assertTrue(self.on_base(f".sdd/runs/{JOB_ID}.json"))
+        self.assertEqual(self.git("log", "-1", "--format=%s", "main").strip(), f"chore(run): {JOB_ID} summary")
+        self.assertEqual(self.git("show", "--name-only", "--format=", "main").split(), [f".sdd/runs/{JOB_ID}.json"])
+        landed = self.head("main^")
+        self.assertEqual(landed, self.head(f"auto/{JOB_ID}"))
+        self.assertEqual(self.git("log", "-1", "--format=%s", "main^").strip(), f"chore(run): {JOB_ID} history")
+        self.assertNotIn(f".sdd/runs/{JOB_ID}.json", self.git("ls-tree", "-r", "--name-only", f"auto/{JOB_ID}"))
         saved = job.load(self.root, JOB_ID)
         self.assertEqual((saved["state"], saved["outcome"], saved["reason"], saved["landing"]["state"]),
                          ("ended", "done", None, "landed"))
-        self.assertEqual(saved["merge_commit"], self.head("main"))
+        self.assertEqual(saved["merge_commit"], landed)
+        summary = json.loads((self.root / ".sdd" / "runs" / f"{JOB_ID}.json").read_text())
+        self.assertEqual(summary["landing"], {"state": "landed", "commit": landed, "files": []})
+        self.assertEqual(summary["outcome"], "done")
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_a_conflict_writes_no_summary_and_merge_after_resolving_writes_it(self):
+        self.git("switch", "-q", "main")
+        self.write_commit("b.txt", "other\n", "base edits b")
+        self.git("switch", "-q", f"auto/{JOB_ID}")
+        result = job.end(self.root, JOB_ID, "stopped", "stopped by you")
+        self.assertEqual(result["land"]["error"], "the merge conflicts in: b.txt")
+        self.assertNotIn("summary", result["land"])
+        summary_file = self.root / ".sdd" / "runs" / f"{JOB_ID}.json"
+        self.assertFalse(summary_file.exists())
+        self.assertFalse(self.on_base(f".sdd/runs/{JOB_ID}.json"))
+        # The person resolves the conflict on the run branch, then presses Merge (= land).
+        self.write_commit("b.txt", "other\n", "resolve b")
+        merged = job.land(self.root, JOB_ID)
+        self.assertTrue(merged["landed"])
+        self.assertFalse(merged["fast_forward"])
+        self.assertEqual(merged["summary"], f".sdd/runs/{JOB_ID}.json")
+        self.assertEqual(self.git("log", "-1", "--format=%s", "main").strip(), f"chore(run): {JOB_ID} summary")
+        self.assertEqual(merged["commit"], self.head("main^"))
+        summary = json.loads(summary_file.read_text())
+        self.assertEqual(summary["landing"], {"state": "landed", "commit": merged["commit"], "files": []})
+        self.assertEqual(summary["reason"], "stopped by you")
 
     def test_end_keeps_a_conflict_as_needs_merge(self):
         self.git("switch", "-q", "main")
@@ -803,7 +838,8 @@ class LandTest(GitProjectCase):
         self.assertEqual(landed.returncode, 0, landed.stdout + landed.stderr)
         self.assertEqual(json.loads(landed.stdout),
                          {"contract": "1.0", "landed": True, "commit": self.job_commit, "fast_forward": True,
-                          "landing": {"state": "landed", "commit": self.job_commit, "files": []}})
+                          "landing": {"state": "landed", "commit": self.job_commit, "files": []},
+                          "summary": f".sdd/runs/{JOB_ID}.json"})
         again = subprocess.run([sys.executable, str(HERE.parent / "bin" / "sdd-job.py"), "land", JOB_ID,
                                 str(self.root)], capture_output=True, text=True, env=env)
         self.assertEqual((again.returncode, json.loads(again.stdout)),

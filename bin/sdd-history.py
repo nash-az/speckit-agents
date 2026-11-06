@@ -4,7 +4,7 @@
 Every task has an append-only history in `.sdd/tasks/<feature folder>/<task id>.jsonl`, one JSON object per line,
 oldest first. The entries come from the workflow journals of the run's sessions (`sdd-tasks.py run_events`) and
 from the run's own steps (suspended, resumed, dropped). Each entry has a `key`, so harvesting twice adds nothing.
-A run's summary is `.sdd/runs/<run id>.json`, written once when the run ends. Both are committed, so a task's
+A run's summary is `.sdd/runs/<run id>.json`, written once after the run has landed. Both are committed, so a task's
 history does not depend on Claude's transcripts, which Claude Code may delete.
 
     bin/sdd-history.py harvest <project> <run id>              -> {"contract", "added": {task: n}}
@@ -221,13 +221,45 @@ def _run_task_entries(project, record: dict) -> dict[str, list[dict]]:
     return out
 
 
+def _agent_group(entry: dict) -> str:
+    """Which agent an entry came from: its transcript, else the agent id part of its key (data-model §6)."""
+    if entry.get("transcript"):
+        return "t:" + str(entry["transcript"])
+    parts = str(entry.get("key") or "").split(":")
+    return "a:" + parts[-2] if len(parts) >= 2 and parts[-2] else "k:" + str(entry.get("key"))
+
+
+def _per_agent_sum(entries: list[dict], field: str) -> int | None:
+    """`field` summed once per agent: of each agent's entries only the first carrying it counts; None when none."""
+    seen: set[str] = set()
+    total, found = 0, False
+    for e in entries:
+        value = e.get(field)
+        if not isinstance(value, int) or isinstance(value, bool):
+            continue
+        group = _agent_group(e)
+        if group in seen:
+            continue
+        seen.add(group)
+        total, found = total + value, True
+    return total if found else None
+
+
+def _duration(record: dict) -> int | None:
+    created, ended = record.get("created"), record.get("ended")
+    if not isinstance(created, (int, float)) or not isinstance(ended, (int, float)):
+        return None
+    return int(ended - created)
+
+
 def summary(project, record: dict) -> dict:
-    """The run summary (plan "Run summary") from the record and the tasks' histories."""
-    per_task = _run_task_entries(project, record)
+    """The run summary (data-model §6) from the record and the tasks' histories. Missing data is null."""
+    per_task_entries = _run_task_entries(project, record)
     done, blocked, dropped = [], [], []
-    attempts = approved_first = 0
+    approved_first = 0
     models: dict[str, str] = {}
-    for task_id, entries in per_task.items():
+    per_task: dict[str, dict] = {}
+    for task_id, entries in per_task_entries.items():
         steps = [e.get("step") for e in entries]
         if "committed" in steps:
             done.append(task_id)
@@ -235,7 +267,9 @@ def summary(project, record: dict) -> dict:
             dropped.append(task_id)
         elif "blocked" in steps or "failed" in steps:
             blocked.append(task_id)
-        attempts += steps.count("started")
+        per_task[task_id] = {"attempts": steps.count("started"),
+                             "duration_s": _per_agent_sum(entries, "duration_s"),
+                             "tokens": _per_agent_sum(entries, "tokens")}
         verdicts = [e for e in entries if e.get("step") == "verified"]
         if verdicts and verdicts[0].get("verdict") == "approve" and (verdicts[0].get("attempt") or 1) == 1 \
                 and steps.count("started") <= 1:
@@ -243,12 +277,19 @@ def summary(project, record: dict) -> dict:
         for e in entries:
             if e.get("role") and e.get("model"):
                 models.setdefault(e["role"], e["model"])
+    run_sessions = sessions(project, record)
+    reports = [f".sdd/runs/{s}.md" for s in run_sessions if (Path(project) / ".sdd" / "runs" / f"{s}.md").is_file()]
+    usage_peak = record.get("usage_peak")
     return {"contract": sdd_tasks.CONTRACT, "id": record.get("id"), "title": record.get("title"),
             "feature": feature_name(record), "scope": record.get("scope"), "created": record.get("created"),
-            "ended": record.get("ended"), "outcome": record.get("outcome"), "reason": record.get("reason"),
-            "sessions": sessions(project, record),
+            "ended": record.get("ended"), "duration_s": _duration(record),
+            "outcome": record.get("outcome"), "reason": record.get("reason"),
+            "landing": record.get("landing") if isinstance(record.get("landing"), dict) else None,
+            "sessions": run_sessions, "reports": reports,
             "tasks": {"done": sorted(done), "blocked": sorted(blocked), "dropped": sorted(dropped)},
-            "attempts": attempts, "approved_first_time": approved_first, "models": models}
+            "attempts": sum(t["attempts"] for t in per_task.values()), "approved_first_time": approved_first,
+            "models": models, "per_task": per_task,
+            "usage_peak": usage_peak if isinstance(usage_peak, dict) and usage_peak else None}
 
 
 def summary_path(project, run_id: str) -> Path:
@@ -300,27 +341,49 @@ def write_session_reports(project, record: dict) -> list[Path]:
     return written
 
 
-def finalize(project, record: dict) -> dict:
-    """Harvest the histories, write missing session reports and the summary, and commit them as
-    `chore(run): <id> history and summary`. Commits only `.sdd/tasks/` and `.sdd/runs/` files; makes no commit
-    when nothing changed. Returns {"commit": sha | None, "files": [relative paths]}."""
-    project = Path(project)
-    harvest(project, record)
-    write_session_reports(project, record)
-    write_summary(project, record)
-    status = _git(project, "status", "--porcelain", "--untracked-files=all", "--", ".sdd/tasks", ".sdd/runs")
-    files = [line[3:] for line in status.stdout.splitlines() if line.strip()]
-    files = [f for f in files if f.startswith(".sdd/tasks/") or (f.startswith(".sdd/runs/") and f.count("/") == 2)]
-    if not files:
-        return {"commit": None, "files": []}
+def _commit_files(project: Path, files: list[str], message: str) -> dict:
+    """Stage `files` with a plain `git add` (no -f) and commit only them. Returns {"commit", "files"} (+ "error")."""
     added = _git(project, "add", "--", *files)
     if added.returncode != 0:
         return {"commit": None, "files": files, "error": added.stderr.strip()}
-    done = _git(project, "commit", "-m", f"chore(run): {record.get('id')} history and summary", "--", *files)
+    done = _git(project, "commit", "-m", message, "--", *files)
     if done.returncode != 0:
         _git(project, "reset", "-q", "--", *files)
         return {"commit": None, "files": files, "error": (done.stderr or done.stdout).strip()}
     return {"commit": _git(project, "rev-parse", "--short", "HEAD").stdout.strip(), "files": files}
+
+
+def finalize(project, record: dict) -> dict:
+    """Harvest the histories and write missing session reports, and commit them as `chore(run): <id> history`
+    (research R2: on the run branch, before landing; the summary comes after landing, `commit_summary`).
+    Commits only `.sdd/tasks/` files and `.sdd/runs/<session>.md` reports; makes no commit when nothing
+    changed. Returns {"commit": sha | None, "files": [relative paths]}."""
+    project = Path(project)
+    harvest(project, record)
+    write_session_reports(project, record)
+    status = _git(project, "status", "--porcelain", "--untracked-files=all", "--", ".sdd/tasks", ".sdd/runs")
+    files = [line[3:] for line in status.stdout.splitlines() if line.strip()]
+    files = [f for f in files if f.startswith(".sdd/tasks/")
+             or (f.startswith(".sdd/runs/") and f.count("/") == 2 and f.endswith(".md"))]
+    if not files:
+        return {"commit": None, "files": []}
+    return _commit_files(project, files, f"chore(run): {record.get('id')} history")
+
+
+def commit_summary(project, record: dict) -> dict:
+    """Write the run summary once (`write_summary`, data-model §6) and commit only that file as
+    `chore(run): <id> summary` on the checked-out branch (the base, after landing). Returns
+    {"commit": sha | None, "path": relative path | None} (+ "error"); both null when the file already exists."""
+    project = Path(project)
+    path = write_summary(project, record)
+    if path is None:
+        return {"commit": None, "path": None}
+    rel = path.relative_to(project).as_posix()
+    result = _commit_files(project, [rel], f"chore(run): {record.get('id')} summary")
+    out = {"commit": result["commit"], "path": rel}
+    if result.get("error"):
+        out["error"] = result["error"]
+    return out
 
 
 USAGE = "usage: sdd-history.py harvest <project> <run id> | show <project> <feature> <task id>"

@@ -166,16 +166,66 @@ class SummaryAndFinalizeTest(HistoryTestCase):
         self.assertEqual(s["sessions"], ["20261106-1015"])
         self.assertEqual(s["outcome"], "stopped")
 
-    def test_finalize_commits_histories_report_and_summary_only(self):
+    def test_summary_has_landing_duration_reports_per_task_and_usage(self):
+        wf = self.workflow("20261106-1015", "wf_one", self.retry_journal())
+        stamps = {"a1": ("2026-11-06T09:00:00Z", "2026-11-06T09:02:00Z", 100, 20),
+                  "a2": ("2026-11-06T09:03:00Z", "2026-11-06T09:03:30Z", 50, 5),
+                  "a3": ("2026-11-06T09:04:00Z", "2026-11-06T09:05:00Z", 200, 10)}
+        for agent_id, (first, last, tokens_in, tokens_out) in stamps.items():
+            (wf / f"agent-{agent_id}.jsonl").write_text("\n".join(json.dumps(line) for line in [
+                {"type": "assistant", "timestamp": first, "message": {"usage": {"input_tokens": tokens_in}}},
+                {"type": "assistant", "timestamp": last, "message": {"usage": {"output_tokens": tokens_out}}},
+            ]) + "\n", encoding="utf-8")
+        history.harvest(self.root, self.record)
+        (self.root / ".sdd" / "runs" / "20261106-1015.md").write_text("# report\n")
+        landing = {"state": "landed", "commit": "abc123", "files": []}
+        record = {**self.record, "runs": ["20261106-1015", "20261106-1016"], "ended": 7201, "landing": landing,
+                  "usage_peak": {"five_hour": 0.93}}
+        s = history.summary(self.root, record)
+        self.assertEqual(s["landing"], landing)
+        self.assertEqual(s["duration_s"], 7200)
+        self.assertEqual(s["reports"], [".sdd/runs/20261106-1015.md"])
+        self.assertEqual(s["usage_peak"], {"five_hour": 0.93})
+        # a1 has started and implemented entries with the same values: counted once.
+        self.assertEqual(s["per_task"]["T012"], {"attempts": 2, "duration_s": 120 + 30 + 60, "tokens": 120 + 55 + 210})
+        self.assertEqual(s["per_task"]["T013"], {"attempts": 1, "duration_s": None, "tokens": None})
+        self.assertEqual(s["attempts"], 3)
+        bare = history.summary(self.root, {**self.record, "created": None})
+        self.assertIsNone(bare["duration_s"])
+        self.assertIsNone(bare["usage_peak"])
+        self.assertIsNone(bare["landing"])
+
+    def test_commit_summary_writes_once_and_commits_only_the_summary(self):
+        self.workflow("20261106-1015", "wf_one", self.retry_journal())
+        history.harvest(self.root, self.record)
+        (self.root / "other.txt").write_text("not mine\n")
+        record = {**self.record, "landing": {"state": "nothing", "commit": None, "files": []}}
+        result = history.commit_summary(self.root, record)
+        self.assertEqual(result["path"], f".sdd/runs/{RUN}.json")
+        self.assertEqual(result["commit"], git(self.root, "rev-parse", "--short", "HEAD"))
+        self.assertEqual(git(self.root, "log", "-1", "--format=%s"), f"chore(run): {RUN} summary")
+        self.assertEqual(git(self.root, "show", "--name-only", "--format=", "HEAD").splitlines(),
+                         [f".sdd/runs/{RUN}.json"])
+        written = json.loads((self.root / ".sdd" / "runs" / f"{RUN}.json").read_text())
+        self.assertEqual(written["landing"]["state"], "nothing")
+        head = git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(history.commit_summary(self.root, record), {"commit": None, "path": None})
+        self.assertEqual(git(self.root, "rev-parse", "HEAD"), head)
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=self.root, capture_output=True, text=True).stdout
+        self.assertIn("?? other.txt", status)
+        self.assertIn("?? .sdd/tasks/", status)
+
+    def test_finalize_commits_histories_and_reports_only(self):
         self.workflow("20261106-1015", "wf_one", self.retry_journal())
         (self.root / "other.txt").write_text("not mine\n")  # an untracked file finalize must leave alone
         result = history.finalize(self.root, self.record)
         self.assertIsNotNone(result["commit"])
         committed = git(self.root, "show", "--name-only", "--format=", "HEAD").splitlines()
         self.assertEqual(sorted(committed), sorted([
-            ".sdd/runs/20261106-1014.json", ".sdd/runs/20261106-1015.md",
+            ".sdd/runs/20261106-1015.md",
             ".sdd/tasks/008-standalone-server/T012.jsonl", ".sdd/tasks/008-standalone-server/T013.jsonl"]))
-        self.assertEqual(git(self.root, "log", "-1", "--format=%s"), f"chore(run): {RUN} history and summary")
+        self.assertEqual(git(self.root, "log", "-1", "--format=%s"), f"chore(run): {RUN} history")
+        self.assertFalse((self.root / ".sdd" / "runs" / f"{RUN}.json").exists())
         report = (self.root / ".sdd" / "runs" / "20261106-1015.md").read_text()
         self.assertIn("T012", report)
         self.assertIn("b882551", report)
@@ -195,6 +245,7 @@ class SummaryAndFinalizeTest(HistoryTestCase):
         (self.root / ".sdd" / "runs" / "20261106-1015.md").write_text("# the skill's report\n")
         history.finalize(self.root, self.record)
         self.assertEqual((self.root / ".sdd" / "runs" / "20261106-1015.md").read_text(), "# the skill's report\n")
+        self.assertIsNotNone(history.write_summary(self.root, self.record))
         first = (self.root / ".sdd" / "runs" / f"{RUN}.json").read_text()
         self.assertIsNone(history.write_summary(self.root, {**self.record, "outcome": "done"}))
         self.assertEqual((self.root / ".sdd" / "runs" / f"{RUN}.json").read_text(), first)
