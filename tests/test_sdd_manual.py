@@ -136,7 +136,7 @@ class SettleTest(unittest.TestCase):
     def test_job_key_without_an_open_job(self):
         for task, action, note in (("T001", "done", ""), ("T002", "skip", "no microphone")):
             result = manual.settle(self.root, self.feature, task, action, note)
-            self.assertEqual(result["job"], {"started": False, "reason": "no open job"})
+            self.assertEqual(result["job"], {"started": False, "reason": "no runs yet"})
 
 
 JOB_ID = "20261031-1012"
@@ -176,18 +176,26 @@ class JobTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_done_commits_on_the_job_branch_and_continues_the_job(self):
+        """009 FR-024: the newest run ended `waiting` and landed, the checkout is on main; the settle commit
+        goes on main and a new run starts with the old run's scope."""
+        git(self.root, "switch", "-q", "main")
+        record = manual.sdd_job.load(self.root, JOB_ID)
+        manual.sdd_job.save(self.root, {**record, "state": "ended", "outcome": "waiting",
+                                        "landing": {"state": "landed", "commit": None, "files": []}})
         result = manual.settle(self.root, self.feature, "T001", "done")
         self.assertEqual(result["job"], {"started": True, "reason": None})
         self.popen.assert_called_once()
-        self.assertEqual(git(self.root, "branch", "--show-current").strip(), f"auto/{JOB_ID}")
-        self.assertIn(f"auto/{JOB_ID}", git(self.root, "branch", "--contains", result["commit"]))
-        self.assertNotIn("main", git(self.root, "branch", "--contains", result["commit"]))
-        self.assertEqual(manual.sdd_job.load(self.root, JOB_ID)["state"], "working")
+        self.assertEqual(git(self.root, "rev-parse", "--short", "main").strip(), result["commit"])
+        self.assertIn("main", git(self.root, "branch", "--contains", result["commit"]))
+        newest = manual.sdd_job.list_jobs(self.root)[0]
+        self.assertNotEqual(newest["id"], JOB_ID)
+        self.assertEqual((newest["state"], newest["scope"]), ("working", record["scope"]))
 
     def test_skip_reports_why_the_job_did_not_continue(self):
-        manual.sdd_job.save(self.root, {**manual.sdd_job.load(self.root, JOB_ID), "state": "stopped"})
+        manual.sdd_job.save(self.root, {**manual.sdd_job.load(self.root, JOB_ID), "state": "stopped",
+                                        "reason": "stopped by you"})
         result = manual.settle(self.root, self.feature, "T002", "skip", "no microphone here")
-        self.assertEqual(result["job"], {"started": False, "reason": "the job is stopped, not waiting"})
+        self.assertEqual(result["job"], {"started": False, "reason": "the newest run did not end waiting"})
         self.popen.assert_not_called()
         self.assertIn(f"auto/{JOB_ID}", git(self.root, "branch", "--contains", result["commit"]))
 

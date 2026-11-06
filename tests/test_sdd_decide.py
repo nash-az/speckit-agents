@@ -122,7 +122,7 @@ class ApplyTest(unittest.TestCase):
 
     def test_result_has_a_job_key_not_started_without_an_open_job(self):
         result = decide.apply(self.root, self.feature, "T002", "(a) red")
-        self.assertEqual(result["job"], {"started": False, "reason": "no open job"})
+        self.assertEqual(result["job"], {"started": False, "reason": "no runs yet"})
 
     def test_without_a_commit_the_job_is_not_continued(self):
         result = decide.apply(self.root, self.feature, "T002", "(a) red", commit=False)
@@ -175,16 +175,25 @@ class OpenJobTest(unittest.TestCase):
         self.assertEqual(git(self.root, "rev-parse", "main").strip(), self.base)  # main untouched
 
     def test_a_waiting_job_with_a_runnable_task_is_continued(self):
+        """009 FR-024: the newest run ended `waiting` and landed, so the settle starts a new run with its scope."""
+        git(self.root, "switch", "-q", "main")
+        record = decide.sdd_job.load(self.root, JOB_ID)
+        decide.sdd_job.save(self.root, {**record, "state": "ended", "outcome": "waiting",
+                                        "landing": {"state": "landed", "commit": None, "files": []}})
         result = decide.apply(self.root, self.feature, "T002", "(b) blue")
         self.assertEqual(result["job"], {"started": True, "reason": None})
         self.popen.assert_called_once()
-        self.assertEqual(decide.sdd_job.load(self.root, JOB_ID)["state"], "working")
+        self.assertIn("chore(decisions): T002", git(self.root, "log", "-1", "--format=%s", "main"))
+        self.assertEqual(git(self.root, "rev-parse", "--short", "main").strip(), result["commit"])
+        newest = decide.sdd_job.list_jobs(self.root)[0]
+        self.assertNotEqual(newest["id"], JOB_ID)
+        self.assertEqual((newest["state"], newest["scope"]), ("working", record["scope"]))
 
     def test_a_job_that_is_not_waiting_is_not_continued(self):
         record = decide.sdd_job.load(self.root, JOB_ID)
-        decide.sdd_job.save(self.root, {**record, "state": "stopped"})
+        decide.sdd_job.save(self.root, {**record, "state": "stopped", "reason": "stopped by you"})
         result = decide.apply(self.root, self.feature, "T002", "(b) blue")
-        self.assertEqual(result["job"], {"started": False, "reason": "the job is stopped, not waiting"})
+        self.assertEqual(result["job"], {"started": False, "reason": "the newest run did not end waiting"})
         self.popen.assert_not_called()
 
 

@@ -134,12 +134,12 @@ class AfterSettleTest(unittest.TestCase):
     def test_no_open_job_says_not_started(self):
         for task, action, text in (("T053", "done", ""), ("T054", "answer", "use v2")):
             result = unblock.settle(self.root, self.feature, task, action, text)
-            self.assertEqual(result["job"], {"started": False, "reason": "no open job"})
+            self.assertEqual(result["job"], {"started": False, "reason": "no runs yet"})
         self.popen.assert_not_called()
 
     def test_drop_reports_the_job_too(self):
         result = unblock.settle(self.root, self.feature, "T054", "drop", "not needed")
-        self.assertEqual(result["job"], {"started": False, "reason": "no open job"})
+        self.assertEqual(result["job"], {"started": False, "reason": "no runs yet"})
 
     def test_without_a_commit_after_settle_is_not_called(self):
         self.open_job("waiting")
@@ -152,22 +152,35 @@ class AfterSettleTest(unittest.TestCase):
         self.open_job("held")
         main_before = git(self.root, "rev-parse", "main")
         result = unblock.settle(self.root, self.feature, "T053", "done", "smoke test passed")
-        self.assertEqual(result["job"], {"started": False, "reason": "the job is held, not waiting"})
+        self.assertEqual(result["job"], {"started": False, "reason": "the newest run did not end waiting"})
         self.assertEqual(git(self.root, "branch", "--show-current").strip(), f"auto/{JOB_ID}")
         self.assertEqual(git(self.root, "rev-parse", "--short", f"auto/{JOB_ID}").strip(), result["commit"])
         self.assertEqual(git(self.root, "rev-parse", "main"), main_before)
         self.popen.assert_not_called()
 
+    def ended_waiting(self):
+        """009: the newest run ended `waiting` and landed; the checkout is back on main."""
+        self.open_job("ended")
+        git(self.root, "switch", "-q", "main")
+        record = unblock.sdd_job.load(self.root, JOB_ID)
+        unblock.sdd_job.save(self.root, {**record, "outcome": "waiting",
+                                         "landing": {"state": "landed", "commit": None, "files": []}})
+        return record
+
     def test_a_waiting_job_continues_when_the_answer_frees_a_task(self):
-        self.open_job("waiting")
+        record = self.ended_waiting()
         result = unblock.settle(self.root, self.feature, "T054", "answer", "use the v2 API")
         self.assertEqual(result["job"], {"started": True, "reason": None})
         self.popen.assert_called_once()
-        self.assertEqual(self.popen.call_args.args[0][2:], ["--project", str(self.root), "--job", JOB_ID])
-        self.assertIn("answered", git(self.root, "log", "-1", "--format=%s", f"auto/{JOB_ID}"))
+        self.assertIn("answered", git(self.root, "log", "-1", "--format=%s", "main"))
+        self.assertEqual(git(self.root, "rev-parse", "--short", "main").strip(), result["commit"])
+        newest = unblock.sdd_job.list_jobs(self.root)[0]
+        self.assertNotEqual(newest["id"], JOB_ID)
+        self.assertEqual((newest["state"], newest["scope"]), ("working", record["scope"]))
+        self.assertEqual(self.popen.call_args.args[0][2:], ["--project", str(self.root), "--job", newest["id"]])
 
     def test_a_waiting_job_with_nothing_runnable_stays(self):
-        self.open_job("waiting")
+        self.ended_waiting()
         result = unblock.settle(self.root, self.feature, "T053", "drop", "covered elsewhere")
         self.assertEqual(result["job"], {"started": False, "reason": "no task in the scope is runnable"})
         self.popen.assert_not_called()

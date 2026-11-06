@@ -1042,7 +1042,8 @@ SETTLE_TASKS = """# Tasks
 
 
 class AfterSettleTest(unittest.TestCase):
-    """after_settle() (FR-016, research R8) on a temp repo with the launcher's `_spawn` replaced."""
+    """after_settle() (009 FR-024, research R6) on a temp repo with the launcher's `_spawn` replaced. The setUp
+    record is a 005 `waiting` Job; `ended_waiting` makes it a 009 run that ended `waiting` and landed."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1078,70 +1079,8 @@ class AfterSettleTest(unittest.TestCase):
         self.popen.assert_not_called()
         self.assertEqual(job.load(self.root, JOB_ID), before)
 
-    def test_starts_when_a_scope_task_is_runnable(self):
-        self.assertEqual(job.after_settle(self.root), {"started": True, "reason": None})
-        self.popen.assert_called_once()
-        self.assertEqual(self.popen.call_args.args[0][2:], ["--project", str(self.root), "--job", JOB_ID])
-        saved = job.load(self.root, JOB_ID)
-        self.assertEqual((saved["state"], saved["reason"]), ("working", None))
-
-    def test_no_open_job(self):
-        self.set(state="merged")
-        self.not_started("no open job")
-
-    def test_job_not_waiting(self):
-        for state in ("stopped", "held", "done", "failed"):
-            self.set(state=state)
-            self.not_started(f"the job is {state}, not waiting")
-        self.set(state="working")  # no live supervisor: shown as interrupted
-        self.not_started("the job is interrupted, not waiting")
-
-    def test_run_json_exists(self):
-        (self.root / ".sdd" / "run.json").write_text("{}")
-        self.not_started("a run is active")
-
-    def test_supervisor_alive(self):
-        status = job.sdd_supervise.state_dir(self.root) / "status.json"
-        status.write_text(json.dumps({"state": "done", "pid": os.getpid()}))
-        self.not_started("a supervisor is running")
-        status.write_text(json.dumps({"state": "running", "pid": dead_pid()}))
-        self.assertTrue(job.after_settle(self.root)["started"])
-
-    def test_nothing_runnable_in_scope(self):
-        (self.feature / "tasks.md").write_text(SETTLE_TASKS.replace("- [ ] T002", "- [x] T002"))
-        self.not_started("no task in the scope is runnable")
-
-    def test_nothing_left_after_a_skip_makes_the_job_done(self):
-        """The person skipped the last item (wontfix): nothing waits on them and nothing is left, so the Job is
-        done and can be merged, instead of staying "waiting" with a Continue that always refuses."""
-        (self.feature / "tasks.md").write_text(SETTLE_TASKS.replace("- [ ] T002", "- [x] T002"))
-        (self.feature / "BLOCKED.md").write_text("# Blocked\n\n## T003\n- status: wontfix\n- tag: manual\n"
-                                                 "- reason: skipped\n- question:\n- answer:\n")
-        self.assertEqual(job.after_settle(self.root),
-                         {"started": False, "reason": "the job is done: every task in the scope is done or skipped"})
-        self.popen.assert_not_called()
-        saved = job.load(self.root, JOB_ID)
-        self.assertEqual((saved["state"], saved["reason"]), ("done", job.COMPLETE_REASON))
-
-    def test_a_manual_task_still_open_keeps_the_job_waiting(self):
-        (self.feature / "tasks.md").write_text(SETTLE_TASKS.replace("- [ ] T002", "- [x] T002"))
-        self.assertFalse(job.finish_if_complete(self.root, job.load(self.root, JOB_ID)))
-        self.assertEqual(job.load(self.root, JOB_ID)["state"], "waiting")
-
-    def test_a_launcher_refusal_comes_back_as_the_reason(self):
-        (self.root / "stray.txt").write_text("x\n")
-        self.not_started("the working tree has changes; commit or stash them first: stray.txt")
-        (self.root / "stray.txt").unlink()
-        self.set(limits={"max_tasks": 1, "until": None, "max_runs": 20})
-        self.not_started("the limit max_tasks is still reached; give a new value")
-
-    def test_an_unexpected_error_comes_back_as_the_reason(self):
-        with mock.patch.object(job._launcher(), "continue_job", side_effect=RuntimeError("boom")):
-            self.assertEqual(job.after_settle(self.root),
-                             {"started": False, "reason": "could not continue the job: boom"})
-        self.assertEqual(job.after_settle(self.root / "missing"), {"started": False, "reason": "no open job"})
-
-    # 009 FR-024: a run that ended `waiting` is followed by a new run with its scope, limits and title.
+    # 009 FR-024, research R6: only the newest run, when it ended `waiting`, is followed by a new run with its
+    # scope, limits and title.
 
     def ended_waiting(self, landing="landed"):
         subprocess.run(["git", "switch", "-q", "main"], cwd=self.root, capture_output=True, check=True)
@@ -1177,7 +1116,55 @@ class AfterSettleTest(unittest.TestCase):
     def test_a_run_ended_otherwise_starts_nothing(self):
         subprocess.run(["git", "switch", "-q", "main"], cwd=self.root, capture_output=True, check=True)
         self.set(state="ended", outcome="done", landing={"state": "landed", "commit": None, "files": []})
-        self.not_started("no open job")
+        self.not_started("the newest run did not end waiting")
+
+    def test_a_newest_run_not_ended_starts_nothing(self):
+        self.ended_waiting()
+        for state in ("working", "suspended"):
+            self.set(state=state)
+            self.not_started("the newest run did not end waiting")
+
+    def test_no_runs_yet(self):
+        job.jobs_dir(self.root).joinpath(f"{JOB_ID}.json").unlink()
+        self.assertEqual(job.after_settle(self.root), {"started": False, "reason": "no runs yet"})
+        self.popen.assert_not_called()
+        self.assertEqual(job.after_settle(self.root / "missing"), {"started": False, "reason": "no runs yet"})
+
+    def test_an_older_run_ended_waiting_does_not_restart_when_a_newer_run_ended_otherwise(self):
+        self.ended_waiting()
+        newer = "20261031-1013"
+        job.save(self.root, record(newer, state="ended", outcome="done", scope={"phases": ["1"]},
+                                   landing={"state": "landed", "commit": None, "files": []}))
+        self.not_started("the newest run did not end waiting")
+        self.assertEqual(job.load(self.root, newer)["state"], "ended")
+        self.assertEqual([r["id"] for r in job.list_jobs(self.root)], [newer, JOB_ID])
+
+    def test_a_005_waiting_job_without_run_json_is_open_and_starts_nothing(self):
+        """A 005 record stored `waiting` without its run.json reads as ended `waiting` with landing `pending`:
+        it is the open run, so nothing starts until it is landed (FR-025)."""
+        self.assertEqual(job.load(self.root, JOB_ID)["state"], "waiting")
+        self.not_started("a run is open: Phase 11")
+
+    def test_the_stop_by_time_has_passed(self):
+        self.ended_waiting()
+        self.set(limits={"max_tasks": None, "until": time.time() - 60, "max_runs": 3})
+        self.not_started("the run's stop-by time has passed")
+
+    def test_a_launcher_refusal_comes_back_as_the_reason(self):
+        self.ended_waiting()
+        (self.root / "stray.txt").write_text("x\n")
+        self.not_started("the working tree has changes; commit or stash them first: stray.txt")
+        (self.root / "stray.txt").unlink()
+        (self.root / ".sdd" / "run.json").write_text("{}")
+        self.not_started("a run is active")
+
+    def test_an_unexpected_error_comes_back_as_the_reason(self):
+        self.ended_waiting()
+        with mock.patch.object(job._launcher(), "launch_job", side_effect=RuntimeError("boom")):
+            self.assertEqual(job.after_settle(self.root),
+                             {"started": False, "reason": "could not start a run: boom"})
+        with mock.patch.object(job, "list_jobs", side_effect=RuntimeError("bad")):
+            self.assertEqual(job.after_settle(self.root), {"started": False, "reason": "could not start a run: bad"})
 
 
 if __name__ == "__main__":

@@ -765,63 +765,38 @@ def _scope_runnable(project, record: dict) -> int:
 
 
 def after_settle(project) -> dict:
-    """Go on after the person settled an item (005 FR-016, research R8; 009 FR-024).
+    """Go on after the person settled an item (009 FR-024, research R6: only the newest run restarts).
 
     Called by the helpers that commit a settle (`sdd-decide.py`, `sdd-manual.py`, `sdd-unblock.py`).
-    A 005 record (stored state not `merged`, `dropped` or `ended`): starts the next run through
-    `sdd-launch.py`'s `continue_job` when its shown state is `waiting`, no `.sdd/run.json` exists, no supervisor
-    is alive and the scope has a runnable task. Otherwise (009): when no run is open (`open_run`), starts a new
-    run through `launch_job` with the scope, limits and title of the newest run that ended `waiting`, when that
-    scope has a runnable task. Never raises: returns `{"started": True, "reason": None}`, or
-    `{"started": False, "reason": "<why not>"}`."""
+    Takes the newest record (`list_jobs`, read through `normalize`) and starts a new run through
+    `sdd-launch.py`'s `launch_job` with its scope, limits and title only when it ended with outcome `waiting`,
+    no run is open (`open_run`), its stop-by time has not passed and its scope has a runnable task. Never
+    raises: returns `{"started": True, "reason": None}`, or `{"started": False, "reason": "<why not>"}`."""
     try:
         project = Path(project)
-        record = open_job(project)
-        if record is None:
-            return _start_after_waiting(project)
-        state = display_state(project, record)["state"]
-        if state != "waiting":
-            return {"started": False, "reason": f"the job is {state}, not waiting"}
-        if (project / ".sdd" / "run.json").exists():
-            return {"started": False, "reason": "a run is active"}
-        if _pid_alive(_status(project)):
-            return {"started": False, "reason": "a supervisor is running"}
-        if finish_if_complete(project, record):
-            return {"started": False, "reason": "the job is done: " + COMPLETE_REASON}
-        if _scope_runnable(project, record) == 0:
+        records = list_jobs(project)
+        if not records:
+            return {"started": False, "reason": "no runs yet"}
+        newest = normalize(project, records[0])
+        if newest.get("state") != "ended" or newest.get("outcome") != "waiting":
+            return {"started": False, "reason": "the newest run did not end waiting"}
+        other = open_run(project)
+        if other is not None:
+            return {"started": False, "reason": f"a run is open: {other.get('title') or other.get('id')}"}
+        until = (newest.get("limits") or {}).get("until")
+        if until is not None and time.time() >= until:
+            return {"started": False, "reason": "the run's stop-by time has passed"}
+        if _scope_runnable(project, newest) == 0:
             return {"started": False, "reason": "no task in the scope is runnable"}
         launcher = _launcher()
         try:
-            launcher.continue_job(project, record["id"], from_waiting=True)
+            launcher.launch_job(project, feature_dir(project, newest), newest.get("scope"), newest.get("limits"),
+                                title=newest.get("title"))
         except launcher.Refused as e:
             return {"started": False, "reason": str(e)}
         return {"started": True, "reason": None}
     except Exception as e:  # never raise: the caller's commit has already succeeded
-        return {"started": False, "reason": f"could not continue the job: {e}"}
-
-
-def _start_after_waiting(project: Path) -> dict:
-    """009 FR-024: a new run with the scope, limits and title of the newest run that ended `waiting`, when no
-    run is open and that scope has a runnable task. Raises only what `after_settle` catches."""
-    other = open_run(project)
-    if other is not None:
-        return {"started": False, "reason": f"a run is open: {other.get('title') or other.get('id')}"}
-    waiting = next((r for r in list_jobs(project) if r.get("state") == "ended" and r.get("outcome") == "waiting"),
-                   None)
-    if waiting is None:
-        return {"started": False, "reason": "no open job"}
-    until = (waiting.get("limits") or {}).get("until")
-    if until is not None and time.time() >= until:
-        return {"started": False, "reason": "the run's stop-by time has passed"}
-    if _scope_runnable(project, waiting) == 0:
-        return {"started": False, "reason": "no task in the scope is runnable"}
-    launcher = _launcher()
-    try:
-        launcher.launch_job(project, feature_dir(project, waiting), waiting.get("scope"), waiting.get("limits"),
-                            title=waiting.get("title"))
-    except launcher.Refused as e:
-        return {"started": False, "reason": str(e)}
-    return {"started": True, "reason": None}
+        return {"started": False, "reason": f"could not start a run: {e}"}
 
 
 def _with_view(project, record: dict) -> dict:
