@@ -135,6 +135,38 @@ class SddRunTrailersAndHistoryTest(unittest.TestCase):
             self.assertIn("git add -- .sdd/runs/<run id>.md .sdd/learnings.md .sdd/tasks`", line)
 
 
+class SddRunSupervisedWarningTest(unittest.TestCase):
+    """`/sdd-run` preflight warns when the supervisor did not start the run (009 T030)."""
+
+    COMMAND = "python3 -c \"import os; print(os.environ.get('SDD_SUPERVISED', ''))\""
+    SENTENCE = (
+        "This run is not started through the supervisor, so it has no usage-limit protection. "
+        "Runs are started with the launcher (bin/sdd-launch.py) or Start run in the dashboard."
+    )
+
+    def setUp(self):
+        self.text = read("skills/sdd-run/SKILL.md")
+
+    def test_holds_exact_command_and_sentence(self):
+        self.assertIn(self.COMMAND, self.text)
+        self.assertIn(self.SENTENCE, self.text)
+
+    def test_no_printenv(self):
+        self.assertNotIn("printenv", self.text)
+
+    def test_in_preflight_before_confirm(self):
+        confirm = self.text.index("## 5. Confirm once")
+        preflight = self.text.index("## 1. Preflight")
+        self.assertLess(preflight, self.text.index(self.COMMAND))
+        self.assertLess(self.text.index(self.COMMAND), confirm)
+        self.assertLess(self.text.index(self.SENTENCE), confirm)
+
+    def test_warning_never_stops(self):
+        para = section(self.text, self.COMMAND, "## 2. ")
+        self.assertIn("never a stop", para)
+        self.assertIn("denied or fails", para)
+
+
 class SddStatusStateTest(unittest.TestCase):
     """`/sdd-status` step 4 reads the run state from the engine (008 data-model §4, §11)."""
 

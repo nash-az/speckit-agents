@@ -46,6 +46,8 @@ Run `python3 <plugin>/bin/sdd-engine.py install --from <plugin>` as its own Bash
 5. Run every `checks.commands` entry. Run each command as its own Bash call, exactly as written: no pipes, `;`, `&&`, `cd`, loops, `$?` or redirects. The tool result shows the exit status and the output. Unattended permission modes refuse compound commands. If any fails, stop and show the failing output. If it fails with "Operation not permitted" on a path outside the project, such as a tool cache, the sandbox is the cause: name the `sandbox.filesystem.allowWrite` entry the user should add to `.claude/settings.json`.
    The run cannot tell a regression from a failure that was already there.
 
+After these checks, check whether the supervisor started this run: run `python3 -c "import os; print(os.environ.get('SDD_SUPERVISED', ''))"` as its own Bash call, exactly as written (the `Bash(python3 *)` allow rule covers it). When it does not print `1`, or the call is denied or fails, tell the user exactly: "This run is not started through the supervisor, so it has no usage-limit protection. Runs are started with the launcher (bin/sdd-launch.py) or Start run in the dashboard." Then go on. This is a warning, never a stop: a denied or failed check also goes on, and this skill never starts a supervisor.
+
 ## 2. Bring tasks.md up to date with the code
 Unticked boxes are not evidence that work is missing: code often lands without its boxes being ticked. Spec Kit's `/speckit-converge` checks the code against the spec, plan and every task, and appends only the remaining work as a new `## Phase N: Convergence`. Use it; do not judge task completion yourself.
 Skip this step with `--phases`, `--tasks` or `--no-converge`.
