@@ -661,10 +661,11 @@ JOB_ID = "20261031-1012"
 
 
 def job_run(run_id, tick=None):
-    """One run of a Job as the fake plays it: run.json appears, a task may be ticked, the run finishes."""
+    """One session of a run as the fake plays it: run.json appears, a task may be ticked and committed, the
+    session finishes."""
     steps = [{"transcript": True}, {"run": run_id}, {"sleep": 0.4}]
     if tick:
-        steps.append({"tick": tick})
+        steps += [{"tick": tick}, {"commit": f"feat({tick}): done"}]
     return [*steps, {"finish": True}, *DONE]
 
 
@@ -684,8 +685,12 @@ class JobTest(unittest.TestCase):
         self.tasks.write_text(self.TASKS)
         slug = re.sub(r"[^A-Za-z0-9]+", "-", str(self.project.resolve())).strip("-")
         self.logs = self.dir / "state" / "speckit-agents" / slug
+        # As /sdd-init leaves a project: the run's own files are git-ignored, so a finished task leaves a clean tree.
+        (self.project / ".gitignore").write_text(".sdd/run.json\n.sdd/jobs/\n.sdd/runs/*/\n")
         self.git("init", "-q", "-b", "main")
-        self.git("add", "specs")
+        for key, value in (("user.name", "t"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")):
+            self.git("config", key, value)  # the run summary's commit (sdd-history.py finalize) needs them
+        self.git("add", ".")
         self.git("commit", "-q", "-m", "init")
         self.git("switch", "-q", "-c", f"auto/{JOB_ID}")
 
@@ -709,6 +714,27 @@ class JobTest(unittest.TestCase):
     def job(self):
         return json.loads((self.project / ".sdd" / "jobs" / f"{JOB_ID}.json").read_text())
 
+    def git_out(self, *args):
+        return subprocess.run(["git", *args], cwd=self.project, check=True, capture_output=True,
+                              text=True).stdout.strip()
+
+    def assert_ended(self, outcome, reason=None, landing=None):
+        """The run record is ended (spec 009) with this outcome, reason and (when given) landing state."""
+        record = self.job()
+        self.assertEqual((record["state"], record["outcome"], record["reason"]), ("ended", outcome, reason))
+        if landing:
+            self.assertEqual(record["landing"]["state"], landing, record["landing"])
+        status = json.loads((self.logs / "status.json").read_text())
+        self.assertEqual((status["state"], status["reason"]), ("done", reason or outcome))
+        return record
+
+    def assert_suspended(self, reason):
+        record = self.job()
+        self.assertEqual((record["state"], record["reason"]), ("suspended", reason))
+        status = json.loads((self.logs / "status.json").read_text())
+        self.assertEqual((status["state"], status["reason"]), ("stopped", reason))
+        return record
+
     def supervise(self, cycles, *extra):
         (self.dir / "scenario.json").write_text(json.dumps({"cycles": cycles}))
         env = dict(os.environ, FAKE_DIR=str(self.dir), XDG_STATE_HOME=str(self.dir / "state"),
@@ -727,12 +753,14 @@ class JobTest(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         for argv in calls:
             self.assertEqual(argv[1], f"/sdd-run --yes --no-converge --phases 1 --job {JOB_ID}")
-        record = self.job()
-        self.assertEqual(record["state"], "done")
+        record = self.assert_ended("done", landing="landed")
         self.assertEqual(record["runs"], ["r1", "r2", "r3"])
         status = json.loads((self.logs / "status.json").read_text())
         self.assertEqual(status["job"], JOB_ID)
-        self.assertEqual(status["state"], "done")
+        self.assertEqual(status["landing"]["state"], "landed")
+        self.assertEqual(self.git_out("rev-parse", "--abbrev-ref", "HEAD"), "main", "the run landed on its base")
+        self.assertEqual(self.git_out("rev-parse", "main"), record["landing"]["commit"])
+        self.assertIn("- [x] T003", self.git_out("show", "main:specs/005-jobs/tasks.md"))
 
     def test_only_person_items_left_is_waiting(self):
         self.tasks.write_text(self.TASKS.replace("T002 Second", "T002 [manual] Second")
@@ -741,8 +769,7 @@ class JobTest(unittest.TestCase):
         out, calls, _ = self.supervise([job_run("r1", "T001"), job_run("r2")])
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertEqual(len(calls), 1)
-        record = self.job()
-        self.assertEqual(record["state"], "waiting")
+        record = self.assert_ended("waiting", "only items that need you are left", landing="landed")
         self.assertEqual(record["runs"], ["r1"])
 
     def test_two_runs_without_progress_fail(self):
@@ -750,9 +777,7 @@ class JobTest(unittest.TestCase):
         out, calls, _ = self.supervise([job_run("r1"), job_run("r2"), job_run("r3")])
         self.assertEqual(out.returncode, 1, out.stdout)
         self.assertEqual(len(calls), 2)
-        record = self.job()
-        self.assertEqual(record["state"], "failed")
-        self.assertEqual(record["reason"], "no progress in two runs")
+        record = self.assert_ended("failed", "no progress in two runs")
         self.assertEqual(record["no_progress_runs"], 2)
 
     def test_progress_resets_the_no_progress_count(self):
@@ -761,27 +786,23 @@ class JobTest(unittest.TestCase):
                                         job_run("r4", "T003")])
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertEqual(len(calls), 4)
-        self.assertEqual(self.job()["state"], "done")
+        self.assert_ended("done")
 
-    def test_max_runs_stops_the_job(self):
+    def test_max_runs_ends_the_run_with_limit(self):
         self.save_job(limits={"max_tasks": None, "until": None, "max_runs": 2})
         out, calls, _ = self.supervise([job_run("r1", "T001"), job_run("r2", "T002"), job_run("r3", "T003")])
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertEqual(len(calls), 2)
-        record = self.job()
-        self.assertEqual(record["state"], "stopped")
-        self.assertEqual(record["reason"], "max_runs 2 reached")
+        record = self.assert_ended("limit", "max_runs 2 reached", landing="landed")
         self.assertEqual(record["runs"], ["r1", "r2"])
 
-    def test_checkout_on_another_branch_stops_and_runs_nothing(self):
+    def test_checkout_on_another_branch_ends_and_runs_nothing(self):
         self.save_job()
         self.git("switch", "-q", "main")
         out, calls, _ = self.supervise([job_run("r1", "T001")])
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertEqual(calls, [])
-        record = self.job()
-        self.assertEqual(record["state"], "stopped")
-        self.assertEqual(record["reason"], "the checkout is not on the Job's branch")
+        record = self.assert_ended("stopped", "the checkout is not on the run's branch", landing="nothing")
         self.assertEqual(record["runs"], [])
         self.assertEqual(self.tasks.read_text(), self.TASKS)
 
@@ -792,17 +813,15 @@ class JobTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0][1].endswith(f"--job {JOB_ID} --max-tasks 1"), calls[0][1])
-        record = self.job()
-        self.assertEqual(record["state"], "stopped")
-        self.assertEqual(record["reason"], "max_tasks 2 reached")
+        self.assert_ended("limit", "max_tasks 2 reached")
 
     def test_until_passing_mid_run_stops_after_the_current_task(self):
         until = int(time.time()) + 2
         self.save_job(limits={"max_tasks": None, "until": until, "max_runs": 20})
         run = [{"transcript": True}, {"run": "r1"}, started("a", "impl:T001"), {"sleep": 3.5}, finished("a"),
                started("b", "verify:T001"), {"sleep": 0.3}, finished("b"), started("c", "commit:T001"),
-               {"tick": "T001"}, finished("c"), started("d", "impl:T002"), {"sleep": 30}, {"tick": "T002"},
-               {"finish": True}, *DONE]
+               {"tick": "T001"}, {"commit": "feat(T001): done"}, finished("c"), started("d", "impl:T002"),
+               {"sleep": 30}, {"tick": "T002"}, {"finish": True}, *DONE]
         t0 = time.time()
         out, calls, took = self.supervise([run, job_run("r2", "T002")])
         self.assertEqual(out.returncode, 0, out.stdout)
@@ -811,10 +830,10 @@ class JobTest(unittest.TestCase):
         self.assertLess(took, 25, "the run was stopped at the task boundary, not run to its end")
         self.assertIn("task boundary: stopping the run", out.stdout)
         self.assertIn("- [ ] T002", self.tasks.read_text(), "the task started after the boundary was not finished")
-        record = self.job()
-        self.assertEqual(record["state"], "stopped")
-        self.assertEqual(record["reason"], f"until {time.strftime('%H:%M', time.localtime(until))} reached")
+        record = self.assert_ended("limit", f"until {time.strftime('%H:%M', time.localtime(until))} reached",
+                                   landing="landed")
         self.assertEqual(record["runs"], ["r1"])
+        self.assertFalse((self.project / ".sdd" / "run.json").exists())
 
     def test_max_cycles_counts_per_run(self):
         self.save_job()
@@ -822,7 +841,7 @@ class JobTest(unittest.TestCase):
                                        "--max-cycles", "1")
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertEqual(len(calls), 3)
-        self.assertEqual(self.job()["state"], "done")
+        self.assert_ended("done")
 
     def test_tasks_added_to_a_scoped_phase_join_the_job(self):
         self.save_job()
@@ -831,9 +850,8 @@ class JobTest(unittest.TestCase):
         out, calls, _ = self.supervise([added, job_run("r2", "T002"), job_run("r3", "T003"), job_run("r4", "T004")])
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertEqual(len(calls), 4)
-        record = self.job()
+        record = self.assert_ended("done")
         self.assertEqual(record["scope_tasks"], ["T001", "T002", "T003", "T004"])
-        self.assertEqual(record["state"], "done")
 
     def test_a_job_that_is_not_working_is_refused(self):
         self.save_job(state="waiting")
@@ -898,11 +916,10 @@ class JobTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertEqual(len(calls), 2, "the paused run was resumed after the reset")
         self.assertNotIn("beyond --max-wait-hours", out.stdout)
-        record = self.job()
-        self.assertEqual(record["state"], "done")
+        record = self.assert_ended("done")
         self.assertEqual(record["runs"], ["r1"])
 
-    def test_hold_release_hold_during_the_wait_ends_held(self):
+    def test_hold_release_hold_during_the_wait_suspends_the_run(self):
         self.save_job()
         proc = self.start([self.paused_run(6 - self.MARGIN), job_run("r1", "T001")], "--max-wait-hours", "0")
         self.wait_for(lambda s: s.get("state") == "waiting", "waiting")
@@ -915,10 +932,10 @@ class JobTest(unittest.TestCase):
         out, calls = self.finish(proc)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(len(calls), 1, "a kept pause starts no cycle at the reset")
-        self.assertNotIn("waiting for Resume", out, "a Job does not hold for Resume")
-        record = self.job()
-        self.assertEqual(record["state"], "held")
+        self.assertNotIn("waiting for Resume", out, "a run does not hold for Resume")
+        record = self.assert_suspended("kept paused at the usage reset")
         self.assertEqual(record["runs"], ["r1"])
+        self.assertTrue((self.project / ".sdd" / "run.json").exists(), "Continue resumes from it")
 
     def test_release_last_during_the_wait_resumes(self):
         self.save_job()
@@ -932,9 +949,9 @@ class JobTest(unittest.TestCase):
         out, calls = self.finish(proc)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(len(calls), 2)
-        self.assertEqual(self.job()["state"], "done")
+        self.assert_ended("done")
 
-    def test_operator_stop_during_a_run_stops_the_job(self):
+    def test_stop_now_during_a_run_suspends_it(self):
         self.save_job()
         run = [{"transcript": True}, {"run": "r1"}, started("a", "impl:T001"),
                {"control": {"command": "stop", "mode": "now"}}, {"sleep": 30}, *DONE]
@@ -942,13 +959,12 @@ class JobTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertEqual(len(calls), 1)
         self.assertLess(took, 25)
-        self.assertNotIn("waiting for Resume", out.stdout, "a Job does not hold for Resume")
-        record = self.job()
-        self.assertEqual(record["state"], "stopped")
-        self.assertEqual(record["reason"], "stopped by you")
+        self.assertNotIn("waiting for Resume", out.stdout, "a run does not hold for Resume")
+        record = self.assert_suspended("stopped by you")
         self.assertEqual(record["runs"], ["r1"])
+        self.assertTrue((self.project / ".sdd" / "run.json").exists())
 
-    def test_operator_stop_during_the_wait_stops_the_job(self):
+    def test_operator_stop_during_the_wait_suspends_the_run(self):
         self.save_job()
         proc = self.start([self.paused_run(3600), job_run("r1", "T001")])
         self.wait_for(lambda s: s.get("state") == "waiting", "waiting")
@@ -956,10 +972,59 @@ class JobTest(unittest.TestCase):
         out, calls = self.finish(proc)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(len(calls), 1)
-        record = self.job()
-        self.assertEqual(record["state"], "stopped")
-        self.assertEqual(record["reason"], "stopped by you")
+        record = self.assert_suspended("stopped by you during the usage wait")
         self.assertEqual(record["runs"], ["r1"])
+
+    # Spec 009: a stop after the current task ends the run and lands it; a cut-off suspends it.
+
+    def two_tasks_run(self, during_first, then):
+        """Session r1: T001 is implemented (with the `during_first` steps), verified and committed, then T002
+        starts and the `then` steps follow."""
+        return [{"transcript": True}, {"run": "r1"}, started("a", "impl:T001"), *during_first,
+                {"write": {"path": "a.py", "text": "A = 1\n"}}, {"sleep": 0.5}, finished("a"),
+                started("b", "verify:T001"), finished("b"), started("c", "commit:T001"), {"tick": "T001"},
+                {"commit": "feat(T001): first"}, finished("c"), started("d", "impl:T002"), *then]
+
+    def test_stop_after_this_task_lands_the_first_task_and_ends_the_run(self):
+        self.save_job()
+        stop = {"control": {"command": "stop", "mode": "after-task"}}
+        run = self.two_tasks_run([stop], [{"sleep": 30}, {"write": {"path": "b.py", "text": "B = 2\n"}},
+                                          {"tick": "T002"}, {"finish": True}, *DONE])
+        out, calls, took = self.supervise([run, job_run("r2", "T002")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 1)
+        self.assertLess(took, 25, "the run stopped at T001's commit")
+        self.assertIn("task boundary: stopping the run", out.stdout)
+        record = self.assert_ended("stopped", "stopped by you", landing="landed")
+        self.assertEqual(record["runs"], ["r1"])
+        self.assertFalse((self.project / ".sdd" / "run.json").exists(), "the session was closed")
+        self.assertTrue((self.project / ".sdd" / "runs" / "r1" / "run.json").exists(), "and its run.json archived")
+        self.assertEqual(self.git_out("rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertEqual(self.git_out("rev-parse", "main"), record["landing"]["commit"])
+        self.assertIn("feat(T001): first", self.git_out("log", "--format=%s", "main"))
+        tasks = self.git_out("show", "main:specs/005-jobs/tasks.md")
+        self.assertIn("- [x] T001", tasks)
+        self.assertIn("- [ ] T002", tasks, "the second task is open again")
+        self.assertEqual(self.git_out("status", "--porcelain"), "")
+        self.assertTrue((self.project / ".sdd" / "runs" / f"{JOB_ID}.json").exists(), "the summary is committed")
+        self.assertIn(f".sdd/runs/{JOB_ID}.json", self.git_out("ls-tree", "-r", "--name-only", "main"))
+
+    def test_a_cut_off_suspends_the_run_and_fast_forwards_the_finished_commits(self):
+        self.save_job()
+        # The session ends by itself with .sdd/run.json still there, mid-T002: a cut-off (a crash, say).
+        run = self.two_tasks_run([], [{"write": {"path": "b.py", "text": "B = half\n"}}, *DONE])
+        out, calls, _ = self.supervise([run, job_run("r2", "T002")])
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertEqual(len(calls), 1)
+        record = self.assert_suspended("the run was cut off")
+        self.assertEqual(record["runs"], ["r1"])
+        self.assertTrue((self.project / ".sdd" / "run.json").exists(), "Continue resumes from it")
+        self.assertEqual((self.project / "b.py").read_text(), "B = half\n", "the half-done work stays in the tree")
+        self.assertEqual(self.git_out("rev-parse", "--abbrev-ref", "HEAD"), f"auto/{JOB_ID}")
+        branch_sha = self.git_out("rev-parse", f"auto/{JOB_ID}")
+        self.assertEqual(self.git_out("rev-parse", "main"), branch_sha, "T001 was fast-forwarded onto main")
+        self.assertEqual(record["landed_commit"], branch_sha)
+        self.assertIn("feat(T001): first", self.git_out("log", "--format=%s", "main"))
 
 
 if __name__ == "__main__":

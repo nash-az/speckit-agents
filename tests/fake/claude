@@ -9,10 +9,13 @@ Each invocation appends its arguments to $FAKE_DIR/calls and writes its environm
 {"tick": "T001"} changes `- [ ] T001` to `- [x] T001` in the file named by $FAKE_TASKS.
 {"finish": true} removes .sdd/run.json in the project (the current directory), as a finished run does.
 {"run": "<run id>"} writes .sdd/run.json in the project with that `run_id`, as a starting run does.
+{"write": {"path": "<relative path>", "text": "..."}} writes a file in the project, as an implementer does.
+{"commit": "<message>"} commits everything in the project's tree (`git add -A`), as the bookkeeper does.
 """
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -52,6 +55,14 @@ for step in steps:
                                 tasks.read_text(), count=1, flags=re.M))
     elif "run" in step:
         (Path.cwd() / ".sdd" / "run.json").write_text(json.dumps({"run_id": step["run"]}))
+    elif "write" in step:
+        target = Path.cwd() / step["write"]["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(step["write"]["text"])
+    elif "commit" in step:
+        subprocess.run(["git", "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-c", "user.name=fake", "-c", "user.email=fake@example.com", "-c",
+                        "commit.gpgsign=false", "commit", "-q", "-m", step["commit"]], check=True, capture_output=True)
     elif "finish" in step:
         (Path.cwd() / ".sdd" / "run.json").unlink(missing_ok=True)
     elif "sleep" in step:

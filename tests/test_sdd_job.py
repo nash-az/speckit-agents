@@ -1126,6 +1126,44 @@ class AfterSettleTest(unittest.TestCase):
                              {"started": False, "reason": "could not continue the job: boom"})
         self.assertEqual(job.after_settle(self.root / "missing"), {"started": False, "reason": "no open job"})
 
+    # 009 FR-024: a run that ended `waiting` is followed by a new run with its scope, limits and title.
+
+    def ended_waiting(self, landing="landed"):
+        subprocess.run(["git", "switch", "-q", "main"], cwd=self.root, capture_output=True, check=True)
+        self.set(state="ended", outcome="waiting", title="Phase 1 work",
+                 limits={"max_tasks": 5, "until": None, "max_runs": 3},
+                 landing={"state": landing, "commit": None, "files": []})
+
+    def test_a_run_ended_waiting_starts_a_new_run_with_its_scope_limits_and_title(self):
+        self.ended_waiting()
+        self.assertEqual(job.after_settle(self.root), {"started": True, "reason": None})
+        self.popen.assert_called_once()
+        new_id = self.popen.call_args.args[0][-1]
+        self.assertNotEqual(new_id, JOB_ID)
+        new = job.load(self.root, new_id)
+        self.assertEqual((new["state"], new["title"], new["scope"]), ("working", "Phase 1 work", {"phases": ["1"]}))
+        self.assertEqual(new["limits"], {"max_tasks": 5, "until": None, "max_runs": 3})
+        self.assertEqual(new["base"]["branch"], "main")
+        branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.root, capture_output=True,
+                                text=True).stdout.strip()
+        self.assertEqual(branch, f"auto/{new_id}")
+        self.assertEqual(job.load(self.root, JOB_ID)["state"], "ended", "the ended run is left as it was")
+
+    def test_a_run_ended_waiting_starts_nothing_while_a_run_is_open(self):
+        self.ended_waiting(landing="needs-merge")
+        self.not_started("a run is open: Phase 1 work")
+
+    def test_a_run_ended_waiting_starts_nothing_without_a_runnable_task(self):
+        self.ended_waiting()
+        (self.feature / "tasks.md").write_text(SETTLE_TASKS.replace("- [ ] T002", "- [x] T002"))
+        subprocess.run(["git", "commit", "-qam", "tick"], cwd=self.root, capture_output=True, check=True)
+        self.not_started("no task in the scope is runnable")
+
+    def test_a_run_ended_otherwise_starts_nothing(self):
+        subprocess.run(["git", "switch", "-q", "main"], cwd=self.root, capture_output=True, check=True)
+        self.set(state="ended", outcome="done", landing={"state": "landed", "commit": None, "files": []})
+        self.not_started("no open job")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,12 +30,17 @@ run paused after the reset and `release` undoes that. Held longer than --max-wai
 --job ID carries out the Job in .sdd/jobs/ID.json (spec 005, data-model §6) as a series of runs of
 `/sdd-run --yes --no-converge <scope> --job ID [--max-tasks <tasks left under the cap>]`. Before each
 run it checks that the checkout is on the Job's branch and that no limit is reached; after each run it
-appends the run id, re-reads the scope and sets the Job `done`, `waiting` (only items that need the
-person), `failed` (no progress in two runs) or starts the next run. A stop-by time passing mid-run
-stops the run at the next task boundary. --max-cycles then counts per run; status.json names the Job.
-A Job waits for any usage reset (--max-wait-hours does not apply to that wait); at the reset a kept
-pause (`hold`) sets the Job `held` and an operator stop (during a run or the wait) sets it `stopped`,
-and the supervisor exits 0 in both cases instead of holding for Resume.
+appends the run id, re-reads the scope and ends the run (spec 009, `sdd-job.py end`: the summary is
+committed and the run lands on its base) as `done`, `waiting` (only items that need the person) or
+`failed` (no progress in two runs), or starts the next run; a limit reached before a run ends it as
+`limit`. A stop-by time passing mid-run stops the run at the next task boundary. --max-cycles then
+counts per run; status.json names the run. A run waits for any usage reset (--max-wait-hours does not
+apply to that wait). A stop after the current task (the operator's or the stop-by time's) that reaches a
+task boundary with a clean tree closes the session (.sdd/run.json moved to .sdd/runs/<session>/) and ends
+the run `stopped` (or `limit`); any other cut-off (a boundary with work in the tree, Stop now, a stop
+during the usage wait, a kept pause at the reset, a session that ended with .sdd/run.json still there)
+suspends it (`sdd-job.py suspend`) for Continue or Drop. status.json then says `done` (ended) or
+`stopped` (suspended) with the reason, and the supervisor exits instead of holding for Resume.
 """
 from __future__ import annotations
 
@@ -188,6 +193,7 @@ class Cycle:
         # (workflow dir, journal line count) when that stop request (or the stop-by time) was first read:
         # the run stops at the first task boundary from there (spec 009).
         self.stop_from: tuple[Path | None, int] | None = None
+        self.boundary = False  # the run was stopped at a task boundary, or before any task (spec 009)
         self.run_id: str | None = None  # the run's id, read from .sdd/run.json while it is live (005 R5)
         self.until_sent = False  # the Job's stop-by time passed and the stop request was sent (005 §6)
         self.lock = threading.Lock()
@@ -361,6 +367,7 @@ class Cycle:
             if self.operator and self.stop_from is not None:
                 if started == 0:
                     self.stop_reason = "operator"
+                    self.boundary = True
                     say("stop requested before any task: stopping the run")
                     stop(proc)
                     break
@@ -380,6 +387,7 @@ class Cycle:
                                              threshold=self.args.threshold)
                         continue
                     self.stop_reason = "operator"
+                    self.boundary = True
                     say("task boundary: stopping the run")
                     stop(proc)
                     break
@@ -632,10 +640,12 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
     """One /sdd-run, cycle after cycle across usage resets, until it ends.
 
     Returns (how it ended, exit code, the run id seen in .sdd/run.json or None). How it ended:
-    `finished`, `cut-off` (ended with .sdd/run.json still there), `operator` (only with --job: an
-    operator stop, also during the usage wait, or the Job's stop-by time; without --job an operator stop
-    holds), `held` (only with --job: kept paused at the usage reset), `held-too-long`, `no-reset`,
-    `too-late` (never with --job: a Job waits for any reset) or `max-cycles`."""
+    `finished`, `cut-off` (ended with .sdd/run.json still there), `operator` (only with --job: a stop after
+    the current task, the operator's or the run's stop-by time, stopped at a task boundary or before any
+    task; without --job an operator stop holds), `stop-now` (only with --job: an operator stop that did
+    not wait for a task boundary: Stop now, or a usage pause reached first), `stop-wait` (only with --job:
+    an operator stop during the usage wait), `held` (only with --job: kept paused at the usage reset),
+    `held-too-long`, `no-reset`, `too-late` (never with --job: a run waits for any reset) or `max-cycles`."""
     run_id = None
     cycle_no = 0
     counted = 0  # cycles started by the supervisor itself; one started by a Resume is not counted
@@ -654,7 +664,7 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
         if outcome == "operator":
             say(f"cycle {cycle_no}: stopped by the operator" + (" (the job's stop-by time)" if cycle.until_sent else ""))
             if args.job:
-                return "operator", 0, run_id
+                return ("operator" if cycle.boundary else "stop-now"), 0, run_id
             if not hold(args, logs, status, cycle_no, "stopped by operator"):
                 say("held longer than --max-hold-hours: stopping")
                 write_status(status, state="stopped", reason="held too long", cycle=cycle_no)
@@ -694,7 +704,7 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
         # --no-sleep (tests) skips the wait and so ignores `hold`.
         after = "go" if args.no_sleep else wait_for_reset(args, logs, status, time.time() + wait, waiting)
         if after == "stop":
-            return "operator", 0, run_id
+            return "stop-wait", 0, run_id
         if after == "hold" and args.job:
             say("kept paused: the usage window has reset")
             return "held", 0, run_id
@@ -753,19 +763,81 @@ def progress_snapshot(sdd_job, project: Path, record: dict) -> tuple[int, int]: 
     return ticked, len(sdd_tasks.parse_blocked_entries(feature / "BLOCKED.md"))
 
 
-def end_job(sdd_job, project: Path, status: Path, job_id: str, state: str, reason: str | None) -> int:  # noqa: ANN001
-    """Record the Job's new state and reason, tell status.json, and give the supervisor's exit code."""
-    record = sdd_job.load(project, job_id) or {"id": job_id}
-    record["state"] = state
-    record["reason"] = reason
-    sdd_job.save(project, record)
-    say(f"job {job_id}: {state}" + (f" ({reason})" if reason else ""))
-    write_status(status, state="done" if state == "done" else "stopped", reason=reason or state, job_state=state)
-    return 1 if state == "failed" else 0
+def tree_clean(project: Path) -> bool:
+    """`git status --porcelain` is empty (False when git cannot say)."""
+    try:
+        out = subprocess.run(["git", "status", "--porcelain"], cwd=project, capture_output=True, text=True,
+                             timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and not out.stdout.strip()
+
+
+def close_session(sdd_job, project: Path, job_id: str) -> str | None:  # noqa: ANN001
+    """Close the session a stop at a task boundary left (spec 009): move `.sdd/run.json` to
+    `.sdd/runs/<its run_id>/run.json` and add that session id to the run's `runs`. Returns the session id,
+    or None when there was no run.json."""
+    run_json = project / ".sdd" / "run.json"
+    if not run_json.exists():
+        return None
+    try:
+        data = json.loads(run_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    session = str(data.get("run_id")) if isinstance(data, dict) and data.get("run_id") else "unknown"
+    archive = project / ".sdd" / "runs" / session / "run.json"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(run_json, archive)
+    record = sdd_job.load(project, job_id)
+    if record is not None and session != "unknown":
+        runs = record.setdefault("runs", [])
+        if session not in runs:
+            runs.append(session)
+            sdd_job.save(project, record)
+    say(f"session {session} closed: .sdd/run.json moved to {archive.relative_to(project)}")
+    return session
+
+
+def end_run(sdd_job, project: Path, status: Path, job_id: str, outcome: str, reason: str | None) -> int:  # noqa: ANN001
+    """End the run (spec 009, `sdd-job.py end`: the summary is committed and the run lands on its base) and
+    give the supervisor's exit code. status.json says `done` first, so landing does not see a live run."""
+    write_status(status, state="done", reason=reason or outcome, outcome=outcome)
+    result = sdd_job.end(project, job_id, outcome, reason)
+    landing = (sdd_job.load(project, job_id) or {}).get("landing") or {}
+    error = (result.get("land") or {}).get("error")
+    say(f"run {job_id}: ended {outcome}" + (f" ({reason})" if reason else "")
+        + f"; landing {landing.get('state')}" + (f": {error}" if error else ""))
+    write_status(status, state="done", reason=reason or outcome, outcome=outcome, landing=landing)
+    return 1 if outcome == "failed" else 0
+
+
+def suspend_run(sdd_job, project: Path, status: Path, job_id: str, reason: str, code: int) -> int:  # noqa: ANN001
+    """Suspend the run (spec 009, `sdd-job.py suspend`): `.sdd/run.json` and the tree stay for Continue or
+    Drop; finished work is fast-forwarded onto the base when it can be. Returns `code`."""
+    try:
+        landed = sdd_job.suspend(project, job_id, reason).get("landed_commit")
+    except sdd_job.Refused as e:
+        landed = None
+        say(f"could not suspend run {job_id}: {e}")
+    say(f"run {job_id}: suspended ({reason})" + (f"; finished work landed on the base at {landed[:7]}" if landed else ""))
+    write_status(status, state="stopped", reason=reason)
+    return code
+
+
+# How a session that did not reach a clean end leaves the run suspended (spec 009 FR-007), in words.
+SUSPEND_REASONS = {
+    "stop-now": "stopped by you",
+    "stop-wait": "stopped by you during the usage wait",
+    "held": "kept paused at the usage reset",
+    "no-reset": "the usage limit was reached and no reset time is known",
+    "held-too-long": "held longer than the hold limit",
+    "too-late": "the usage limit resets too late",
+}
 
 
 def run_job(args: argparse.Namespace, logs: Path, status: Path) -> int:
-    """The Job loop (005 data-model §6, the table in §2): run after run until the Job stops needing us."""
+    """The run loop (005 data-model §6; endings per spec 009): session after session until the run ends
+    (`end_run`) or is suspended (`suspend_run`)."""
     global JOB_ID
     sdd_job = load_sdd_job()
     project, job_id = args.project, args.job
@@ -783,11 +855,11 @@ def run_job(args: argparse.Namespace, logs: Path, status: Path) -> int:
         # 1. Checks: the branch (§5) and the limits (§3).
         record = sdd_job.load(project, job_id) or record
         if git_branch(project) != record.get("branch"):
-            return end_job(sdd_job, project, status, job_id, "stopped", "the checkout is not on the Job's branch")
+            return end_run(sdd_job, project, status, job_id, "stopped", "the checkout is not on the run's branch")
         limits = record.get("limits") or {}
         reached = sdd_job.limit_reached(project, record)
         if reached:
-            return end_job(sdd_job, project, status, job_id, "stopped", limit_reason(reached, limits))
+            return end_run(sdd_job, project, status, job_id, "limit", limit_reason(reached, limits))
         # 2. Snapshot progress (§4).
         before = progress_snapshot(sdd_job, project, record)
         # 3. The run, cycle after cycle (--max-cycles counts per run).
@@ -807,14 +879,21 @@ def run_job(args: argparse.Namespace, logs: Path, status: Path) -> int:
             say("the run's id is unknown (no .sdd/run.json was seen)")
         sdd_job.save(project, record)
         if outcome == "operator":
+            # A stop at a task boundary (spec 009): with a clean tree the session is closed and the run ends
+            # and lands; work left in the tree (a task started after the boundary) suspends it instead.
             until = (record.get("limits") or {}).get("until")
-            if until is not None and time.time() >= until:
-                return end_job(sdd_job, project, status, job_id, "stopped", limit_reason("until", record["limits"]))
-            return end_job(sdd_job, project, status, job_id, "stopped", "stopped by you")
-        if outcome == "held":
-            return end_job(sdd_job, project, status, job_id, "held", "kept paused at the usage reset")
-        if outcome not in ("finished", "cut-off", "max-cycles"):
-            return code  # the usage wait gave up; the Job stays working and shows as interrupted
+            by_time = until is not None and time.time() >= until
+            reason = limit_reason("until", record["limits"]) if by_time else "stopped by you"
+            if tree_clean(project):
+                close_session(sdd_job, project, job_id)
+                return end_run(sdd_job, project, status, job_id, "limit" if by_time else "stopped", reason)
+            return suspend_run(sdd_job, project, status, job_id, f"{reason}; the tree has uncommitted changes", code)
+        if outcome == "cut-off":
+            return suspend_run(sdd_job, project, status, job_id, sdd_job.CUT_OFF_REASON, code)
+        if outcome in SUSPEND_REASONS:
+            return suspend_run(sdd_job, project, status, job_id, SUSPEND_REASONS[outcome], code)
+        if outcome not in ("finished", "max-cycles"):
+            return code
         # 5. Re-plan the scope; tasks added inside scoped phases join the Job (research R4).
         plan = scope_plan(sdd_job, project, record)
         scoped = record.setdefault("scope_tasks", [])
@@ -827,11 +906,11 @@ def run_job(args: argparse.Namespace, logs: Path, status: Path) -> int:
         sdd_job.save(project, record)
         counts = sdd_job.progress(project, record)
         if counts["waiting_on_you"] == 0 and counts["left"] == 0:
-            return end_job(sdd_job, project, status, job_id, "done", None)
+            return end_run(sdd_job, project, status, job_id, "done", None)
         if plan["runnable"] == 0:
-            return end_job(sdd_job, project, status, job_id, "waiting", "only items that need you are left")
+            return end_run(sdd_job, project, status, job_id, "waiting", "only items that need you are left")
         if record["no_progress_runs"] >= 2:
-            return end_job(sdd_job, project, status, job_id, "failed", "no progress in two runs")
+            return end_run(sdd_job, project, status, job_id, "failed", "no progress in two runs")
         say(f"job {job_id}: {counts['done']} of {counts['total']} done; starting the next run")
 
 

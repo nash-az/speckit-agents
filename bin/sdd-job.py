@@ -3,11 +3,12 @@
 
 A Job lives in `.sdd/jobs/<id>.json`. Every write goes through `save()`, which writes `<id>.json.tmp` and
 then `os.replace`s it, so a reader never sees half a record; keys this module does not know are kept.
-At most one Job per project is open (state not `merged` or `dropped`); `open_job()` returns it.
+At most one Job per project is open (state not `merged`, `dropped` or `ended`); `open_job()` returns it.
 
 Functions so far: `load`, `save`, `list_jobs`, `open_job`, `new_id`, `default_title`, `display_state`,
 `scope_args`, `progress`, `limit_reached`, `merge`, `drop` (these two raise `Refused`, changing nothing),
-`after_settle` (continues a `waiting` Job after a settle; never raises).
+`after_settle` (continues a `waiting` Job, or starts a new run for a run that ended `waiting`, after a
+settle; never raises).
 Spec 009 (the record is the run record, plan "Data model"): `owns_run_json`, `normalize`, `shown_state`,
 `is_open`, `open_run`, `land` (raises `Refused`), `land_ready`, `end` (never raises), `suspend`,
 `drop_suspended` (raises `Refused`).
@@ -50,7 +51,8 @@ sdd_supervise = _load_module("sdd_supervise", "sdd-supervise.py")
 sdd_history = _load_module("sdd_history", "sdd-history.py")
 
 ID_RE = re.compile(r"^\d{8}-\d{4}(?:-(\d+))?$")
-CLOSED_STATES = ("merged", "dropped")
+# An `ended` 009 run is closed for `open_job` too; whether it still blocks a new run is `open_run`'s call.
+CLOSED_STATES = ("merged", "dropped", "ended")
 # sdd-tasks.py hold tags for dropped work (not counted in progress). Of the other holds, `held` (behind a
 # held dependency) waits on another task; every other tag (manual, decision, dep, download, blocked, or an
 # unknown one) waits on the person, as the dashboard's "Waiting on you" counts them.
@@ -763,17 +765,20 @@ def _scope_runnable(project, record: dict) -> int:
 
 
 def after_settle(project) -> dict:
-    """Continue a `waiting` Job after the person settled an item (FR-016, research R8).
+    """Go on after the person settled an item (005 FR-016, research R8; 009 FR-024).
 
-    Called by the helpers that commit a settle (`sdd-decide.py`, `sdd-manual.py`, `sdd-unblock.py`). Starts
-    the next run through `sdd-launch.py`'s `continue_job` when the open Job's shown state is `waiting`, no
-    `.sdd/run.json` exists, no supervisor is alive and the scope has a runnable task. Never raises: returns
-    `{"started": True, "reason": None}`, or `{"started": False, "reason": "<why not>"}`."""
+    Called by the helpers that commit a settle (`sdd-decide.py`, `sdd-manual.py`, `sdd-unblock.py`).
+    A 005 record (stored state not `merged`, `dropped` or `ended`): starts the next run through
+    `sdd-launch.py`'s `continue_job` when its shown state is `waiting`, no `.sdd/run.json` exists, no supervisor
+    is alive and the scope has a runnable task. Otherwise (009): when no run is open (`open_run`), starts a new
+    run through `launch_job` with the scope, limits and title of the newest run that ended `waiting`, when that
+    scope has a runnable task. Never raises: returns `{"started": True, "reason": None}`, or
+    `{"started": False, "reason": "<why not>"}`."""
     try:
         project = Path(project)
         record = open_job(project)
         if record is None:
-            return {"started": False, "reason": "no open job"}
+            return _start_after_waiting(project)
         state = display_state(project, record)["state"]
         if state != "waiting":
             return {"started": False, "reason": f"the job is {state}, not waiting"}
@@ -793,6 +798,30 @@ def after_settle(project) -> dict:
         return {"started": True, "reason": None}
     except Exception as e:  # never raise: the caller's commit has already succeeded
         return {"started": False, "reason": f"could not continue the job: {e}"}
+
+
+def _start_after_waiting(project: Path) -> dict:
+    """009 FR-024: a new run with the scope, limits and title of the newest run that ended `waiting`, when no
+    run is open and that scope has a runnable task. Raises only what `after_settle` catches."""
+    other = open_run(project)
+    if other is not None:
+        return {"started": False, "reason": f"a run is open: {other.get('title') or other.get('id')}"}
+    waiting = next((r for r in list_jobs(project) if r.get("state") == "ended" and r.get("outcome") == "waiting"),
+                   None)
+    if waiting is None:
+        return {"started": False, "reason": "no open job"}
+    until = (waiting.get("limits") or {}).get("until")
+    if until is not None and time.time() >= until:
+        return {"started": False, "reason": "the run's stop-by time has passed"}
+    if _scope_runnable(project, waiting) == 0:
+        return {"started": False, "reason": "no task in the scope is runnable"}
+    launcher = _launcher()
+    try:
+        launcher.launch_job(project, feature_dir(project, waiting), waiting.get("scope"), waiting.get("limits"),
+                            title=waiting.get("title"))
+    except launcher.Refused as e:
+        return {"started": False, "reason": str(e)}
+    return {"started": True, "reason": None}
 
 
 def _with_view(project, record: dict) -> dict:
