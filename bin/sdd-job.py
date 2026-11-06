@@ -7,7 +7,8 @@ At most one run per project is open; `open_run()` returns it.
 
 Functions: `load`, `save`, `list_jobs`, `new_id`, `default_title`, `scope_args`, `progress`, `tasks_done`,
 `limit_reached`, `owns_run_json`, `normalize`, `shown_state`, `is_open`, `open_run`, `land` (raises
-`Refused`), `land_ready`, `end` (never raises), `suspend`, `drop_suspended` (raises `Refused`),
+`Refused`), `land_ready`, `end` (never raises), `suspend`, `in_flight`, `record_in_flight`,
+`drop_suspended` (raises `Refused`),
 `after_settle` (starts a new run after a settle when the newest run ended `waiting`; never raises).
 
     bin/sdd-job.py list [project]          -> [record + shown (shown_state) + progress, ...]
@@ -543,14 +544,36 @@ def end(project, run_id: str, outcome: str, reason: str | None) -> dict:
 
 def suspend(project, run_id: str, reason: str | None) -> dict:
     """Suspend the run (plan "Engine changes" 2): store `suspended` and the reason, then fast-forward the base
-    to the finished work (`land_ready`); the tree is left as it is. Returns `{"landed_commit"}`."""
+    to the finished work (`land_ready`); the tree is left as it is. Each task in flight of the run's own
+    `.sdd/run.json` gets step `suspended` with the reason in its history (research R10). Returns
+    `{"landed_commit"}`."""
     project = Path(project)
     record = load(project, run_id)
     if record is None:
         raise Refused(f"no such run: {run_id}")
     record.update(state="suspended", reason=reason)
     save(project, record)
+    record_in_flight(project, record, "suspended", reason=reason)
     return {"landed_commit": land_ready(project, run_id)}
+
+
+def record_in_flight(project, record: dict, step: str, **fields) -> list[str]:
+    """Record `step` (`suspended`, `resumed`) in the history of each task in flight of the record's own
+    `.sdd/run.json`, with its `run_id` as the session (research R10); no own run.json → nothing. Returns the
+    tasks."""
+    if not owns_run_json(project, record):
+        return []
+    try:
+        run = json.loads((Path(project) / ".sdd" / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(run, dict):
+        return []
+    tasks = in_flight(run)
+    session = str(run["run_id"]) if run.get("run_id") else None
+    for task_id in tasks:
+        sdd_history.record_step(project, record, task_id, step, session=session, **fields)
+    return tasks
 
 
 DROP_DIFF_LIMIT = 200_000
@@ -558,7 +581,7 @@ DROP_DIFF_LIMIT = 200_000
 KEEP_OUT_OF_STASH = (".", ":(exclude).sdd/tasks")
 
 
-def _in_flight(run: dict | None) -> list[str]:
+def in_flight(run: dict | None) -> list[str]:
     """The tasks the run.json's workflow journal has in flight (`sdd-tasks.py checkpoint`); [] without one."""
     workflow_dir = (run or {}).get("workflow_dir")
     if not workflow_dir:
@@ -608,7 +631,7 @@ def drop_suspended(project, run_id: str) -> dict:
     run = None
     if owns_run_json(project, record):
         run = json.loads(run_json.read_text(encoding="utf-8"))
-    tasks = _in_flight(run)
+    tasks = in_flight(run)
     session = str(run["run_id"]) if run and run.get("run_id") else None
 
     patch = _uncommitted_patch(project)

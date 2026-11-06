@@ -433,6 +433,9 @@ def continue_job(project: Path, job_id: str, new_limits: dict | None = None) -> 
 
     updated.update(state="working", reason=None)
     sdd_job.save(project, updated)
+    if resuming:
+        # Each task in flight of the run.json gets step `resumed` in its history (009 research R10).
+        sdd_job.record_in_flight(project, updated, "resumed")
     command = [sys.executable, str(HERE / "sdd-supervise.py"), "--project", str(project), "--job", job_id]
     pid, log = _start_supervisor(project, command)
     return {"job": job_id, "pid": pid, "log": log, "resumes": run_json.get("run_id") if resuming else None}

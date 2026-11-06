@@ -776,6 +776,26 @@ class LandTest(GitProjectCase):
         self.assertEqual((saved["state"], saved["reason"], saved["landed_commit"]),
                          ("suspended", "the run was cut off", self.job_commit))
 
+    def test_suspend_records_suspended_for_the_tasks_in_flight(self):
+        """009 research R10: step `suspended` with the session and the reason for each task in flight."""
+        self.set_record(state="working", outcome=None, landing=None)
+        workflow_dir = Path(self.tmp.name).resolve() / "wf_suspend"
+        workflow_dir.mkdir()
+        (workflow_dir / "journal.jsonl").write_text(
+            json.dumps({"type": "started", "key": "k1", "label": "impl:T002"}) + "\n")
+        (self.root / ".sdd" / "run.json").write_text(json.dumps(
+            {"run_id": "20261031-1203", "job": JOB_ID, "branch": f"auto/{JOB_ID}",
+             "workflow_dir": str(workflow_dir)}))
+        job.suspend(self.root, JOB_ID, "the run was cut off")
+        entries = job.sdd_history.read(self.root, "003-plugin-redesign", "T002")
+        self.assertEqual([(e["step"], e["run"], e["session"], e["reason"]) for e in entries],
+                         [("suspended", JOB_ID, "20261031-1203", "the run was cut off")])
+
+    def test_suspend_without_its_run_json_records_nothing(self):
+        self.set_record(state="working", outcome=None, landing=None)
+        job.suspend(self.root, JOB_ID, "the run was cut off")
+        self.assertFalse((self.root / ".sdd" / "tasks").exists())
+
     def test_cli_land(self):
         env = {**os.environ, "XDG_STATE_HOME": self.state_home}
         landed = subprocess.run([sys.executable, str(HERE.parent / "bin" / "sdd-job.py"), "land", JOB_ID,

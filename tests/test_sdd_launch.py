@@ -588,6 +588,28 @@ class ContinueJobTest(unittest.TestCase):
         self.assertTrue((self.root / ".sdd" / "run.json").exists())
         self.assertEqual(self.record()["state"], "working")
 
+    def test_resuming_records_resumed_for_the_tasks_in_flight(self):
+        """009 research R10: step `resumed` with the run.json's session for each task in flight."""
+        self.set(state="suspended", reason="the run was cut off")
+        workflow_dir = Path(self.tmp.name).resolve() / "wf_resume"
+        workflow_dir.mkdir()
+        (workflow_dir / "journal.jsonl").write_text(
+            json.dumps({"type": "started", "key": "k1", "label": "impl:T003"}) + "\n")
+        (self.root / ".sdd" / "run.json").write_text(json.dumps(
+            {"run_id": "20261031-1100", "branch": self.job_branch, "workflow_dir": str(workflow_dir)}))
+        git(self.root, "switch", "-q", self.job_branch)
+        self.assertEqual(launch.continue_job(self.root, self.job)["resumes"], "20261031-1100")
+        history = launch.sdd_job.sdd_history
+        entries = history.read(self.root, history.feature_name(self.record()), "T003")
+        self.assertEqual([(e["step"], e["run"], e["session"]) for e in entries],
+                         [("resumed", self.job, "20261031-1100")])
+
+    def test_a_new_session_records_no_resumed_step(self):
+        self.set(state="suspended", reason="the run was cut off")
+        git(self.root, "switch", "-q", "main")
+        launch.continue_job(self.root, self.job)
+        self.assertFalse((self.root / ".sdd" / "tasks").exists())
+
     def test_resuming_with_the_checkout_on_another_branch_is_refused(self):
         self.set(state="held", reason="kept paused at the usage reset")
         (self.root / "half-done.txt").write_text("interrupted work")

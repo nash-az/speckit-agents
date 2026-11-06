@@ -214,7 +214,7 @@ def _in_flight(project, record) -> list:
         return []
     try:
         run = json.loads((Path(project) / ".sdd" / "run.json").read_text(encoding="utf-8"))
-        return sdd_job._in_flight(run if isinstance(run, dict) else None)
+        return sdd_job.in_flight(run if isinstance(run, dict) else None)
     except Exception:  # noqa: BLE001 — an unreadable journal only loses the task's name in the banner
         return []
 
