@@ -36,3 +36,8 @@
 ## 20261104-1710 (2026-11-04)
 - The verifier holds every engine command to `specs/008-standalone-server/contracts/engine-cli.md`: refusals as well as successes must print one JSON object with `contract` (refusal: `{"contract", "error"}`, exit 1). Plain-text `refused: …` lines get a task rejected (T008, attempt 1). Update the tests that assert old output rather than keeping the old output.
 - `snapshot` output now carries a top-level `contract` key next to the task ids, so `task_snapshot` in `run.json` has one key that is not a task. `changed` ignores it.
+
+## 20261106-1204 (2026-11-06)
+- A run started with a direct Workflow call (no supervisor) has no usage-limit protection: an agent died at the 5-hour limit mid-edit, and the dashboard kept showing it as running. Start runs through `bin/sdd-launch.py` or the dashboard's Start run.
+- An agent cut off by the usage limit is started again after the reset on the half-edited tree; this time it finished (T009), but the journal has two `started` lines for one task.
+- The verifier checks docs against the code and the plan, not only the spec: README text that follows the spec's FR-017 where the plan chose otherwise got T011 rejected.
