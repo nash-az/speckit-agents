@@ -41,7 +41,7 @@
 
 **Goal**: a standalone server with a project list and per-project API. **Independent test**: quickstart.md §2.
 
-- [ ] T012 After T008, create `bin/sdd-views.py` per §14 by moving the listed functions out of `bin/sdd-dashboard.py` unchanged (the dashboard imports them), and extend the read-only guard test to `bin/sdd-views.py` with the named exceptions; every test in `tests/test_sdd_dashboard.py` and `tests/ui/` passes unchanged.
+- [x] T012 After T008, create `bin/sdd-views.py` per §14 by moving the listed functions out of `bin/sdd-dashboard.py` unchanged (the dashboard imports them), and extend the read-only guard test to `bin/sdd-views.py` with the named exceptions; every test in `tests/test_sdd_dashboard.py` and `tests/ui/` passes unchanged.
 - [ ] T013 After T012, create `server/sdd-server.py` and `server/app.py` per §6 (arguments, the Claude-session refusal and the cleaned child environment, single instance, start without an engine, engine reload, `ThreadingHTTPServer` on 127.0.0.1) and §10's request checks, with §6's core tests in `tests/test_server_core.py` plus a test that fails when any file under `server/` names the repository's `bin/` or loads modules other than through `--engine`.
 - [ ] T014 After T013, create `server/projects.py` with `GET /api/projects`, `POST /api/projects/add`, `POST /api/projects/<id>/remove` and `POST /api/p/<id>/feature` per §6 and §10, with §6's project tests (5 projects, symlink, missing, restart) in `tests/test_server_projects.py`.
 - [ ] T015 [P] After T014, add `GET /api/fs/list` to `server/projects.py` per §10, with §10's tests in `tests/test_server_projects.py`.
