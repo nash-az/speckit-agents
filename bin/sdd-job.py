@@ -13,12 +13,12 @@ Spec 009 (the record is the run record, plan "Data model"): `owns_run_json`, `no
 `is_open`, `open_run`, `land` (raises `Refused`), `land_ready`, `end` (never raises), `suspend`,
 `drop_suspended` (raises `Refused`).
 
-    bin/sdd-job.py list [project]          -> [record + shown + progress, ...]
-    bin/sdd-job.py show <id> [project]     -> record + shown + progress
-    bin/sdd-job.py merge <id> [project]    -> {"merged": true, "commit": "<sha>", "fast_forward": bool}
-    bin/sdd-job.py drop <id> [project]     -> {"dropped": true}; for a suspended run
-                                              {"dropped": true, "tasks", "stash", "end"} (drop_suspended)
-    bin/sdd-job.py land <id> [project]     -> {"landed": bool, "commit", "fast_forward": bool, "landing"}
+    bin/sdd-job.py list [project]          -> [record + shown (shown_state) + progress, ...]
+    bin/sdd-job.py show <id> [project]     -> record + shown (shown_state) + progress
+    bin/sdd-job.py land <id> [project]     -> {"landed": bool, "commit", "fast_forward": bool, "landing"} (land)
+    bin/sdd-job.py merge <id> [project]    -> the same as land (a 009 run: merge = land)
+    bin/sdd-job.py drop <id> [project]     -> {"dropped": true, "tasks", "stash", "end"} (drop_suspended; a run
+                                              not shown suspended is refused "this run cannot be dropped: ...")
 
 A refusal prints `{"contract": "1.0", "error": "<reason>"}` and exits 1 (contracts/engine-cli.md). Stdlib only; no model.
 """
@@ -825,12 +825,12 @@ def _start_after_waiting(project: Path) -> dict:
 
 
 def _with_view(project, record: dict) -> dict:
-    """The record plus `shown` (display_state) and `progress` (None when tasks.md cannot be read)."""
+    """The record plus `shown` (shown_state) and `progress` (None when tasks.md cannot be read)."""
     try:
         counts = progress(project, record)
     except (OSError, ValueError, KeyError):
         counts = None
-    return {**record, "shown": display_state(project, record), "progress": counts}
+    return {**record, "shown": shown_state(project, record), "progress": counts}
 
 
 USAGE = ("usage: sdd-job.py list [project] | show <id> [project] | merge <id> [project] | drop <id> [project]"
@@ -859,16 +859,10 @@ def main(argv: list[str]) -> int:
             if record is None:
                 raise Refused(f"no such job: {job_id}")
             result = _with_view(project, record)
-        elif command == "merge":
-            result = merge(project, job_id)
-        elif command == "land":
+        elif command in ("merge", "land"):  # a 009 run: merge = land (FR-023, research R11)
             result = land(project, job_id)
         else:
-            record = load(project, job_id)
-            if record is not None and shown_state(project, record)["state"] == "suspended":
-                result = drop_suspended(project, job_id)
-            else:
-                result = drop(project, job_id)
+            result = drop_suspended(project, job_id)
     except Refused as e:
         print(json.dumps({"contract": sdd_tasks.CONTRACT, "error": str(e)}, ensure_ascii=False))
         return 1

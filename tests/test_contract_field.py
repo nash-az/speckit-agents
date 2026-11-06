@@ -148,11 +148,14 @@ class ContractFieldTest(unittest.TestCase):
         jobs = self.root / ".sdd" / "jobs"
         jobs.mkdir(parents=True)
         (jobs / f"{JOB_ID}.json").write_text(json.dumps(record), encoding="utf-8")
-        self.run_json("sdd-job.py", "show", JOB_ID, self.root)
+        # Its own run.json makes the 005 stopped record read suspended, so Drop takes it (009 drop_suspended).
+        (self.root / ".sdd" / "run.json").write_text(
+            json.dumps({"run_id": "20261031-1013", "job": JOB_ID, "branch": f"auto/{JOB_ID}"}), encoding="utf-8")
+        self.assertEqual(self.run_json("sdd-job.py", "show", JOB_ID, self.root)["shown"]["state"], "suspended")
         self.run_json("sdd-job.py", "drop", JOB_ID, self.root)
         # save() wrote the record again, with the field (data-model §1, "Job records").
         saved = json.loads((jobs / f"{JOB_ID}.json").read_text(encoding="utf-8"))
-        self.assertEqual((saved["state"], saved["contract"]), ("dropped", "1.0"))
+        self.assertEqual((saved["state"], saved["outcome"], saved["contract"]), ("ended", "dropped", "1.0"))
 
     def test_harvest_keeps_its_contract_in_step_with_sdd_tasks(self):
         """sdd-harvest.py runs on its own, so it has its own copy of CONTRACT; the two change together."""

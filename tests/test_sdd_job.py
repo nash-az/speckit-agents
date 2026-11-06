@@ -648,46 +648,61 @@ class MergeDropTest(GitProjectCase):
         return subprocess.run([sys.executable, str(HERE.parent / "bin" / "sdd-job.py"), *args],
                               capture_output=True, text=True, env=env)
 
-    def test_cli_json_output(self):
+    def set_record(self, **fields):
+        job.save(self.root, {**job.load(self.root, JOB_ID), **fields})
+
+    def test_cli_merge_lands_an_ended_run_with_landing_pending(self):
+        """009 FR-023: merge = land, the same JSON."""
+        self.set_record(state="ended", outcome="done", landing=PENDING)
+        merged = self.cli("merge", JOB_ID, str(self.root))
+        self.assertEqual(merged.returncode, 0, merged.stdout + merged.stderr)
+        self.assertEqual(json.loads(merged.stdout),
+                         {"contract": "1.0", "landed": True, "commit": self.job_commit, "fast_forward": True,
+                          "landing": {"state": "landed", "commit": self.job_commit, "files": []}})
+        self.assertEqual(self.branch(), "main")
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["state"], saved["landing"]["state"]), ("ended", "landed"))
+        self.assertEqual(self.cli().returncode, 2)
+
+    def test_cli_merge_refuses_a_working_run(self):
+        self.set_record(state="working")
+        status = job.sdd_supervise.state_dir(self.root) / "status.json"
+        status.write_text(json.dumps({"state": "running", "pid": os.getpid()}))
+        before = self.snapshot()
+        refused = self.cli("merge", JOB_ID, str(self.root))
+        self.assertEqual((refused.returncode, json.loads(refused.stdout)),
+                         (1, {"contract": "1.0", "error": "this run has not ended: it is working"}))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_cli_drop_refuses_an_ended_run(self):
+        self.set_record(state="ended", outcome="done", landing=PENDING)
+        before = self.snapshot()
+        refused = self.cli("drop", JOB_ID, str(self.root))
+        self.assertEqual((refused.returncode, json.loads(refused.stdout)),
+                         (1, {"contract": "1.0", "error": "this run cannot be dropped: it is ended"}))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_cli_list_and_show_give_the_shown_state(self):
+        """A 005 stopped record with its own run.json reads suspended (shown_state, not display_state)."""
+        self.set_record(state="stopped")
+        (self.root / ".sdd").mkdir(exist_ok=True)
+        (self.root / ".sdd" / "run.json").write_text(
+            json.dumps({"run_id": "20261031-1013", "job": JOB_ID, "branch": f"auto/{JOB_ID}"}))
         listed = self.cli("list", str(self.root))
         self.assertEqual(listed.returncode, 0, listed.stderr)
         jobs = json.loads(listed.stdout)
         self.assertEqual([j["id"] for j in jobs], [JOB_ID])
-        self.assertEqual(jobs[0]["shown"], {"state": "done"})
+        self.assertEqual(jobs[0]["shown"]["state"], "suspended")
         self.assertEqual(jobs[0]["progress"], {"done": 0, "total": 1, "waiting_on_you": 0, "left": 1})
 
         shown = self.cli("show", JOB_ID, str(self.root))
         self.assertEqual(shown.returncode, 0, shown.stderr)
         one = json.loads(shown.stdout)
-        self.assertEqual((one["id"], one["runs"], one["shown"]["state"]), (JOB_ID, [], "done"))
+        self.assertEqual((one["contract"], one["id"], one["shown"]["state"]), ("1.0", JOB_ID, "suspended"))
 
         missing = self.cli("show", "20261031-0000", str(self.root))
         self.assertEqual((missing.returncode, json.loads(missing.stdout)),
                          (1, {"contract": "1.0", "error": "no such job: 20261031-0000"}))
-
-        (self.root / "b.txt").write_text("edited\n")
-        dirty = self.cli("merge", JOB_ID, str(self.root))
-        self.assertEqual(dirty.returncode, 1)
-        self.assertEqual(json.loads(dirty.stdout),
-                         {"contract": "1.0",
-                          "error": "the working tree has changes; commit or stash them first: b.txt"})
-        self.git("checkout", "--", "b.txt")
-
-        merged = self.cli("merge", JOB_ID, str(self.root))
-        self.assertEqual(merged.returncode, 0, merged.stdout + merged.stderr)
-        self.assertEqual(json.loads(merged.stdout),
-                         {"contract": "1.0", "merged": True, "commit": self.job_commit, "fast_forward": True})
-
-        again = self.cli("drop", JOB_ID, str(self.root))
-        self.assertEqual((again.returncode, json.loads(again.stdout)),
-                         (1, {"contract": "1.0", "error": "this job cannot be dropped in state merged"}))
-        self.assertEqual(self.cli().returncode, 2)
-
-    def test_cli_drop(self):
-        dropped = self.cli("drop", JOB_ID, str(self.root))
-        self.assertEqual(dropped.returncode, 0, dropped.stdout + dropped.stderr)
-        self.assertEqual(json.loads(dropped.stdout), {"contract": "1.0", "dropped": True})
-        self.assertEqual(self.branch(), "main")
 
 
 class LandTest(GitProjectCase):
