@@ -1,0 +1,32 @@
+{
+  "id": "20261101-0900",
+  "title": "Phase 1",
+  "feature": "005-jobs",
+  "scope": {
+    "phases": [
+      "1"
+    ]
+  },
+  "scope_tasks": [
+    "T001"
+  ],
+  "blocked_at_start": 0,
+  "limits": {
+    "max_tasks": null,
+    "until": null,
+    "max_runs": 20
+  },
+  "branch": "auto/20261101-0900",
+  "base": {
+    "branch": "main",
+    "commit": "0000000"
+  },
+  "state": "stopped",
+  "reason": "stopped by you",
+  "runs": [],
+  "no_progress_runs": 0,
+  "created": 1793520000,
+  "ended": null,
+  "merge_commit": null,
+  "contract": "1.0"
+}

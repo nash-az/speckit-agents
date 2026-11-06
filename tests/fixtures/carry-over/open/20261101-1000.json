@@ -1,0 +1,32 @@
+{
+  "id": "20261101-1000",
+  "title": "Phase 2",
+  "feature": "005-jobs",
+  "scope": {
+    "phases": [
+      "2"
+    ]
+  },
+  "scope_tasks": [
+    "T002"
+  ],
+  "blocked_at_start": 0,
+  "limits": {
+    "max_tasks": null,
+    "until": null,
+    "max_runs": 20
+  },
+  "branch": "auto/20261101-1000",
+  "base": {
+    "branch": "main",
+    "commit": "0000000"
+  },
+  "state": "done",
+  "reason": "every task in the scope is done or skipped",
+  "runs": [],
+  "no_progress_runs": 0,
+  "created": 1793523600,
+  "ended": 1793527200,
+  "merge_commit": null,
+  "contract": "1.0"
+}

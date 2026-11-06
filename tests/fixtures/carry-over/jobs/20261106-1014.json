@@ -1,0 +1,40 @@
+{
+  "id": "20261106-1014",
+  "title": "Phase 3",
+  "feature": "008-standalone-server",
+  "scope": {
+    "phases": [
+      "3"
+    ]
+  },
+  "scope_tasks": [
+    "T012",
+    "T013",
+    "T014",
+    "T015",
+    "T016",
+    "T017",
+    "T018"
+  ],
+  "blocked_at_start": 0,
+  "limits": {
+    "max_tasks": null,
+    "until": null,
+    "max_runs": 20
+  },
+  "branch": "auto/20261106-1014",
+  "base": {
+    "branch": "main",
+    "commit": "de6fea9"
+  },
+  "state": "merged",
+  "reason": "stopped by you",
+  "runs": [
+    "20261106-1014"
+  ],
+  "no_progress_runs": 0,
+  "created": 1793956490,
+  "ended": 1793962221,
+  "merge_commit": "f08e262583a498cf8b85aba5859044c7111b7838",
+  "contract": "1.0"
+}

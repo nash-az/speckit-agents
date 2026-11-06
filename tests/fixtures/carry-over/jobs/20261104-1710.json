@@ -1,0 +1,41 @@
+{
+  "id": "20261104-1710",
+  "title": "Phase 2",
+  "feature": "008-standalone-server",
+  "scope": {
+    "phases": [
+      "2"
+    ]
+  },
+  "scope_tasks": [
+    "T004",
+    "T005",
+    "T006",
+    "T007",
+    "T008",
+    "T009",
+    "T010",
+    "T011"
+  ],
+  "blocked_at_start": 0,
+  "limits": {
+    "max_tasks": null,
+    "until": null,
+    "max_runs": 20
+  },
+  "branch": "auto/20261104-1710",
+  "base": {
+    "branch": "main",
+    "commit": "3035e31"
+  },
+  "state": "merged",
+  "reason": null,
+  "runs": [
+    "20261104-1710"
+  ],
+  "no_progress_runs": 0,
+  "created": 1793808605,
+  "ended": 1793823603,
+  "merge_commit": "c9f67eec042340a8d3dc75a5ed2b3c4257fa523f",
+  "contract": "1.0"
+}
