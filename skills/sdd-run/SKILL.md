@@ -95,9 +95,12 @@ Remind the user that permission prompts stop an unattended run, and that a headl
      "commit_trailer": "<the attribution trailer your instructions give for commits, or empty>",
      "resume": <the checkpoint from step 1 when resuming, else null>,
      "agentModels": <the config's agents table, or {}>,
+     "job": "<the --job id, or null>",
+     "model": "<your own model id>",
      "taskAllow": { "<task id>": { "dependencies": true|false, "downloads": true|false }, ... } }
    ```
    `taskAllow` gives per-task permission overrides (for example a `[dep:ok]` task may add a dependency even when `[allow] dependencies = false`). Build it from the tasks' tags: a task tagged `[dep:ok]` gets `{ dependencies: true }`, one tagged `[download:ok]` gets `{ downloads: true }`.
+   `job` and `model` go into each task commit's trailers (`Run: <job, else run id>`, `Model: <the implementer's model, else yours>`; 009 FR-018). Pass `job` as JSON `null` without `--job`.
    The Workflow result names the run's `Transcript dir`. Add it to `.sdd/run.json` as `workflow_dir` right away: if the run is cut off, the next `/sdd-run` reads its journal there and resumes instead of starting the tasks over.
    In the same write, add `"workflow_task": "<the task id the Workflow tool returned>"` beside `workflow_dir` (008 data-model §3), and keep every other key of `run.json`, including what the `session` command wrote.
    At the same moment, record the directory in `.sdd/runs/<run id>/workflows.json`, `{"workflow_dirs": ["<absolute transcript dir>", …], "feature": "<the feature folder name, e.g. 004-feedback-chat>"}`, oldest first: create the file (and its directory) if it is missing, and when resuming, append the new directory to its list. With `--job <id>`, add `"job": "<id>"` beside `feature` (005 data-model §5); without it, leave the key out. `python3 <helper> events . <run id>` reads the run's events from these directories.
@@ -110,10 +113,10 @@ Both branches below run the **end-of-run steps** (data-model §8) right after wr
    `{"id": "<run id>-<n>", "date": "YYYY-MM-DD", "run_id": "<run id>", "project": "<project dir name>", "text": "<the problem>", "evidence": "<event kinds/ids or a short quote>"}`
    `<n>` counts from 1 within this run, continuing after any entries this run id already has in the file. This file is git-ignored (data-model §7): never commit it.
 3. **Counts in the report.** Add a line to the report: `Learnings: <l> lessons written to .sdd/learnings.md; plugin feedback: <f> entries written to .sdd/plugin-feedback.jsonl.`
-4. **Commit** the report together with the lessons: `git add -- .sdd/runs/<run id>.md .sdd/learnings.md` (leave out `.sdd/learnings.md` only if the file does not exist), then commit as the branch below says.
+4. **Commit** the report together with the lessons and the task histories. First run `python3 <plugin>/bin/sdd-history.py harvest . <the --job id, else the run id>` as its own Bash call, exactly as written (009): it appends this run's steps to `.sdd/tasks/<feature>/<task id>.jsonl`. If it fails, go on and say so in the report. Then `git add -- .sdd/runs/<run id>.md .sdd/learnings.md .sdd/tasks` (leave out `.sdd/learnings.md` or `.sdd/tasks` only if it does not exist), then commit as the branch below says.
 
 If `stopped` starts with `interrupted`, the run was cut off (usage limit or stop) and is meant to be resumed:
-- Write the report as below, marked **interrupted**, with the `interrupted` and `resumed` lists. Run the end-of-run steps, then commit only the report and the lessons (`git add -- .sdd/runs/<run id>.md .sdd/learnings.md`): the tree holds the interrupted work, so add nothing else.
+- Write the report as below, marked **interrupted**, with the `interrupted` and `resumed` lists. Run the end-of-run steps, then commit only the report, the lessons and the task histories (`git add -- .sdd/runs/<run id>.md .sdd/learnings.md .sdd/tasks`): the tree holds the interrupted work, so add nothing else.
 - Keep `.sdd/run.json`: the next `/sdd-run` (or `bin/sdd-supervise.py` after the reset) resumes from it.
 - Notify `sdd run <id>: interrupted, <n> done; resumes on the next /sdd-run`, and tell the user the same. Then stop; skip the items below.
 
@@ -130,7 +133,7 @@ Otherwise:
    - the model per role (`implementer`, `verifier`, `evaluator`, `bookkeeper`): the config's `agents.<role>`, or "run's model" when it has none;
    - the run's events: `python3 <helper> events . <run id>`;
    - how many lessons and plugin feedback entries the end-of-run steps wrote.
-2. Run the end-of-run steps above, then commit the report and `.sdd/learnings.md` (`git add -- .sdd/runs/<run id>.md .sdd/learnings.md`) as `chore(sdd): run report <run id>`, with the trailer.
+2. Run the end-of-run steps above, then commit the report, `.sdd/learnings.md` and `.sdd/tasks` (`git add -- .sdd/runs/<run id>.md .sdd/learnings.md .sdd/tasks`) as `chore(sdd): run report <run id>`, with the trailer.
 3. Remove `.sdd/run.json`.
 4. Send a push notification if the PushNotification tool is available: `sdd run <id>: <n> done, <m> blocked`.
 5. Tell the user:

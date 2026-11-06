@@ -110,6 +110,31 @@ class SddRunSessionTest(unittest.TestCase):
         self.assertIn("beside `workflow_dir`", call)
 
 
+class SddRunTrailersAndHistoryTest(unittest.TestCase):
+    """`/sdd-run` passes `job` and `model` for the commit trailers and harvests task histories (009 FR-018)."""
+
+    def setUp(self):
+        self.text = read("skills/sdd-run/SKILL.md")
+
+    def test_workflow_args_have_job_and_model(self):
+        call = section(self.text, "3. Call **Workflow**", "4. Tell the user")
+        self.assertIn('"job": "<the --job id, or null>"', call)
+        self.assertIn('"model": "<your own model id>"', call)
+
+    def test_harvest_before_commit_as_own_call(self):
+        item = section(self.text, "4. **Commit**", "If `stopped` starts with")
+        command = "`python3 <plugin>/bin/sdd-history.py harvest . <the --job id, else the run id>`"
+        self.assertIn(command, item)
+        self.assertIn("as its own Bash call", item[item.index(command):])
+        self.assertLess(item.index(command), item.index("git add"))
+
+    def test_git_add_includes_task_histories(self):
+        adds = [line for line in self.text.splitlines() if "git add -- .sdd/runs/<run id>.md" in line]
+        self.assertEqual(len(adds), 3)
+        for line in adds:
+            self.assertIn("git add -- .sdd/runs/<run id>.md .sdd/learnings.md .sdd/tasks`", line)
+
+
 class SddStatusStateTest(unittest.TestCase):
     """`/sdd-status` step 4 reads the run state from the engine (008 data-model §4, §11)."""
 

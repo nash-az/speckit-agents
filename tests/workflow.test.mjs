@@ -145,6 +145,40 @@ test('the commit holds the files of every attempt, not only the last', async () 
   assert.match(commit.prompt, /"files":\["a.py","pyproject.toml","test_a.py"\]/)
 })
 
+// Commit trailers (009 FR-018).
+const approvedJson = prompt => JSON.parse(prompt.match(/^Approved tasks \(JSON\): (.*)$/m)[1])
+const secondTime = () => {
+  let verdicts = 0
+  return { 'verify:T1': () => (verdicts++ === 0 ? { verdict: 'reject', problems: ['no test'], checks_run: [] } : { verdict: 'approve', problems: [], checks_run: [] }) }
+}
+
+test('a task approved on its second attempt gets the four trailers before the commit trailer', async () => {
+  const withJob = a => Object.assign(a, { job: '20261106-0900', model: 'claude-opus-5-5', agentModels: { implementer: 'qwen3.6:27b-q8_0' }, commit_trailer: 'Co-Authored-By: X' })
+  const { out, calls } = await run(['T1'], secondTime(), undefined, withJob)
+  assert.deepEqual(out.approved, ['T1'])
+  const commit = calls.find(c => c.label === 'commit:T1')
+  const [t1] = approvedJson(commit.prompt)
+  assert.deepEqual(t1.trailers, ['Task: T1', 'Run: 20261106-0900', 'Attempts: 2', 'Model: qwen3.6:27b-q8_0'])
+  assert.match(commit.prompt, /"trailers" list.*right before the commit trailer/)
+  assert.match(commit.prompt, /^Commit trailer, end every commit message with it: Co-Authored-By: X$/m)
+})
+
+test('trailers: Run falls back to run_id, Model to the session model, and no Model line without either', async () => {
+  const inherit = a => Object.assign(a, { job: null, model: 'claude-opus-5-5', agentModels: { implementer: 'inherit' } })
+  let r = await run(['T1'], {}, undefined, inherit)
+  assert.deepEqual(approvedJson(r.calls.find(c => c.label === 'commit:T1').prompt)[0].trailers,
+    ['Task: T1', 'Run: test', 'Attempts: 1', 'Model: claude-opus-5-5'])
+  r = await run(['T1'])
+  assert.deepEqual(approvedJson(r.calls.find(c => c.label === 'commit:T1').prompt)[0].trailers,
+    ['Task: T1', 'Run: test', 'Attempts: 1'])
+})
+
+test('trailers: a resumed approved task counts the attempts from before', async () => {
+  const resume = { tasks: { T1: { attempt: 1, impl: { status: 'done', summary: 's', files_changed: ['a.py'] }, verdict: { verdict: 'approve', problems: [], checks_run: [] } } } }
+  const { calls } = await run(['T1'], {}, resume)
+  assert.ok(approvedJson(calls[0].prompt)[0].trailers.includes('Attempts: 2'))
+})
+
 test('the workflow uses nothing the engine refuses: no import(), require(), clock or randomness', () => {
   // Workflow scripts can't import(), have no file system, and Date.now() / Math.random() /
   // argless new Date() throw (research.md D6).

@@ -17,7 +17,11 @@ export const meta = {
 //   resume,                                                // optional: `sdd-tasks.py checkpoint` of an interrupted run
 //   taskAllow,                                             // { "<task id>": { dependencies, downloads } } per-task overrides
 //   agentModels,                                           // optional: { implementer, verifier, evaluator, bookkeeper } → model or 'inherit'
+//   job,                                                   // optional: the run id of the supervised run (`--job`); null in a plain /sdd-run
+//   model,                                                 // optional: the session's own model id, for the `Model:` trailer
 // }
+// Every task commit ends with the trailers `Task: <id>`, `Run: <job ?? run_id>`, `Attempts: <n>` and
+// `Model: <implementer model>` (009 FR-018), then commit_trailer.
 // An agent that comes back null was cut off (usage limit, crash, stop), so its task is
 // `interrupted`, never `failed`: the run stops without recording anything, and the next run
 // resumes from the checkpoint, skipping the steps that already finished.
@@ -165,7 +169,7 @@ async function runTask(task) {
   let continuing = false
   if (cp?.impl) {
     if (cp.verdict?.verdict === 'approve') {
-      return { id: task.id, outcome: 'approved', summary: cp.impl.summary, files: touched([...(cp.files ?? []), ...(cp.impl.files_changed ?? [])]), resumed: true }
+      return { id: task.id, outcome: 'approved', summary: cp.impl.summary, files: touched([...(cp.files ?? []), ...(cp.impl.files_changed ?? [])]), attempts: (cp.attempt ?? 0) + 1, resumed: true }
     }
     touched(cp.files)
     if (cp.verdict) { feedback = cp.verdict.problems; start = cp.attempt + 1; lastFiles = touched(cp.impl.files_changed) }
@@ -194,7 +198,7 @@ async function runTask(task) {
       return { id: task.id, outcome: 'interrupted', step: 'verify', attempt }
     }
     if (verdict.verdict === 'approve') {
-      return { id: task.id, outcome: 'approved', summary: result.summary, files: lastFiles }
+      return { id: task.id, outcome: 'approved', summary: result.summary, files: lastFiles, attempts: attempt + 1 }
     }
     feedback = verdict.problems
   }
@@ -206,6 +210,19 @@ async function runTask(task) {
   }
 }
 
+// The trailer lines of an approved task's commit (009 FR-018). The Model line names the
+// implementer's model, else the session's, and is left out when neither is known.
+function taskTrailers(o) {
+  const impl = AGENT_MODELS.implementer
+  const model = impl && impl !== 'inherit' ? impl : A.model
+  return [
+    `Task: ${o.id}`,
+    `Run: ${A.job ?? A.run_id}`,
+    `Attempts: ${o.attempts ?? 1}`,
+    ...(model ? [`Model: ${model}`] : []),
+  ]
+}
+
 async function bookkeep(outcomes, mode, failing, note) {
   const approved = outcomes.filter(o => o.outcome === 'approved')
   const blocked = outcomes.filter(o => o.outcome === 'blocked' || o.outcome === 'failed')
@@ -214,6 +231,7 @@ async function bookkeep(outcomes, mode, failing, note) {
     `Run id: ${A.run_id}. Tasks file: ${A.tasks_file}. Blocked file: ${A.blocked_file}.`,
     `Project checks. Run each from the project root as its own Bash call, exactly as written: no loops, pipes, \`;\`, \`&&\` or \`cd\`. ${A.checks.length ? A.checks.map(c => `\n  ${c}`).join('') : '(none configured: report checks_passed true)'}`,
     `Commit trailer, end every commit message with it: ${A.commit_trailer ?? '(none)'}`,
+    'Task trailers: each approved task\'s commit message ends with the lines in its "trailers" list, one per line, in that order, after the blank line and right before the commit trailer.',
     '',
     mode === 'park'
       ? `MODE park. No task in this group was approved, and the checks fail with the blocked tasks' partial work in the tree:\n${failing}\nStash the files of every blocked task with \`git stash push -u -m "sdd-run ${A.run_id}: partial ${blocked.map(o => o.id).join(' ')}" -- <their files>\`, record each task as blocked with the stash message added to its reason, commit BLOCKED.md, then run the checks again and report them.`
@@ -221,7 +239,7 @@ async function bookkeep(outcomes, mode, failing, note) {
       ? `MODE discard. The checks still fail after a repair attempt:\n${failing}\nStash the uncommitted work of these tasks with \`git stash push -u -m "sdd-run ${A.run_id}: ${approved.map(o => o.id).join(' ')}"\`, record each of them as blocked (tag failed, reason: the failing checks, question: what to do), commit BLOCKED.md, and report checks_passed false.`
       : 'MODE commit.',
     '',
-    `Approved tasks (JSON): ${JSON.stringify(approved.map(o => ({ id: o.id, summary: o.summary, files: o.files })))}`,
+    `Approved tasks (JSON): ${JSON.stringify(approved.map(o => ({ id: o.id, summary: o.summary, files: o.files, trailers: taskTrailers(o) })))}`,
     `Blocked tasks to record (JSON): ${JSON.stringify(blocked.map(o => ({ id: o.id, tag: o.tag ?? 'failed', reason: o.reason, question: o.question ?? '', files: o.files ?? [], stash: !!o.stash })))}`,
     note ? `\n${note}` : '',
   ].join('\n')
