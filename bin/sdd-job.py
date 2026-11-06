@@ -9,12 +9,14 @@ Functions so far: `load`, `save`, `list_jobs`, `open_job`, `new_id`, `default_ti
 `scope_args`, `progress`, `limit_reached`, `merge`, `drop` (these two raise `Refused`, changing nothing),
 `after_settle` (continues a `waiting` Job after a settle; never raises).
 Spec 009 (the record is the run record, plan "Data model"): `owns_run_json`, `normalize`, `shown_state`,
-`is_open`, `open_run`, `land` (raises `Refused`), `land_ready`, `end` (never raises), `suspend`.
+`is_open`, `open_run`, `land` (raises `Refused`), `land_ready`, `end` (never raises), `suspend`,
+`drop_suspended` (raises `Refused`).
 
     bin/sdd-job.py list [project]          -> [record + shown + progress, ...]
     bin/sdd-job.py show <id> [project]     -> record + shown + progress
     bin/sdd-job.py merge <id> [project]    -> {"merged": true, "commit": "<sha>", "fast_forward": bool}
-    bin/sdd-job.py drop <id> [project]     -> {"dropped": true}
+    bin/sdd-job.py drop <id> [project]     -> {"dropped": true}; for a suspended run
+                                              {"dropped": true, "tasks", "stash", "end"} (drop_suspended)
     bin/sdd-job.py land <id> [project]     -> {"landed": bool, "commit", "fast_forward": bool, "landing"}
 
 A refusal prints `{"contract": "1.0", "error": "<reason>"}` and exits 1 (contracts/engine-cli.md). Stdlib only; no model.
@@ -26,8 +28,10 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -650,6 +654,90 @@ def suspend(project, run_id: str, reason: str | None) -> dict:
     return {"landed_commit": land_ready(project, run_id)}
 
 
+DROP_DIFF_LIMIT = 200_000
+# Run bookkeeping that a Drop writes before it stashes; it stays in the tree for `finalize` to commit.
+KEEP_OUT_OF_STASH = (".", ":(exclude).sdd/tasks")
+
+
+def _in_flight(run: dict | None) -> list[str]:
+    """The tasks the run.json's workflow journal has in flight (`sdd-tasks.py checkpoint`); [] without one."""
+    workflow_dir = (run or {}).get("workflow_dir")
+    if not workflow_dir:
+        return []
+    return list(sdd_tasks.checkpoint(Path(workflow_dir) / "journal.jsonl")["tasks"])
+
+
+def _uncommitted_patch(project: Path) -> str:
+    """The tree's changes against HEAD, untracked files included, as a patch. Built in a copy of the index
+    (`GIT_INDEX_FILE`), so the real index and the tree are left as they are."""
+    git_dir = Path(project) / _git(project, "rev-parse", "--git-dir").stdout.strip()
+    fd, tmp = tempfile.mkstemp(prefix="sdd-drop-index-", dir=git_dir)
+    os.close(fd)
+    try:
+        index = git_dir / "index"
+        if index.exists():
+            shutil.copyfile(index, tmp)
+        else:
+            os.unlink(tmp)
+        env = {**os.environ, "GIT_INDEX_FILE": tmp}
+        subprocess.run(["git", "add", "-A", "--", *KEEP_OUT_OF_STASH], cwd=project, capture_output=True,
+                       text=True, env=env)
+        return subprocess.run(["git", "diff", "--cached", "HEAD", "--", *KEEP_OUT_OF_STASH], cwd=project,
+                              capture_output=True, text=True, env=env).stdout
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def drop_suspended(project, run_id: str) -> dict:
+    """Drop a suspended run (plan "Engine changes" 2): save the half-done work as a patch in the history of each
+    task in flight (step `dropped`), stash it (`sdd-run <id>: dropped <tasks>`), archive `.sdd/run.json` under
+    `.sdd/runs/<session>/`, then `end` the run `dropped`, which commits the histories and lands the finished
+    commits. Refusals change nothing. Returns `{"dropped": true, "tasks", "stash", "end"}`."""
+    project = Path(project)
+    record = load(project, run_id)
+    if record is None:
+        raise Refused(f"no such run: {run_id}")
+    state = shown_state(project, record)["state"]
+    if state != "suspended":
+        raise Refused(f"this run cannot be dropped: it is {state}")
+    if _pid_alive(_status(project)):
+        raise Refused("a run is active")
+    if _git(project, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        raise Refused("the project is not a git repository")
+    run_json = project / ".sdd" / "run.json"
+    run = None
+    if owns_run_json(project, record):
+        run = json.loads(run_json.read_text(encoding="utf-8"))
+    tasks = _in_flight(run)
+    session = str(run["run_id"]) if run and run.get("run_id") else None
+
+    patch = _uncommitted_patch(project)
+    for task_id in tasks:
+        sdd_history.record_step(project, record, task_id, "dropped", session=session,
+                                diff=patch[:DROP_DIFF_LIMIT])
+    what = ", ".join(tasks) if tasks else "partial work"
+    stash = None
+    if _git(project, "status", "--porcelain", "--", *KEEP_OUT_OF_STASH).stdout.strip():
+        message = f"sdd-run {run_id}: dropped {what}"
+        stashed = _git(project, "stash", "push", "-u", "-m", message, "--", *KEEP_OUT_OF_STASH)
+        if stashed.returncode != 0:
+            raise Refused(f"could not stash the half-done work: {(stashed.stderr or stashed.stdout).strip()}")
+        stash = message
+    if run is not None:
+        archive = project / ".sdd" / "runs" / (session or "unknown") / "run.json"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(run_json, archive)
+    if session:
+        record = load(project, run_id) or record
+        runs = record.setdefault("runs", [])
+        if session not in runs:
+            runs.append(session)
+            save(project, record)
+    reason = f"dropped by you during {', '.join(tasks)}" if tasks else "dropped by you"
+    return {"dropped": True, "tasks": tasks, "stash": stash, "end": end(project, run_id, "dropped", reason)}
+
+
 _launcher_module = None
 
 
@@ -747,7 +835,11 @@ def main(argv: list[str]) -> int:
         elif command == "land":
             result = land(project, job_id)
         else:
-            result = drop(project, job_id)
+            record = load(project, job_id)
+            if record is not None and shown_state(project, record)["state"] == "suspended":
+                result = drop_suspended(project, job_id)
+            else:
+                result = drop(project, job_id)
     except Refused as e:
         print(json.dumps({"contract": sdd_tasks.CONTRACT, "error": str(e)}, ensure_ascii=False))
         return 1

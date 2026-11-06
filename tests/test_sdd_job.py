@@ -915,6 +915,107 @@ class LandTest(GitProjectCase):
                          (1, {"contract": "1.0", "error": "this run has already ended its landing"}))
 
 
+SESSION_ID = "20261031-1203"
+
+
+class DropSuspendedTest(GitProjectCase):
+    """009 `drop_suspended` on a temp repo: a suspended run with T001 in flight and half-done work in the tree."""
+
+    def setUp(self):
+        super().setUp()
+        # As `/sdd-init` sets it up: the per-session directories under `.sdd/runs/` are git-ignored.
+        (self.root / ".gitignore").write_text(".sdd/jobs/\n.sdd/run.json\n.sdd/runs/*/\n")
+        self.write_commit(".gitignore", (self.root / ".gitignore").read_text(), "ignore run dirs")
+        self.job_commit = self.head()
+        self.workflow_dir = Path(self.tmp.name).resolve() / "wf_test"
+        self.workflow_dir.mkdir()
+        (self.workflow_dir / "journal.jsonl").write_text(
+            json.dumps({"type": "started", "key": "k1", "label": "impl:T001"}) + "\n")
+        (self.root / ".sdd" / "run.json").write_text(json.dumps(
+            {"run_id": SESSION_ID, "job": JOB_ID, "branch": f"auto/{JOB_ID}",
+             "workflow_dir": str(self.workflow_dir)}))
+        job.save(self.root, {**job.load(self.root, JOB_ID), "state": "suspended", "reason": "the run was cut off"})
+        (self.root / "b.txt").write_text("half done\n")
+        (self.root / "new.txt").write_text("new\n")
+
+    def test_drop_stashes_the_work_and_lands_the_finished_commits(self):
+        result = job.drop_suspended(self.root, JOB_ID)
+        message = f"sdd-run {JOB_ID}: dropped T001"
+        self.assertEqual((result["dropped"], result["tasks"], result["stash"]), (True, ["T001"], message))
+        self.assertTrue(result["end"]["land"]["landed"])
+        # The tree is clean, and the stash holds both the edit and the new file.
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertEqual(self.git("stash", "list", "--format=%s").strip(), f"On auto/{JOB_ID}: {message}")
+        self.assertEqual(self.git("show", "stash@{0}:b.txt"), "half done\n")
+        self.assertEqual(self.git("show", "stash@{0}^3:new.txt"), "new\n")
+        # The task's history has `dropped` with both files in the diff, committed and landed.
+        entries = job.sdd_history.read(self.root, "003-plugin-redesign", "T001")
+        dropped = [e for e in entries if e.get("step") == "dropped"]
+        self.assertEqual(len(dropped), 1)
+        self.assertEqual((dropped[0]["run"], dropped[0]["session"]), (JOB_ID, SESSION_ID))
+        self.assertIn("+++ b/b.txt", dropped[0]["diff"])
+        self.assertIn("+half done", dropped[0]["diff"])
+        self.assertIn("+++ b/new.txt", dropped[0]["diff"])
+        self.assertTrue(self.on_base(".sdd/tasks/003-plugin-redesign/T001.jsonl"))
+        # run.json is archived under its session, and the session joined the record's runs.
+        self.assertFalse((self.root / ".sdd" / "run.json").exists())
+        archived = json.loads((self.root / ".sdd" / "runs" / SESSION_ID / "run.json").read_text())
+        self.assertEqual(archived["run_id"], SESSION_ID)
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual(saved["runs"], [SESSION_ID])
+        self.assertEqual((saved["state"], saved["outcome"], saved["reason"]),
+                         ("ended", "dropped", "dropped by you during T001"))
+        self.assertEqual(saved["landing"]["state"], "landed")
+        # The finished commits landed on the base; the half-done edit did not.
+        self.assertEqual(self.branch(), "main")
+        self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", self.job_commit, "main"],
+                                        cwd=self.root).returncode, 0)
+        self.assertEqual((self.root / "b.txt").read_text(), "job\n")
+        self.assertFalse((self.root / "new.txt").exists())
+        # The real index was not touched by the patch's temporary one.
+        self.assertFalse(list((self.root / ".git").glob("sdd-drop-index-*")))
+
+    def on_base(self, path):
+        return subprocess.run(["git", "cat-file", "-e", f"main:{path}"], cwd=self.root).returncode == 0
+
+    def test_no_task_in_flight_records_nothing(self):
+        run_json = self.root / ".sdd" / "run.json"
+        run_json.write_text(json.dumps({**json.loads(run_json.read_text()), "workflow_dir": None}))
+        result = job.drop_suspended(self.root, JOB_ID)
+        self.assertEqual((result["tasks"], result["stash"]), ([], f"sdd-run {JOB_ID}: dropped partial work"))
+        self.assertEqual(job.sdd_history.read(self.root, "003-plugin-redesign", "T001"), [])
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertEqual(job.load(self.root, JOB_ID)["reason"], "dropped by you")
+
+    def snapshot(self):
+        return (*super().snapshot(), (self.root / ".sdd" / "run.json").read_text(),
+                self.git("stash", "list"), (self.root / ".sdd" / "tasks").exists())
+
+    def test_refuses_a_run_that_is_not_suspended(self):
+        job.save(self.root, {**job.load(self.root, JOB_ID), "state": "ended", "outcome": "done",
+                             "landing": PENDING})
+        self.assertRefused(job.drop_suspended, "this run cannot be dropped: it is ended")
+        status = job.sdd_supervise.state_dir(self.root) / "status.json"
+        status.write_text(json.dumps({"state": "waiting", "pid": os.getpid()}))
+        job.save(self.root, {**job.load(self.root, JOB_ID), "state": "working"})
+        self.assertRefused(job.drop_suspended, "this run cannot be dropped: it is paused")
+
+    def test_refuses_while_a_supervisor_is_alive(self):
+        status = job.sdd_supervise.state_dir(self.root) / "status.json"
+        status.write_text(json.dumps({"state": "stopped", "pid": os.getpid()}))
+        self.assertRefused(job.drop_suspended, "a run is active")
+
+    def test_cli_drop_calls_drop_suspended(self):
+        env = {**os.environ, "XDG_STATE_HOME": self.state_home}
+        dropped = subprocess.run([sys.executable, str(HERE.parent / "bin" / "sdd-job.py"), "drop", JOB_ID,
+                                  str(self.root)], capture_output=True, text=True, env=env)
+        self.assertEqual(dropped.returncode, 0, dropped.stdout + dropped.stderr)
+        out = json.loads(dropped.stdout)
+        self.assertEqual((out["dropped"], out["tasks"], out["stash"]),
+                         (True, ["T001"], f"sdd-run {JOB_ID}: dropped T001"))
+        self.assertEqual(job.load(self.root, JOB_ID)["outcome"], "dropped")
+
+
 SETTLE_TASKS = """# Tasks
 
 ## Phase 1: Work
