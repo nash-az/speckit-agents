@@ -498,8 +498,9 @@ JOB_TASKS = """# Tasks
 """
 
 
-class MergeDropTest(unittest.TestCase):
-    """merge() and drop() on temp repos (research R9, FR-010, FR-017, SC-005)."""
+class GitProjectCase(unittest.TestCase):
+    """A temp repo: `main` with one commit, the run branch `auto/<JOB_ID>` one commit ahead and checked out,
+    and a `done` record for it."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -554,6 +555,10 @@ class MergeDropTest(unittest.TestCase):
             call(self.root, JOB_ID)
         self.assertEqual(str(caught.exception), message)
         self.assertEqual(self.snapshot(), before)
+
+
+class MergeDropTest(GitProjectCase):
+    """merge() and drop() on temp repos (research R9, FR-010, FR-017, SC-005)."""
 
     def test_fast_forward(self):
         result = job.merge(self.root, JOB_ID)
@@ -683,6 +688,231 @@ class MergeDropTest(unittest.TestCase):
         self.assertEqual(dropped.returncode, 0, dropped.stdout + dropped.stderr)
         self.assertEqual(json.loads(dropped.stdout), {"contract": "1.0", "dropped": True})
         self.assertEqual(self.branch(), "main")
+
+
+class LandTest(GitProjectCase):
+    """009 `land`, `land_ready`, `end` and `suspend` on temp repos (plan "Engine changes" 2, FR-011)."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_record(state="ended", outcome="done", landing=PENDING)
+
+    def set_record(self, **fields):
+        job.save(self.root, {**job.load(self.root, JOB_ID), **fields})
+
+    def move_base(self, name="c.txt", text="elsewhere\n"):
+        """A commit on `main` that the run branch lacks; the checkout goes back to the run branch."""
+        self.git("switch", "-q", "main")
+        self.write_commit(name, text, "base moved")
+        moved = self.head()
+        self.git("switch", "-q", f"auto/{JOB_ID}")
+        return moved
+
+    def on_base(self, path):
+        return subprocess.run(["git", "cat-file", "-e", f"main:{path}"], cwd=self.root).returncode == 0
+
+    # land
+
+    def test_fast_forward(self):
+        result = job.land(self.root, JOB_ID)
+        landing = {"state": "landed", "commit": self.job_commit, "files": []}
+        self.assertEqual(result, {"landed": True, "commit": self.job_commit, "fast_forward": True,
+                                  "landing": landing})
+        self.assertEqual(self.branch(), "main")
+        self.assertEqual(self.head("main"), self.job_commit)
+        self.assertEqual(self.head(f"auto/{JOB_ID}"), self.job_commit)  # branch kept
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["state"], saved["landing"], saved["merge_commit"]),
+                         ("ended", landing, self.job_commit))
+        self.assertIsInstance(saved["ended"], int)
+
+    def test_a_005_done_record_lands(self):
+        old = {k: v for k, v in job.load(self.root, JOB_ID).items() if k not in ("landing", "outcome")}
+        job.save(self.root, {**old, "state": "done", "reason": "every task in the scope is done or skipped"})
+        self.assertTrue(job.land(self.root, JOB_ID)["landed"])
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["state"], saved["outcome"], saved["landing"]["state"]), ("ended", "done", "landed"))
+
+    def test_merge_commit_with_the_message(self):
+        moved = self.move_base()
+        result = job.land(self.root, JOB_ID)
+        self.assertFalse(result["fast_forward"])
+        self.assertTrue(result["landed"])
+        self.assertEqual(self.branch(), "main")
+        self.assertEqual(result["commit"], self.head("main"))
+        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "merge: run Phase 11")
+        self.assertEqual(self.git("log", "-1", "--format=%P").split(), [moved, self.job_commit])
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["landing"], saved["merge_commit"]),
+                         ({"state": "landed", "commit": result["commit"], "files": []}, result["commit"]))
+
+    def test_conflict_stores_needs_merge_and_goes_back_to_the_branch(self):
+        self.git("switch", "-q", "main")
+        self.write_commit("b.txt", "other\n", "base edits b")
+        base = self.head()
+        self.git("switch", "-q", f"auto/{JOB_ID}")
+        with self.assertRaises(job.Refused) as caught:
+            job.land(self.root, JOB_ID)
+        self.assertEqual(str(caught.exception), "the merge conflicts in: b.txt")
+        self.assertEqual(self.branch(), f"auto/{JOB_ID}")
+        self.assertEqual(self.head("main"), base)
+        self.assertEqual((self.root / "b.txt").read_text(), "job\n")
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertFalse((self.root / ".git" / "MERGE_HEAD").exists())
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["state"], saved["landing"]),
+                         ("ended", {"state": "needs-merge", "commit": None, "files": ["b.txt"]}))
+        # A needs-merge landing can be tried again (after the person merged by hand, say).
+        with self.assertRaises(job.Refused):
+            job.land(self.root, JOB_ID)
+
+    def test_nothing_to_land(self):
+        self.git("switch", "-q", "main")
+        self.git("merge", "-q", "--ff-only", f"auto/{JOB_ID}")
+        self.git("switch", "-q", f"auto/{JOB_ID}")
+        result = job.land(self.root, JOB_ID)
+        nothing = {"state": "nothing", "commit": None, "files": []}
+        self.assertEqual(result, {"landed": False, "commit": None, "fast_forward": False, "landing": nothing})
+        self.assertEqual(self.branch(), "main")
+        self.assertEqual(self.head("main"), self.job_commit)
+        self.assertEqual(job.load(self.root, JOB_ID)["landing"], nothing)
+
+    def test_refuses_a_run_that_has_not_ended(self):
+        self.set_record(state="working")
+        self.assertRefused(job.land, "this run has not ended: it is working")
+        self.set_record(state="suspended")
+        self.assertRefused(job.land, "this run has not ended: it is suspended")
+
+    def test_refuses_a_landing_that_has_ended(self):
+        for state in ("landed", "nothing", "not-landed"):
+            self.set_record(landing={"state": state, "commit": None, "files": []})
+            self.assertRefused(job.land, "this run has already ended its landing")
+        self.set_record(state="merged", landing=None)  # a merged 005 Job reads as landed
+        self.assertRefused(job.land, "this run has already ended its landing")
+
+    def test_refuses_an_unknown_run(self):
+        with self.assertRaises(job.Refused) as caught:
+            job.land(self.root, "20261031-0000")
+        self.assertEqual(str(caught.exception), "no such run: 20261031-0000")
+
+    def test_refuses_while_a_run_is_active(self):
+        run_json = self.root / ".sdd" / "run.json"
+        run_json.write_text("{}")
+        self.assertRefused(job.land, "a run is active")
+        run_json.unlink()
+        status = job.sdd_supervise.state_dir(self.root) / "status.json"
+        status.write_text(json.dumps({"state": "running", "pid": os.getpid()}))
+        self.assertRefused(job.land, "a run is active")
+
+    def test_refuses_a_dirty_tree(self):
+        (self.root / "b.txt").write_text("edited\n")
+        (self.root / "new.txt").write_text("new\n")
+        self.assertRefused(job.land, "the working tree has changes; commit or stash them first: b.txt, new.txt")
+
+    def test_refuses_outside_a_git_repository(self):
+        plain = Path(self.tmp.name).resolve() / "plain"
+        plain.mkdir()
+        job.save(plain, job.load(self.root, JOB_ID))
+        with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": self.tmp.name}):
+            with self.assertRaises(job.Refused) as caught:
+                job.land(plain, JOB_ID)
+        self.assertEqual(str(caught.exception), "the project is not a git repository")
+        self.assertEqual(job.load(plain, JOB_ID)["landing"], PENDING)
+
+    # land_ready
+
+    def test_land_ready_moves_the_base_and_leaves_a_dirty_tree(self):
+        self.set_record(state="suspended", landing=None)
+        (self.root / "b.txt").write_text("half done\n")
+        (self.root / "new.txt").write_text("new\n")
+        dirty = self.git("status", "--porcelain")
+        self.assertEqual(job.land_ready(self.root, JOB_ID), self.job_commit)
+        self.assertEqual(self.head("main"), self.job_commit)
+        self.assertEqual(self.branch(), f"auto/{JOB_ID}")
+        self.assertEqual(self.git("status", "--porcelain"), dirty)
+        self.assertEqual((self.root / "b.txt").read_text(), "half done\n")
+        self.assertEqual(job.load(self.root, JOB_ID)["landed_commit"], self.job_commit)
+        self.assertIsNone(job.land_ready(self.root, JOB_ID))  # nothing new: they are the same commit
+
+    def test_land_ready_leaves_a_base_that_is_not_an_ancestor(self):
+        moved = self.move_base()
+        self.assertIsNone(job.land_ready(self.root, JOB_ID))
+        self.assertEqual(self.head("main"), moved)
+        self.assertNotIn("landed_commit", job.load(self.root, JOB_ID))
+
+    def test_land_ready_never_raises(self):
+        self.assertIsNone(job.land_ready(self.root, "20261031-0000"))
+        self.set_record(branch=None)
+        self.assertIsNone(job.land_ready(self.root, JOB_ID))
+
+    # end and suspend
+
+    def test_end_commits_the_summary_before_landing(self):
+        self.set_record(state="working", outcome=None, landing=None)
+        result = job.end(self.root, JOB_ID, "done", None)
+        self.assertIsNotNone(result["finalize"]["commit"])
+        self.assertIn(f".sdd/runs/{JOB_ID}.json", result["finalize"]["files"])
+        self.assertTrue(result["land"]["landed"])
+        self.assertEqual(self.branch(), "main")
+        self.assertTrue(self.on_base(f".sdd/runs/{JOB_ID}.json"))
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["state"], saved["outcome"], saved["reason"], saved["landing"]["state"]),
+                         ("ended", "done", None, "landed"))
+        self.assertEqual(saved["merge_commit"], self.head("main"))
+
+    def test_end_keeps_a_conflict_as_needs_merge(self):
+        self.git("switch", "-q", "main")
+        self.write_commit("b.txt", "other\n", "base edits b")
+        self.git("switch", "-q", f"auto/{JOB_ID}")
+        result = job.end(self.root, JOB_ID, "stopped", "stopped by you")
+        self.assertEqual(result["land"]["error"], "the merge conflicts in: b.txt")
+        self.assertEqual(self.branch(), f"auto/{JOB_ID}")
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["outcome"], saved["reason"]), ("stopped", "stopped by you"))
+        self.assertEqual(saved["landing"], {"state": "needs-merge", "commit": None, "files": ["b.txt"]})
+
+    def test_end_stores_another_refusal_as_pending(self):
+        (self.root / ".sdd" / "run.json").write_text("{}")
+        result = job.end(self.root, JOB_ID, "failed", "no progress in two runs")
+        self.assertEqual(result["land"]["error"], "a run is active")
+        self.assertEqual(self.head("main"), self.base_commit)
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["state"], saved["outcome"]), ("ended", "failed"))
+        self.assertEqual(saved["landing"], {**PENDING, "reason": "a run is active"})
+
+    def test_end_never_raises(self):
+        self.assertEqual(job.end(self.root, "20261031-0000", "done", None)["land"]["error"],
+                         "no such run: 20261031-0000")
+        with mock.patch.object(job.sdd_history, "finalize", side_effect=RuntimeError("boom")):
+            result = job.end(self.root, JOB_ID, "done", None)
+        self.assertEqual(result["finalize"]["error"], "boom")
+        self.assertTrue(result["land"]["landed"])
+
+    def test_suspend_keeps_the_tree(self):
+        self.set_record(state="working", outcome=None, landing=None)
+        (self.root / "b.txt").write_text("half done\n")
+        (self.root / "new.txt").write_text("new\n")
+        dirty = self.git("status", "--porcelain")
+        self.assertEqual(job.suspend(self.root, JOB_ID, "the run was cut off"), {"landed_commit": self.job_commit})
+        self.assertEqual(self.branch(), f"auto/{JOB_ID}")
+        self.assertEqual(self.git("status", "--porcelain"), dirty)
+        self.assertEqual(self.head("main"), self.job_commit)
+        saved = job.load(self.root, JOB_ID)
+        self.assertEqual((saved["state"], saved["reason"], saved["landed_commit"]),
+                         ("suspended", "the run was cut off", self.job_commit))
+
+    def test_cli_land(self):
+        env = {**os.environ, "XDG_STATE_HOME": self.state_home}
+        landed = subprocess.run([sys.executable, str(HERE.parent / "bin" / "sdd-job.py"), "land", JOB_ID,
+                                 str(self.root)], capture_output=True, text=True, env=env)
+        self.assertEqual(landed.returncode, 0, landed.stdout + landed.stderr)
+        self.assertEqual(json.loads(landed.stdout),
+                         {"contract": "1.0", "landed": True, "commit": self.job_commit, "fast_forward": True,
+                          "landing": {"state": "landed", "commit": self.job_commit, "files": []}})
+        again = subprocess.run([sys.executable, str(HERE.parent / "bin" / "sdd-job.py"), "land", JOB_ID,
+                                str(self.root)], capture_output=True, text=True, env=env)
+        self.assertEqual((again.returncode, json.loads(again.stdout)),
+                         (1, {"contract": "1.0", "error": "this run has already ended its landing"}))
 
 
 SETTLE_TASKS = """# Tasks

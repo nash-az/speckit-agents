@@ -9,12 +9,13 @@ Functions so far: `load`, `save`, `list_jobs`, `open_job`, `new_id`, `default_ti
 `scope_args`, `progress`, `limit_reached`, `merge`, `drop` (these two raise `Refused`, changing nothing),
 `after_settle` (continues a `waiting` Job after a settle; never raises).
 Spec 009 (the record is the run record, plan "Data model"): `owns_run_json`, `normalize`, `shown_state`,
-`is_open`, `open_run`.
+`is_open`, `open_run`, `land` (raises `Refused`), `land_ready`, `end` (never raises), `suspend`.
 
     bin/sdd-job.py list [project]          -> [record + shown + progress, ...]
     bin/sdd-job.py show <id> [project]     -> record + shown + progress
     bin/sdd-job.py merge <id> [project]    -> {"merged": true, "commit": "<sha>", "fast_forward": bool}
     bin/sdd-job.py drop <id> [project]     -> {"dropped": true}
+    bin/sdd-job.py land <id> [project]     -> {"landed": bool, "commit", "fast_forward": bool, "landing"}
 
 A refusal prints `{"contract": "1.0", "error": "<reason>"}` and exits 1 (contracts/engine-cli.md). Stdlib only; no model.
 """
@@ -42,6 +43,7 @@ def _load_module(name: str, filename: str):
 
 sdd_tasks = _load_module("sdd_tasks", "sdd-tasks.py")
 sdd_supervise = _load_module("sdd_supervise", "sdd-supervise.py")
+sdd_history = _load_module("sdd_history", "sdd-history.py")
 
 ID_RE = re.compile(r"^\d{8}-\d{4}(?:-(\d+))?$")
 CLOSED_STATES = ("merged", "dropped")
@@ -454,6 +456,12 @@ def _closable(project, job_id: str, verb: str) -> dict:
     state = record.get("state")
     if state not in ("done", "stopped", "failed"):
         raise Refused(f"this job cannot be {verb} in state {state}")
+    _refuse_unsafe_checkout(project)
+    return record
+
+
+def _refuse_unsafe_checkout(project) -> None:
+    """The refusals that keep a branch switch safe: an active run, no git repository, a dirty tree."""
     if _run_active(project):
         raise Refused("a run is active")
     if _git(project, "rev-parse", "--is-inside-work-tree").returncode != 0:
@@ -461,7 +469,6 @@ def _closable(project, job_id: str, verb: str) -> dict:
     files = _dirty_files(project)
     if files:
         raise Refused(f"the working tree has changes; commit or stash them first: {files}")
-    return record
 
 
 def _switch(project, branch: str) -> None:
@@ -511,6 +518,136 @@ def drop(project, job_id: str) -> dict:
     record.update(state="dropped", ended=int(time.time()))
     save(project, record)
     return {"dropped": True}
+
+
+# 009 landing (plan "Engine changes" 2): an ended run's branch goes into its base by itself.
+DONE_LANDINGS = ("landed", "nothing", "not-landed")
+
+
+def _branches(record: dict) -> tuple[str, str]:
+    branch, base = record.get("branch"), (record.get("base") or {}).get("branch")
+    if not branch or not base:
+        raise Refused("the run has no branch or base branch")
+    return branch, base
+
+
+def land(project, run_id: str) -> dict:
+    """Land an ended run on its base branch (plan "Engine changes" 2): switch to the base, fast-forward when
+    possible, else one merge commit "merge: run <title>". A branch with no commit the base lacks gets landing
+    `nothing`. On a conflict the merge is aborted, the checkout goes back to the run's branch, the landing is
+    stored as `needs-merge` with the files, and `Refused` names them. Other refusals change nothing. Never
+    forces, pushes or deletes a branch. Returns `{"landed", "commit", "fast_forward", "landing"}`."""
+    project = Path(project)
+    stored = load(project, run_id)
+    if stored is None:
+        raise Refused(f"no such run: {run_id}")
+    record = normalize(project, stored)
+    if record.get("state") != "ended":
+        raise Refused(f"this run has not ended: it is {record.get('state')}")
+    if (record.get("landing") or {}).get("state") in DONE_LANDINGS:
+        raise Refused("this run has already ended its landing")
+    _refuse_unsafe_checkout(project)
+    branch, base = _branches(record)
+    ahead = _git(project, "rev-list", "--count", f"{base}..{branch}")
+    if ahead.returncode != 0:
+        raise Refused(f"could not compare {branch} with {base}: {ahead.stderr.strip()}")
+    ended = record.get("ended") or int(time.time())
+    if int(ahead.stdout.strip() or 0) == 0:
+        _switch(project, base)
+        record.update(state="ended", landing=_landing("nothing"), ended=ended)
+        save(project, record)
+        return {"landed": False, "commit": None, "fast_forward": False, "landing": record["landing"]}
+    _switch(project, base)
+    fast_forward = _git(project, "merge", "--ff-only", branch).returncode == 0
+    if not fast_forward:
+        merged = _git(project, "merge", "--no-ff", "-m", f"merge: run {record.get('title') or run_id}", branch)
+        if merged.returncode != 0:
+            conflicted = _git(project, "diff", "--name-only", "--diff-filter=U").stdout.split()
+            _git(project, "merge", "--abort")
+            _git(project, "switch", branch)
+            if conflicted:
+                record["landing"] = {"state": "needs-merge", "commit": None, "files": conflicted}
+                save(project, record)
+                raise Refused(f"the merge conflicts in: {', '.join(conflicted)}")
+            raise Refused(f"the merge failed: {(merged.stderr or merged.stdout).strip()}")
+    commit = _git(project, "rev-parse", "HEAD").stdout.strip()
+    record.update(state="ended", landing=_landing("landed", commit), merge_commit=commit, ended=ended)
+    save(project, record)
+    return {"landed": True, "commit": commit, "fast_forward": fast_forward, "landing": record["landing"]}
+
+
+def land_ready(project, run_id: str) -> str | None:
+    """Fast-forward the base branch to the run's branch while the run is suspended (FR-011): only when the
+    base's commit is an ancestor of the branch's and they differ, and the base is not checked out. Moves the
+    ref with `git update-ref` (checked against the old sha), never the checkout or the tree; stores
+    `landed_commit`. Returns the new base sha, else None. Never raises."""
+    try:
+        project = Path(project)
+        record = load(project, run_id)
+        if record is None:
+            return None
+        branch, base = _branches(record)
+        if _git(project, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip() == base:
+            return None  # moving the checked-out branch would change what the tree is compared with
+        base_sha = _git(project, "rev-parse", "--verify", "--quiet", f"refs/heads/{base}").stdout.strip()
+        branch_sha = _git(project, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").stdout.strip()
+        if not base_sha or not branch_sha or base_sha == branch_sha:
+            return None
+        if _git(project, "merge-base", "--is-ancestor", base_sha, branch_sha).returncode != 0:
+            return None
+        if _git(project, "update-ref", f"refs/heads/{base}", branch_sha, base_sha).returncode != 0:
+            return None
+        record["landed_commit"] = branch_sha
+        save(project, record)
+        return branch_sha
+    except Exception:  # never raise: the caller is suspending a run
+        return None
+
+
+def end(project, run_id: str, outcome: str, reason: str | None) -> dict:
+    """End the run (plan "Engine changes" 2): store `ended` with the outcome and reason, commit the task
+    histories and the summary (`sdd-history.py` `finalize`), then `land`. A refusal from `land` is kept as the
+    landing (`needs-merge` stays; any other refusal stores `pending` with its `reason`). Never raises.
+    Returns `{"finalize", "land"}`."""
+    out: dict = {"finalize": None, "land": None}
+    try:
+        project = Path(project)
+        record = load(project, run_id)
+        if record is None:
+            out["land"] = {"landed": False, "error": f"no such run: {run_id}"}
+            return out
+        record.update(state="ended", outcome=outcome, reason=reason, ended=int(time.time()),
+                      landing=_landing("pending"))
+        save(project, record)
+        try:
+            out["finalize"] = sdd_history.finalize(project, record)
+        except Exception as e:
+            out["finalize"] = {"commit": None, "files": [], "error": str(e)}
+        try:
+            out["land"] = land(project, run_id)
+        except Refused as e:
+            saved = load(project, run_id) or record
+            landing = saved.get("landing") if isinstance(saved.get("landing"), dict) else None
+            if not landing or landing.get("state") != "needs-merge":
+                landing = {**_landing("pending"), "reason": str(e)}
+                saved["landing"] = landing
+                save(project, saved)
+            out["land"] = {"landed": False, "error": str(e), "landing": landing}
+    except Exception as e:  # never raise: the caller is ending a run
+        out["land"] = out["land"] or {"landed": False, "error": f"could not end the run: {e}"}
+    return out
+
+
+def suspend(project, run_id: str, reason: str | None) -> dict:
+    """Suspend the run (plan "Engine changes" 2): store `suspended` and the reason, then fast-forward the base
+    to the finished work (`land_ready`); the tree is left as it is. Returns `{"landed_commit"}`."""
+    project = Path(project)
+    record = load(project, run_id)
+    if record is None:
+        raise Refused(f"no such run: {run_id}")
+    record.update(state="suspended", reason=reason)
+    save(project, record)
+    return {"landed_commit": land_ready(project, run_id)}
 
 
 _launcher_module = None
@@ -579,11 +716,12 @@ def _with_view(project, record: dict) -> dict:
     return {**record, "shown": display_state(project, record), "progress": counts}
 
 
-USAGE = "usage: sdd-job.py list [project] | show <id> [project] | merge <id> [project] | drop <id> [project]"
+USAGE = ("usage: sdd-job.py list [project] | show <id> [project] | merge <id> [project] | drop <id> [project]"
+         " | land <id> [project]")
 
 
 def main(argv: list[str]) -> int:
-    if not argv or argv[0] not in ("list", "show", "merge", "drop"):
+    if not argv or argv[0] not in ("list", "show", "merge", "drop", "land"):
         print(USAGE, file=sys.stderr)
         return 2
     command, rest = argv[0], argv[1:]
@@ -606,6 +744,8 @@ def main(argv: list[str]) -> int:
             result = _with_view(project, record)
         elif command == "merge":
             result = merge(project, job_id)
+        elif command == "land":
+            result = land(project, job_id)
         else:
             result = drop(project, job_id)
     except Refused as e:
