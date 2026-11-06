@@ -1,6 +1,6 @@
 # Feature Specification: Runs: short-lived groupings of tasks, with the task as the record
 
-**Feature Branch**: `009-runs` | **Created**: 2026-11-06 | **Status**: Draft (from the person's decisions of 2026-11-06; not yet clarified or reviewed)
+**Feature Branch**: `009-runs` | **Created**: 2026-11-06 | **Status**: Amended 2026-11-06 after run 20261106-1204 and its analyze pass (T001–T012 built; amendment open)
 
 **Input**: On 2026-11-06 the person stopped a Phase 3 Job of 008 with "Stop after current task" and pressed Merge. Merge
 refused with "a run is active": the stop had kept `.sdd/run.json` so the run could resume, and Merge refuses while that
@@ -34,6 +34,24 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
 - Q: Where do logs live? → A: With the task (user). A task's history (every attempt in every run, verdicts, commits,
   the reason it was blocked) is kept per task in the repository. A run afterwards is a summary: times, tasks done,
   usage, statistics.
+
+### Session 2026-11-06 (amendment, after run 20261106-1204 and its analyze pass)
+- Q: Constitution II forbids touching protected branches during a run, yet a run lands on `main`. Which gives? →
+  A: Amend the constitution (user). v1.2.0 lets the plain-code engine, never an agent, land a run's committed work on
+  its base by fast-forward or merge at the end, and by fast-forward while suspended.
+- Q: At Stop after this task, a task that started after the boundary may have left edits. Suspend or end? → A: Stash
+  and end (user). The edits are saved as a patch in that task's history and stashed, the run ends `stopped`, and its
+  finished tasks land.
+- Q: Who enforces the usage-limit pause? → A: The supervisor only (user): concerns stay separate and the workflow
+  stays simple. Every run is started through the supervisor (launcher or Start run). `/sdd-run` stays the
+  supervisor's single cycle and never starts a supervisor itself; typed into a session without one, it warns that the
+  run has no usage-limit protection. Run 20261106-1204 was started that way and hit the 5-hour limit mid-task.
+- Q: Where does a task's history get committed? → A: With the session's report commit, or with the run's summary
+  commit when the run ends or is dropped (as the plan chose and the code does), not in the task's own commit.
+- Q: The task text is written for the implementer (paths, function names, exact strings). What does the person
+  read? → A: A plain-language summary on an indented line below each task (user), written by `/speckit-tasks`. The
+  task card shows the summary, with the exact text behind an expander. Backfill 009's `tasks.md` only; 005 and 008
+  stay as they are.
 
 ## Terms
 
@@ -124,8 +142,8 @@ that run; the task's history still shows both attempts, the rejection reason, th
 1. **Given** any task step (started, implemented, verified with verdict and problems, retried, committed, blocked,
    suspended, resumed, dropped), **Then** an entry is added to that task's history with its time, run, session,
    attempt, agent role and model.
-2. **Given** a task is committed, **Then** its history is part of the same commit, and the commit message carries
-   the task id, the run id, the attempt count and the implementer's model as trailers.
+2. **Given** a task is committed, **Then** its commit message carries the task id, the run id, the attempt count and
+   the implementer's model as trailers, and its history is committed with the session's report or the run's summary.
 3. **Given** Claude's transcript of an attempt still exists, **Then** the task's history links to it for the full
    output; when it has been deleted, the history still reads complete.
 4. **Given** a task worked on in several runs, **Then** its history shows all of them in one list.
@@ -179,9 +197,11 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - The person commits to the base branch while a run is suspended: finished tasks land when the run ends (merge
   commit), not by fast-forward.
 - A run with no task committed ends cleanly with nothing to land and still leaves a summary.
-- A plain `/sdd-run` in a session (no server, no supervisor) follows the same rules: Stop after this task ends it
-  cleanly and lands; a closed session leaves it suspended (008 US4 hand-over may Continue it).
-- The task history file of a task that is never committed (blocked, dropped) is committed with the run's summary.
+- A plain `/sdd-run` typed into a session (no supervisor) is not how runs start (FR-027). It still runs, records
+  task histories and commit trailers, and warns at the start that it has no usage-limit protection; it does not
+  stop at task boundaries or land by itself.
+- Stop after this task when a task that started after the boundary has left edits: they are saved as a patch in that
+  task's history and stashed, and the run ends cleanly (FR-005).
 
 ## Requirements *(mandatory)*
 
@@ -191,7 +211,8 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - **FR-001**: The thing the person starts MUST be a run: id (`YYYYMMDD-HHMM`), title, feature, scope (phases, tasks,
   or all open), limits, branch `auto/<run id>`, base branch and its commit at the start. A run MUST be started from
   the UI (**Start run**) or the command line with the refusals of 005 FR-003, plus "a run is suspended".
-- **FR-002**: A run's state MUST be one of `preparing`, `working`, `paused` (usage wait), `suspended`, `ended`. An
+- **FR-002**: A run's stored state MUST be one of `working`, `suspended`, `ended`; the state the person sees MUST be
+  one of `preparing` (working, no task started yet), `working`, `paused` (usage wait), `suspended`, `ended`. An
   ended run MUST record how it ended: `done` (scope finished), `stopped` (by the person), `limit` (which one),
   `waiting` (only the person's items left), `failed` (no progress, with the reason), `dropped` (ended by Drop), and
   its landing: `landed` (with the commit), `nothing to land`, or `needs merge` (with the files).
@@ -203,11 +224,14 @@ merged), upgrade; check each shows as described and the two open ones can be con
 **Stopping and ending**
 - **FR-005**: **Stop after this task** MUST let the current task finish (committed, or blocked after its retries)
   and its group's commits complete, start nothing else, and end the run cleanly. Pressed during `preparing`, it
-  MUST end the run before any task starts.
+  MUST end the run before any task starts, with the reason "stopped before any task". When a task that started after
+  the boundary has left uncommitted edits, they MUST be saved as a patch in that task's history and stashed, and the
+  run MUST still end cleanly; that task is open again.
 - **FR-006**: **Stop now** MUST stop at once and leave the run `suspended`, keeping `.sdd/run.json` and the tree.
 - **FR-007**: A run MUST become `suspended`, not ended, whenever it is cut off with a task started but not committed
   or blocked: Stop now, a usage limit it does not wait for, a session that crashed, or an in-session run whose
-  session closed. Cut off at a task boundary, it MUST end cleanly instead.
+  session closed. Cut off at a task boundary, it MUST end cleanly instead. Stop after this task is not a cut-off
+  (FR-005).
 - **FR-008**: At a usage limit the run MUST pause and continue after the reset, as 005 FR-004/FR-004a do today
   ("Continue when the limit resets"); left unchecked at the reset, the run becomes `suspended`.
 
@@ -237,18 +261,21 @@ merged), upgrade; check each shows as described and the two open ones can be con
   plugin's helpers. Each entry: time, run id, session, attempt, step (started, implemented, verdict with problems,
   retried, committed with hash, blocked with reason, suspended, resumed, dropped with diff), agent role, model,
   duration and tokens when known, and the transcript path when one exists.
-- **FR-017**: A task's history MUST be committed in the task's own commit; the history of a task that ends blocked,
-  dropped or uncommitted MUST be committed with the run's summary when the run ends (or with the Drop).
+- **FR-017**: Task histories MUST be committed with the session's report commit, and with the run's summary commit
+  when the run ends or is dropped, so every history is in the repository once its run has ended. A task's own commit
+  holds only the task's files (constitution VI).
 - **FR-018**: Task commits MUST carry trailers `Task: <id>`, `Run: <run id>`, `Attempts: <n>`, `Model: <implementer>`.
 - **FR-019**: The UI MUST show a task's history on the task (008 FR-033's step events read from it), newest last,
   with its links to full transcripts while they exist. Nothing the person needs MUST depend on Claude's transcripts.
 
 **Run summary**
-- **FR-020**: When a run ends, its summary MUST be written to the repository once: times, sessions, scope asked
-  for, how it ended and its landing, tasks done, dropped and blocked (each with its id), attempts, approvals,
-  models per role, usage, and the plain-words report the run writes today.
+- **FR-020**: When a run ends, its summary MUST be written to the repository once, after landing: times and
+  duration, sessions, scope asked for, how it ended and its landing, tasks done, dropped and blocked (each with its
+  id), attempts, approvals, models per role, the highest usage the supervisor saw per window, and a link to the
+  plain-words report the run writes today.
 - **FR-021**: The run list MUST show past runs from their summaries, newest first, each opening to its tasks (links
-  to their histories). It MUST NOT offer actions on ended runs other than Merge for `needs merge`.
+  to their histories). It MUST NOT offer actions on ended runs other than **Merge** for `needs merge` and **Land**
+  for a landing still `pending` (US5, FR-025).
 
 **Words, views and commands**
 - **FR-022**: The UI MUST say "run" wherever 005 and 008 say "Job": the Jobs view becomes **Runs** (`#runs`; `#jobs`
@@ -256,7 +283,7 @@ merged), upgrade; check each shows as described and the two open ones can be con
   "Working on <title>: <task>, <step>", "Paused until <time>: usage limit", "Suspended during <task>: <reason>.
   Continue or Drop", "Stopping after <task>", and after the end "<title> ended: <n> tasks landed on <base>".
 - **FR-023**: Every action MUST also exist on the command line with the same refusals: start, stop after task, stop
-  now, continue, drop, merge.
+  now, continue, drop, merge and land. On the command line, merge of a 009 run MUST do what Land does.
 - **FR-024**: When a run ended `waiting` and the person settles an item that makes a task in that run's scope
   runnable, a new run with the same scope and limits MUST start by itself (005 FR-016 kept, now as a new run).
 
@@ -267,6 +294,22 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - **FR-026**: Task histories for tasks done before this feature MAY be built once from the run reports, commits and
   any transcripts still present; tasks without such data show "no history before <date>".
 
+**Starting runs**
+- **FR-027**: Runs MUST be started through the supervisor (`bin/sdd-launch.py`, the dashboard's Start run or the
+  command line); the usage-limit pause lives only there. `/sdd-run` MUST NOT start a supervisor. When `/sdd-run` runs
+  without `SDD_SUPERVISED=1`, it MUST say before the run starts that the run has no usage-limit protection and that
+  runs are started with the launcher or Start run, then go on.
+
+**Task summaries**
+- **FR-028**: A task in `tasks.md` MAY have a plain-language summary on the indented line right below it (one
+  sentence, no file paths or function names). `/speckit-tasks`, through the plugin's tasks template, MUST write one
+  for every task. `bin/sdd-tasks.py` MUST parse it as the task's `summary` and MUST NOT treat it as part of the task
+  text, its files or its dependencies; a task without one has `summary: null`. Plain Spec Kit still reads the file.
+- **FR-029**: The task card MUST show the summary as the task's main text and the exact task text behind an
+  expander ("Details"); a task without a summary shows its exact text as today.
+- **FR-030**: 009's `tasks.md` MUST have a summary for every task, done ones included. 005's and 008's MUST NOT be
+  changed for this.
+
 ### Key Entities
 
 - **Run**: id, title, feature, scope, limits, branch, base (branch and commit), state, sessions, how it ended,
@@ -274,6 +317,7 @@ merged), upgrade; check each shows as described and the two open ones can be con
   summary in the repository after the end.
 - **Session**: one process within a run; start and end times, why it ended (usage limit, crash, closed, finished).
 - **Task history**: one append-only file per task in the repository; entries as FR-016.
+- **Task summary**: the optional indented line below a task in `tasks.md` (FR-028).
 - **Run summary**: one file per ended run in the repository; fields as FR-020.
 
 ## Success Criteria *(mandatory)*
@@ -291,6 +335,8 @@ merged), upgrade; check each shows as described and the two open ones can be con
   that stopped at a task boundary is ended and landed; one that did not is suspended with Continue and Drop.
 - **SC-006**: Upgrading with the person's existing `.sdd/jobs/` and `.sdd/runs/` loses no record and strands no
   work (US5 scenarios pass on a copy of this repository's `.sdd/`).
+- **SC-007**: Every task card of 009 reads as a plain sentence, with the exact task text one click away.
+- **SC-008**: A `/sdd-run` typed into a session warns that it has no usage-limit protection before any agent starts.
 
 ## Out of Scope
 
