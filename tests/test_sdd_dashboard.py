@@ -1306,15 +1306,17 @@ class TransientStateTest(unittest.TestCase):
         self.assertEqual(got[1], "")
 
     def test_task_chip_names_the_job_and_opens_it(self):
-        """005 FR-013: a run with a Job makes the chip say "done in job <title>" and open that Job, not the run."""
+        """005 FR-013, 009 FR-022: a session of a run record makes the chip say "done in run <title>" and open
+        that run's card, not the session."""
         got = self.run_js("(function() { taskRuns = {T1: [{run: '20261031-1530', outcome: 'committed', commits: ['168b8ce'],"
                           " job: '20261031-1012', title: 'Phase <11>'}], T2: [{run: '20261031-1530', outcome: 'blocked',"
                           " commits: [], job: '20261031-1012', title: null}]}; return [taskRunChipHtml('T1'), taskRunChipHtml('T2')]; })()")
         self.assertIn('data-open-job="20261031-1012"', got[0])
         self.assertNotIn("data-run=", got[0])
-        self.assertIn(">done</span> in job Phase &lt;11&gt;", got[0])
+        self.assertIn(">done</span> in run Phase &lt;11&gt;", got[0])  # 009 FR-022: "run", never "job"
         self.assertNotIn("in run #", got[0])
-        self.assertIn(">blocked</span> in job 20261031-1012", got[1])
+        self.assertNotIn("in job", got[0])
+        self.assertIn(">blocked</span> in run 20261031-1012", got[1])
         self.assertIn("closest('[data-open-job]')", self.html)
         self.assertIn("expandedJob = chip.getAttribute('data-open-job')", self.html)
         self.assertIn("[data-run], [data-open-job]')", self.html)  # the chip does not toggle the card's log
@@ -2043,15 +2045,29 @@ class JobsRouteTest(unittest.TestCase):
         return record
 
     def test_list_open_first_then_newest_with_shown_and_progress(self):
+        """009 T009: open runs (`is_open`) first, then newest; each with `shown` from `shown_state`."""
         self.assertEqual(request(self, "GET", "/api/jobs"), {"jobs": []})
-        self.record("20261030-0900", "merged")
+        self.record("20261030-0900", "merged", merge_commit="f" * 40)
         self.record("20261031-0900", "dropped")
-        self.record("20261029-0900", "waiting")
+        self.record("20261029-0900", "waiting")  # a 005 record without its run.json: ended, landing pending
+        self.record("20261028-0900", "ended", outcome="done", landing={"state": "landed", "commit": "e" * 40,
+                                                                       "files": []})
         jobs = request(self, "GET", "/api/jobs")["jobs"]
-        self.assertEqual([j["id"] for j in jobs], ["20261029-0900", "20261031-0900", "20261030-0900"])
-        self.assertEqual(jobs[0]["shown"], {"state": "waiting"})
+        self.assertEqual([j["id"] for j in jobs], ["20261029-0900", "20261031-0900", "20261030-0900", "20261028-0900"])
+        self.assertEqual(jobs[0]["shown"], {"state": "ended", "outcome": "waiting", "reason": None,
+                                            "landing": {"state": "pending", "commit": None, "files": []}})
         self.assertEqual(jobs[0]["progress"], {"done": 0, "total": 2, "waiting_on_you": 1, "left": 1})
         self.assertEqual(jobs[0]["title"], "Job 20261029-0900")
+        self.assertEqual(jobs[2]["shown"]["landing"], {"state": "landed", "commit": "f" * 40, "files": []})
+        self.assertEqual(jobs[1]["shown"]["landing"]["state"], "not-landed")
+        # a suspended run (its own run.json, no live supervisor) is open too, and names the tasks it was on
+        self.record("20261027-0900", "suspended", reason="stopped by you")
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"job": "20261027-0900"}), encoding="utf-8")
+        jobs = request(self, "GET", "/api/jobs")["jobs"]
+        self.assertEqual([j["id"] for j in jobs][:2], ["20261029-0900", "20261027-0900"])
+        self.assertEqual(jobs[1]["shown"], {"state": "suspended", "outcome": None, "reason": "stopped by you",
+                                            "landing": None})
+        self.assertEqual(jobs[1]["in_flight"], [])
 
     def test_one_job_with_its_runs_and_runs_name_their_job(self):
         self.record("20261031-1012", "waiting", runs=["20261031-1012"])
@@ -2066,7 +2082,7 @@ class JobsRouteTest(unittest.TestCase):
         self.assertEqual(runs, {"20261031-1530": "20261031-1012", "20261031-1012": None, "20261030-0800": None})
         job = request(self, "GET", "/api/jobs/20261031-1012")
         self.assertEqual(job["id"], "20261031-1012")
-        self.assertEqual(job["shown"], {"state": "waiting"})
+        self.assertEqual((job["shown"]["state"], job["shown"]["outcome"]), ("ended", "waiting"))
         self.assertEqual([r["id"] for r in job["runs"]], ["20261031-1530", "20261031-1012"])
         self.assertIn("tasks", job["runs"][0])
 
@@ -2180,10 +2196,77 @@ class JobsRouteTest(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")
         self.assertTrue(self.git("branch", "--list", "auto/20261031-1100"))  # the branch is kept
 
+    def run_branch(self, job_id, text="done\n"):
+        """A run branch with one commit changing work.txt, checked out."""
+        self.git("switch", "-q", "-c", f"auto/{job_id}")
+        (self.root / "work.txt").write_text(text)
+        self.git("add", "work.txt")
+        self.git("commit", "-q", "-m", "work")
+
+    def test_land_route_lands_an_ended_run(self):
+        """009 T009: `POST /api/jobs/<id>/land` calls sdd-job.py `land`; refusals are 409 with its text."""
+        (self.root / "work.txt").write_text("start\n")
+        self.init_git()
+        self.run_branch("20261031-1012")
+        self.record("20261031-1012", "working")
+        request(self, "POST", "/api/jobs/20261031-0000/land", {}, status=404)
+        refused = request(self, "POST", "/api/jobs/20261031-1012/land", {}, status=409)
+        self.assertEqual(refused, {"error": "this run has not ended: it is working"})
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "auto/20261031-1012")  # nothing changed
+        self.record("20261031-1012", "ended", outcome="done",
+                    landing={"state": "pending", "commit": None, "files": []})
+        data = request(self, "POST", "/api/jobs/20261031-1012/land", {}, status=200)
+        sha = self.git("rev-parse", "HEAD")
+        self.assertEqual(data, {"ok": True, "landed": True, "commit": sha, "fast_forward": True,
+                                "landing": {"state": "landed", "commit": sha, "files": []}})
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")
+        refused = request(self, "POST", "/api/jobs/20261031-1012/land", {}, status=409)
+        self.assertEqual(refused, {"error": "this run has already ended its landing"})
+        request(self, "POST", "/api/jobs/20261031-1012/land", {}, origin="http://evil.example", status=403)
+
+    def test_land_route_conflict_stores_needs_merge_and_merge_retries(self):
+        (self.root / "work.txt").write_text("start\n")
+        self.init_git()
+        self.run_branch("20261031-1012", "theirs\n")
+        self.git("switch", "-q", "main")
+        (self.root / "work.txt").write_text("mine\n")
+        self.git("commit", "-q", "-am", "base moved")
+        base = self.git("rev-parse", "HEAD")
+        self.git("switch", "-q", "auto/20261031-1012")
+        self.record("20261031-1012", "ended", outcome="done",
+                    landing={"state": "pending", "commit": None, "files": []})
+        refused = request(self, "POST", "/api/jobs/20261031-1012/land", {}, status=409)
+        self.assertEqual(refused, {"error": "the merge conflicts in: work.txt"})
+        self.assertEqual(self.git("rev-parse", "main"), base)
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "auto/20261031-1012")
+        job = request(self, "GET", "/api/jobs/20261031-1012")
+        self.assertEqual(job["shown"]["landing"], {"state": "needs-merge", "commit": None, "files": ["work.txt"]})
+        # the person resolves it on the branch; Merge (which posts to /land) then lands with a merge commit
+        self.git("merge", "-q", "-X", "ours", "main", "-m", "resolve")
+        data = request(self, "POST", "/api/jobs/20261031-1012/land", {}, status=200)
+        self.assertTrue(data["landed"])
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertEqual((self.root / "work.txt").read_text(), "theirs\n")
+
+    def test_drop_of_a_suspended_run_calls_drop_suspended(self):
+        self.init_git()
+        self.record("20261031-1012", "suspended", reason="the run was cut off")
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"job": "20261031-1012"}), encoding="utf-8")
+        answer = {"dropped": True, "tasks": ["T001"], "stash": "sdd-run 20261031-1012: dropped T001", "end": {}}
+        with mock.patch.object(dash.sdd_job, "drop_suspended", return_value=answer) as dropped, \
+                mock.patch.object(dash.sdd_job, "drop") as old_drop:
+            data = request(self, "POST", "/api/jobs/20261031-1012/drop", {}, status=200)
+        self.assertEqual(data, {"ok": True, "tasks": ["T001"], "stash": "sdd-run 20261031-1012: dropped T001"})
+        self.assertEqual(dropped.call_args.args, (self.root, "20261031-1012"))
+        old_drop.assert_not_called()
+        with mock.patch.object(dash.sdd_job, "drop_suspended", side_effect=dash.sdd_job.Refused("a run is active")):
+            refused = request(self, "POST", "/api/jobs/20261031-1012/drop", {}, status=409)
+        self.assertEqual(refused, {"error": "a run is active"})
+
 
 class JobsViewTest(unittest.TestCase):
-    """005 FR-011 (T017): the Jobs view's markup, routes and page-script helpers, run in node. The browser
-    behaviour (a Job with two runs, Drop's confirmation) is tests/ui/test_jobs.py."""
+    """009 FR-021, FR-022 (T009; 005 FR-011): the Runs view's markup, routes and page-script helpers, run in
+    node. The browser behaviour (a run with two sessions, Drop's confirmation) is tests/ui/test_jobs.py."""
 
     @classmethod
     def setUpClass(cls):
@@ -2192,8 +2275,8 @@ class JobsViewTest(unittest.TestCase):
         js = cls.html[start:cls.html.index("function loadProject(")]
         a = cls.html.index("    function shortText(")
         short = cls.html[a:cls.html.index("}", cls.html.index("return", a)) + 1]
-        b = cls.html.index("    // Jobs view (005 FR-011, data-model.md §9).")
-        cls.js = js + "\n" + short + "\n" + cls.html[b:cls.html.index("    // End of the Jobs view helpers.")]
+        b = cls.html.index("    // Runs view (009 FR-021, FR-022).")
+        cls.js = js + "\n" + short + "\n" + cls.html[b:cls.html.index("    // End of the Runs view helpers.")]
 
     def run_js(self, expr):
         node = shutil.which("node")
@@ -2203,71 +2286,131 @@ class JobsViewTest(unittest.TestCase):
         out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
         return json.loads(out.stdout)
 
-    JOB = ("{id: '20261031-1012', title: 'Phase 11', feature: '003-x', state: 'stopped', reason: 'max_tasks 3 reached',"
+    JOB = ("{id: '20261031-1012', title: 'Phase 11', feature: '003-x', state: 'suspended', reason: 'max_tasks 3 reached',"
            " branch: 'auto/20261031-1012', base: {branch: 'main', commit: 'abc'}, runs: ['20261031-1012'],"
-           " shown: {state: 'stopped'}, progress: {done: 3, total: 6, waiting_on_you: 1, left: 2}}")
+           " shown: {state: 'suspended', outcome: null, reason: 'max_tasks 3 reached', landing: null},"
+           " progress: {done: 3, total: 6, waiting_on_you: 1, left: 2}, in_flight: ['T014']}")
 
-    def test_jobs_replace_runs_in_the_nav_and_runs_redirects(self):
-        self.assertIn('data-section="jobs"', self.html)
-        self.assertNotIn('data-section="runs"', self.html)
-        self.assertIn('id="section-jobs"', self.html)
-        self.assertNotIn('id="section-runs"', self.html)
-        self.assertIn("if (name === 'runs') { history.replaceState(null, '', '#jobs'); return 'jobs'; }", self.html)
+    @staticmethod
+    def ended(landing, outcome="done", files="[]"):
+        """A JS run record shown ended with that landing state."""
+        return ("{id: '20261031-1012', title: 'Phase 11', state: 'ended', branch: 'auto/20261031-1012',"
+                " base: {branch: 'main', commit: 'abc'}, progress: null, tasks_done: 2,"
+                " shown: {state: 'ended', outcome: '%s', reason: null, landing: {state: '%s', commit: '1234567890',"
+                " files: %s}}}" % (outcome, landing, files))
+
+    def test_runs_in_the_nav_and_jobs_redirects(self):
+        """009 FR-022: the view is Runs (#runs), and #jobs redirects to it."""
+        self.assertIn('data-section="runs"', self.html)
+        self.assertNotIn('data-section="jobs"', self.html)
+        self.assertIn('<span class="icon">🔄</span>Runs</div>', self.html)
+        self.assertIn('id="section-runs"', self.html)
+        self.assertNotIn('id="section-jobs"', self.html)
+        self.assertIn('<div class="card-title">Start run</div>', self.html)
+        self.assertIn('<div class="section-title">Runs</div>', self.html)
+        self.assertIn("if (name === 'jobs') { history.replaceState(null, '', '#runs'); return 'runs'; }", self.html)
         for needle in ('id="jobs-list"', 'id="earlier-runs"', "Earlier runs", "function loadJobs()",
                        "fetchJSON('/api/jobs', 'GET')", "fetchJSON('/api/jobs/plan', 'GET')", "postJSON('/api/jobs/start'",
-                       "'/api/jobs/' + encodeURIComponent(id) + '/' + action", "url = '/api/run/stop'",
-                       "block.appendChild(runDetailEl)"):
+                       "'/api/jobs/' + encodeURIComponent(id) + '/' + (action === 'merge' ? 'land' : action)",
+                       "url = '/api/run/stop'", "block.appendChild(runDetailEl)", "No runs yet. Start one above.",
+                       "Tasks in this run", "Start the run \"", "'Run started: '"):
             self.assertIn(needle, self.html)
+        for gone in ("No jobs yet", "Tasks in this job", "Start job", "Start the job", "Job started", "JOB_CLOSED"):
+            self.assertNotIn(gone, self.html)
         refresh = self.html[self.html.index("function refreshAll("):]
-        self.assertIn("if (selectedSection === 'jobs') { loadJobs(); loadEvents(); loadStartJob(); }", refresh)
+        self.assertIn("if (selectedSection === 'runs') { loadJobs(); loadEvents(); loadStartJob(); }", refresh)
 
     def test_card_shows_title_state_progress_branch_and_buttons(self):
         html = self.run_js("jobCardHtml(" + self.JOB + ")")
-        for needle in ("Phase 11", 'class="job-state job-stopped">Stopped<', "max_tasks 3 reached",
+        for needle in ("Phase 11", 'class="job-state job-suspended">Suspended<', "max_tasks 3 reached",
                        "auto/20261031-1012", " from main", "<b>3</b> of 6 done", "<b>1</b> waiting on you",
                        "<b>2</b> left", "width:50%", 'data-job-toggle="20261031-1012"'):
             self.assertIn(needle, html)
-        for action in ("stop", "continue", "merge", "drop"):
-            self.assertIn('data-job-action="%s"' % action, html)
-        self.assertRegex(html, r'data-job-action="stop"[^>]* disabled')
-        self.assertNotRegex(html, r'data-job-action="(continue|merge|drop)"[^>]* disabled')
         self.assertNotIn("20261031-1012</span>", html.replace("auto/20261031-1012", ""))  # no run id as the title
 
-    def test_buttons_follow_the_shown_state(self):
-        got = self.run_js("['working', 'paused', 'waiting', 'interrupted', 'held', 'stopped', 'failed', 'done']"
-                          ".map(function(s) { return jobActions({state: s, shown: {state: s}}); })")
-        enabled = [[k for k in ("stop", "continue", "merge", "drop") if g[k]] for g in got]
-        self.assertEqual(enabled, [["stop"], ["stop"], ["continue"], ["continue"], ["continue"],
-                                   ["continue", "merge", "drop"], ["merge", "drop"], ["merge", "drop"]])
-        closed = self.run_js("[jobCardHtml({id: 'a', title: 'A', state: 'merged', shown: {state: 'merged'}, progress: null,"
-                             " merge_commit: '1234567890'}), jobCardHtml({id: 'b', title: 'B', state: 'dropped',"
-                             " shown: {state: 'dropped'}, progress: null})]")
-        for html in closed:
-            self.assertNotIn("data-job-action", html)
-        self.assertIn("merged as <span class=\"mono\">1234567</span>", closed[0])
-        self.assertIn("Progress is not available", closed[1])
+    def card_buttons(self, job):
+        html = self.run_js("jobCardHtml(" + job + ")")
+        return re.findall(r'data-job-action="([a-z]+)"', html), html
+
+    def test_suspended_card_offers_continue_and_drop(self):
+        buttons, html = self.card_buttons(self.JOB)
+        self.assertEqual(buttons, ["continue", "drop"])
+        self.assertNotRegex(html, r"data-job-action=\"[a-z]+\"[^>]* disabled")
+
+    def test_needs_merge_card_offers_merge_with_the_files(self):
+        buttons, html = self.card_buttons(self.ended("needs-merge", files="['a.py', 'b <c>.md']"))
+        self.assertEqual(buttons, ["merge"])
+        self.assertIn('class="job-state job-needs-merge">Needs merge<', html)
+        self.assertIn("conflicts in a.py, b &lt;c&gt;.md", html)
+
+    def test_pending_card_offers_land(self):
+        buttons, html = self.card_buttons(self.ended("pending", outcome="stopped"))
+        self.assertEqual(buttons, ["land"])
+        self.assertIn("Stopped, not landed", html)
+        self.assertIn("Not landed on main yet", html)
+
+    def test_other_cards_offer_no_action(self):
+        rows = [self.ended("landed"), self.ended("nothing"), self.ended("not-landed", outcome="dropped"),
+                "{id: 'w', title: 'W', state: 'working', shown: {state: 'working'}, progress: null}",
+                "{id: 'p', title: 'P', state: 'working', shown: {state: 'paused', resets_at: 1793450000}, progress: null}"]
+        for job in rows:
+            buttons, html = self.card_buttons(job)
+            self.assertEqual(buttons, [], job)
+            self.assertNotIn('class="job-actions"', html, job)
+        _, landed = self.card_buttons(self.ended("landed"))
+        self.assertIn('landed as <span class="mono">1234567</span>', landed)
+        self.assertIn('class="job-state job-done">Done<', landed)
+        self.assertIn("Progress is not available", landed)
+
+    def test_open_runs_are_marked(self):
+        got = self.run_js("[%s].map(jobIsOpen)" % ", ".join([
+            self.JOB, self.ended("needs-merge"), self.ended("pending"), self.ended("landed"), self.ended("nothing"),
+            "{shown: {state: 'working'}}", "{shown: {state: 'paused'}}"]))
+        self.assertEqual(got, [True, True, True, False, False, True, True])
 
     def test_state_in_words(self):
-        got = self.run_js("['working', 'waiting', 'interrupted', 'held', 'failed', 'done'].map(function(s) {"
-                          " return jobStateText({state: s, shown: {state: s}}); })")
-        self.assertEqual(got, ["Working", "Waiting on you", "Stopped unexpectedly", "Held after the usage reset",
-                               "Failed", "Done"])
+        got = self.run_js("[{shown: {state: 'working'}}, {shown: {state: 'suspended'}}].map(jobStateText)")
+        self.assertEqual(got, ["Working", "Suspended"])
+        got = self.run_js("[%s].map(jobStateText)" % ", ".join([
+            self.ended("landed"), self.ended("landed", "limit"), self.ended("nothing", "waiting"),
+            self.ended("landed", "failed"), self.ended("not-landed", "dropped"), self.ended("needs-merge"),
+            self.ended("pending", "stopped")]))
+        self.assertEqual(got, ["Done", "Limit reached", "Waiting on you", "Failed", "Dropped", "Needs merge",
+                               "Stopped, not landed"])
         paused = self.run_js("jobStateText({state: 'working', shown: {state: 'paused', resets_at: 1793450000}})")
         self.assertRegex(paused, r"^Paused until \d\d:\d\d: usage limit$")
 
     def test_continue_asks_for_the_limit_named_in_the_reason(self):
         got = self.run_js("[limitInReason(" + self.JOB + "),"
-                          " limitInReason({state: 'stopped', reason: 'until 18:00 reached'}),"
-                          " limitInReason({state: 'stopped', reason: 'max_runs 20 reached'}),"
-                          " limitInReason({state: 'stopped', reason: 'stopped by you'}),"
-                          " limitInReason({state: 'waiting', reason: 'max_tasks 3 reached'}),"
+                          " limitInReason({shown: {state: 'suspended', reason: 'until 18:00 reached'}}),"
+                          " limitInReason({shown: {state: 'suspended', reason: 'max_runs 20 reached'}}),"
+                          " limitInReason({shown: {state: 'suspended', reason: 'stopped by you'}}),"
+                          " limitInReason({reason: 'max_tasks 3 reached', shown: {state: 'ended', reason: 'max_tasks 3 reached'}}),"
                           " limitPrompt(" + self.JOB + ", 'max_tasks')]")
         self.assertEqual(got[:5], ["max_tasks", "until", "max_runs", None, None])
         self.assertIn("Phase 11 stopped: max_tasks 3 reached", got[5])
+        self.assertIn("the whole run", got[5])
         self.assertIn("or none", got[5])
         js = self.html[self.html.index("function jobAction("):self.html.index("function runTasksHtml(")]
         self.assertIn("window.prompt(limitPrompt(job, name)", js)
-        self.assertIn("window.confirm('Drop the job", js)
+        self.assertIn("window.confirm(jobDropQuestion(job))", js)
+
+    def test_drop_confirmation_and_toasts(self):
+        """009 FR-010: Drop's question; the toasts say "run", never "job"."""
+        got = self.run_js("[jobDropQuestion(" + self.JOB + "),"
+                          " jobDoneText(" + self.JOB + ", 'continue', {ok: true, body: {}}),"
+                          " jobDoneText(" + self.JOB + ", 'drop', {ok: true, body: {stash: 'x'}}),"
+                          " jobDoneText(" + self.JOB + ", 'land', {ok: true, body: {commit: 'abcdef123456',"
+                          "   landing: {state: 'landed'}}}),"
+                          " jobDoneText(" + self.JOB + ", 'land', {ok: true, body: {commit: null, landing: {state: 'nothing'}}}),"
+                          " jobDoneText(" + self.JOB + ", 'merge', {ok: true, body: {commit: 'abcdef123456'}}),"
+                          " jobDoneText(" + self.JOB + ", 'merge', {ok: false, status: 409,"
+                          "   body: {error: 'the merge conflicts in: a.py'}})]")
+        self.assertEqual(got, [
+            "Drop Phase 11? The half-done work is stashed and saved in the task's history; finished tasks land on main.",
+            "Run continues", "Run dropped; the half-done work is in the stash", "Landed on main (abcdef1)",
+            "Nothing to land on main", "Merged into main (abcdef1)",
+            "Could not merge the run: the merge conflicts in: a.py"])
 
     def test_limit_values(self):
         now = "new Date(2026, 9, 31, 17, 0, 0).getTime()"
@@ -2310,7 +2453,7 @@ class JobsViewTest(unittest.TestCase):
         panel, refused = got
         for needle in ("3 runnable, 1 held.", 'id="start-all-btn"', 'id="start-none-btn"', '<details class="start-phase" data-phase="1">',
                        'class="start-task-box" value="T002" checked', "<b>T001</b> First &lt;b&gt;", 'id="start-max-tasks"', 'id="start-until"', 'id="start-max-runs"', 'id="start-title"',
-                       'id="start-job-btn"', "Phase 1: Setup", "2 tasks", "1 task<"):
+                       'id="start-job-btn">Start run</button>', "Phase 1: Setup", "2 tasks", "1 task<"):
             self.assertIn(needle, panel)
         self.assertIn("Cannot start: another run is going: Phase 11", refused)
         self.assertNotIn("start-job-btn", refused)
@@ -2332,9 +2475,9 @@ class JobsViewTest(unittest.TestCase):
 
 
 class JobBannerTest(unittest.TestCase):
-    """005 FR-012, SC-003 (T019): the banner and the Overview pill describe the open Job in the words of
-    data-model.md §9 and never show a run id. The banner code runs in node against a stand-in element; the
-    browser behaviour (the usage checkbox's flips) is tests/ui/test_banner.py."""
+    """009 FR-022 (T009; 005 FR-012, SC-003): the banner and the Overview pill describe the run in words and
+    never show a run id. The banner code runs in node against a stand-in element; the browser behaviour (the
+    usage checkbox's flips) is tests/ui/test_banner.py."""
 
     JOB_ID = "20261031-1012"
     RUN_ID = "20261031-1530"
@@ -2345,8 +2488,8 @@ class JobBannerTest(unittest.TestCase):
         cls.html = dash.build_html()
         h = cls.html
         parts = [h[h.index("function escapeHtml("):h.index("function loadProject(")]]
-        a = h.index("    // Jobs view (005 FR-011, data-model.md §9).")
-        parts.append(h[a:h.index("    // End of the Jobs view helpers.")])
+        a = h.index("    // Runs view (009 FR-021, FR-022).")
+        parts.append(h[a:h.index("    // End of the Runs view helpers.")])
         a = h.index("    // Run banner (data-model.md §12.4")
         parts.append(h[a:h.index("    // POST /api/run/<command> (§12.3).")])
         a = h.index("    function runPillHtml(")
@@ -2367,24 +2510,31 @@ class JobBannerTest(unittest.TestCase):
         out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
         return json.loads(out.stdout)
 
-    def job(self, stored, shown=None, **shown_fields):
+    def job(self, stored, shown=None, record=None, **shown_fields):
         return {"id": self.JOB_ID, "title": "Phase 11", "feature": "003-x", "state": stored,
                 "reason": None, "branch": "auto/" + self.JOB_ID, "base": {"branch": "main", "commit": "abc1234"},
                 "runs": [self.JOB_ID, self.RUN_ID], "scope_tasks": ["T052", "T053"],
                 "shown": {"state": shown or stored, **shown_fields},
-                "progress": {"done": 3, "total": 6, "waiting_on_you": 2, "left": 1}}
+                "progress": {"done": 3, "total": 6, "waiting_on_you": 2, "left": 1},
+                "in_flight": [], "tasks_done": None, **(record or {})}
+
+    def ended(self, landing, files=(), **record):
+        return self.job("ended", record=record, outcome="done", reason=None,
+                        landing={"state": landing, "commit": "1234567890", "files": list(files)})
 
     def shown_states(self):
-        """(name, /api/run/current, the text data-model.md §9 gives) for every shown state."""
+        """(name, /api/run/current, the text 009 FR-022 gives) for every shown state."""
         hhmm = time.strftime("%H:%M", time.localtime(self.RESETS_AT))
         none = {"stop": False, "resume": False, "hold": False, "release": False, "reason": None}
         run = {"state": "running", "run_id": self.RUN_ID, "workflow_dir": "/x/" + self.RUN_ID}
+        idle = {"state": "none", "run_id": None, "workflow_dir": None, "controls": none}
+        stale = {**run, "state": "stale", "controls": {**none, "reason": dash.sdd_control.SUPERVISOR_STOPPED}}
         rows = [
             ("working", {**run, "controls": {**none, "stop": True}, "job": self.job("working")},
              "Working on Phase 11: T052, verifying (7 min)"),
             ("stopping", {**run, "stopping": True, "controls": {**none, "stop": True,
                           "reason": "stopping after the current task"}, "job": self.job("working")},
-             "Stopping after the current task…"),
+             "Stopping after the current task"),
             ("paused, box checked", {**run, "state": "paused", "controls": {**none, "hold": True,
              "reason": "waiting for the usage window to reset at " + hhmm},
              "job": self.job("working", "paused", resets_at=self.RESETS_AT, keep_paused=False)},
@@ -2393,22 +2543,19 @@ class JobBannerTest(unittest.TestCase):
              "reason": "will stay paused after the reset at " + hhmm},
              "job": self.job("working", "paused", resets_at=self.RESETS_AT, keep_paused=True)},
              "Paused until %s: usage limit; stays paused" % hhmm),
-            ("held", {**run, "state": "paused", "controls": {**none, "reason": dash.sdd_control.SUPERVISOR_STOPPED},
-                      "job": self.job("held")},
-             "Held after the usage reset: Continue to resume"),
-            ("waiting", {"state": "none", "run_id": None, "workflow_dir": None,
-                         "controls": none, "job": self.job("waiting")},
-             "Waiting on you: 2 items"),
-            ("interrupted", {**run, "state": "stale", "controls": {**none, "reason": dash.sdd_control.SUPERVISOR_STOPPED},
-                             "job": self.job("working", "interrupted")},
-             "Stopped unexpectedly: Continue to resume"),
+            ("suspended", {**stale, "job": self.job("suspended", record={"in_flight": ["T052"]},
+                                                     reason="stopped by you")},
+             "Suspended during T052: stopped by you. Continue or Drop"),
+            ("suspended, cut off", {**stale, "job": self.job("working", "suspended", reason=None)},
+             "Suspended during its last task: the run was cut off. Continue or Drop"),
+            ("landed", {**idle, "job": self.ended("landed", tasks_done=2)}, "Phase 11 ended: 2 tasks landed on main"),
+            ("landed, one", {**idle, "job": self.ended("landed", tasks_done=1)}, "Phase 11 ended: 1 task landed on main"),
+            ("needs merge", {**idle, "job": self.ended("needs-merge", ["a.py", "b.py"])},
+             "Phase 11 ended: needs merge (conflicts in a.py, b.py)"),
+            ("pending", {**idle, "job": self.ended("pending")}, "Phase 11 ended: 3 tasks not landed on main yet"),
+            ("nothing", {**idle, "job": self.ended("nothing")}, "Phase 11 ended: nothing landed"),
+            ("no run", idle, "No run going"),
         ]
-        for state in ("stopped", "done", "failed"):
-            rows.append((state, {"state": "none", "run_id": None, "workflow_dir": None,
-                                 "controls": none, "job": self.job(state)},
-                         "Phase 11 %s: 3 tasks done; Merge to bring them into main, or Drop" % state))
-        rows.append(("no job", {"state": "none", "run_id": None, "workflow_dir": None,
-                                "controls": none}, "No job running"))
         return rows
 
     def render(self, runs):
@@ -2463,14 +2610,19 @@ class JobBannerTest(unittest.TestCase):
             self.assertNotIn("disabled", box, name)
             self.assertIn("Continue when the limit resets (%s)" % hhmm, got[name]["html"])
             self.assertNotIn("data-control", got[name]["html"], name)
-        for name in ("held", "interrupted", "waiting"):
-            self.assertIn('data-job-action="continue"', got[name]["html"], name)
-            self.assertNotIn('data-job-action="merge"', got[name]["html"], name)
-        for name in ("done", "failed"):
-            self.assertIn('data-job-action="merge"', got[name]["html"], name)
-            self.assertIn('data-job-action="drop"', got[name]["html"], name)
-        self.assertIn('data-job-action="continue"', got["stopped"]["html"])
-        self.assertIn('data-go="jobs">Start job<', got["no job"]["html"])
+        actions = {name: re.findall(r'data-job-action="([a-z]+)"', g["html"]) for name, g in got.items()}
+        for name in ("working", "stopping", "paused, box checked", "paused, box unchecked", "landed", "nothing", "no run"):
+            self.assertEqual(actions[name], [], name)
+        self.assertEqual(actions["suspended"], ["continue", "drop"])
+        self.assertEqual(actions["suspended, cut off"], ["continue", "drop"])
+        self.assertEqual(actions["needs merge"], ["merge"])
+        self.assertEqual(actions["pending"], ["land"])
+        for name in ("landed", "nothing", "no run"):
+            self.assertIn('data-go="runs">Start run<', got[name]["html"], name)
+        for name in ("suspended", "needs merge", "pending", "working"):
+            self.assertNotIn("Start run", got[name]["html"], name)
+        for g in got.values():
+            self.assertNotIn("job", g["shown"].lower().replace("data-job", ""))
 
     def test_checkbox_posts_release_when_checked_and_hold_when_unchecked(self):
         js = self.html[self.html.index("function renderJobBanner("):self.html.index("function bindControlButtons(")]
@@ -2503,13 +2655,21 @@ class JobBannerTest(unittest.TestCase):
 
         try:
             self.assertNotIn("job", request(self, "GET", "/api/run/current"))
-            dash.sdd_job.save(root, record("waiting"))
+            dash.sdd_job.save(root, record("waiting"))  # 005, no run.json: ended, landing pending (open)
             got = request(self, "GET", "/api/run/current")["job"]
             self.assertEqual(got["id"], self.JOB_ID)
-            self.assertEqual(got["shown"], {"state": "waiting"})
+            self.assertEqual(got["shown"], {"state": "ended", "outcome": "waiting", "reason": None,
+                                            "landing": {"state": "pending", "commit": None, "files": []}})
             self.assertEqual(got["progress"]["done"], 1)
-            dash.sdd_job.save(root, record("merged"))
-            self.assertNotIn("job", request(self, "GET", "/api/run/current"))
+            # with no open run and nothing going, the newest run still comes, so the banner says how it ended
+            dash.sdd_job.save(root, {**record("ended"), "outcome": "done",
+                                     "landing": {"state": "landed", "commit": "a" * 40, "files": []}})
+            (root / ".sdd" / "runs").mkdir()
+            (root / ".sdd" / "runs" / (self.JOB_ID + ".json")).write_text(
+                json.dumps({"tasks": {"done": ["T053", "T054"], "blocked": [], "dropped": []}}), encoding="utf-8")
+            got = request(self, "GET", "/api/run/current")["job"]
+            self.assertEqual(got["shown"]["landing"]["state"], "landed")
+            self.assertEqual(got["tasks_done"], 2)
         finally:
             env.stop()
             handler.project, handler.feature, handler.port, handler.allow_ports = saved

@@ -208,19 +208,43 @@ def list_runs(project):
     return runs
 
 
+def _in_flight(project, record) -> list:
+    """The tasks a suspended run was on: those its own `.sdd/run.json`'s journal has in flight; [] otherwise."""
+    if not sdd_job.owns_run_json(project, record):
+        return []
+    try:
+        run = json.loads((Path(project) / ".sdd" / "run.json").read_text(encoding="utf-8"))
+        return sdd_job._in_flight(run if isinstance(run, dict) else None)
+    except Exception:  # noqa: BLE001 — an unreadable journal only loses the task's name in the banner
+        return []
+
+
+def _tasks_done(project, run_id):
+    """How many tasks the run's summary (`.sdd/runs/<run id>.json`, 009 plan "Run summary") lists as done,
+    or None without a readable summary."""
+    summary = read_json(Path(project) / ".sdd" / "runs" / f"{run_id}.json")
+    done = ((summary or {}).get("tasks") or {}).get("done") if isinstance(summary, dict) else None
+    return len(done) if isinstance(done, list) else None
+
+
 def job_view(project, record):
-    """A Job as `/api/jobs` gives it (005 data-model §9): the record plus `shown` (display_state) and
-    `progress` (None when tasks.md cannot be read)."""
+    """A run as `/api/jobs` gives it (009 plan "Shown state"; 005 data-model §9): the record plus `shown`
+    (sdd-job.py `shown_state`), `progress` (None when tasks.md cannot be read), `in_flight` (the tasks a
+    suspended run was on, else []) and `tasks_done` (the tasks an ended run's summary lists as done, else None)."""
     try:
         counts = sdd_job.progress(project, record)
     except (OSError, ValueError, KeyError, TypeError):
         counts = None
-    return {**record, "shown": sdd_job.display_state(project, record), "progress": counts}
+    shown = sdd_job.shown_state(project, record)
+    in_flight = _in_flight(project, record) if shown["state"] == "suspended" else []
+    done = _tasks_done(project, record.get("id")) if shown["state"] == "ended" and record.get("id") else None
+    return {**record, "shown": shown, "progress": counts, "in_flight": in_flight, "tasks_done": done}
 
 
 def list_job_views(project):
-    """`GET /api/jobs`: every Job, open first, then newest (sdd-job.py lists newest first; the sort is stable)."""
-    records = sorted(sdd_job.list_jobs(project), key=lambda r: r.get("state") in sdd_job.CLOSED_STATES)
+    """`GET /api/jobs`: every run, open ones (`is_open`) first, then newest (sdd-job.py lists newest first;
+    the sort is stable)."""
+    records = sorted(sdd_job.list_jobs(project), key=lambda r: not sdd_job.is_open(project, r))
     return [job_view(project, r) for r in records]
 
 
@@ -268,13 +292,23 @@ def get_report(project, run_id):
 
 
 def open_job_view(project):
-    """The open Job as `/api/jobs` gives it (005 data-model §9), or None: the banner and the Overview
-    headline describe it in words (FR-012)."""
+    """The open run (sdd-job.py `open_run`) as `/api/jobs` gives it, or None: the banner and the Overview
+    headline describe it in words (009 FR-022)."""
     try:
-        record = sdd_job.open_job(project)
+        record = sdd_job.open_run(project)
     except (OSError, ValueError):
         return None
     return job_view(project, record) if record else None
+
+
+def last_job_view(project):
+    """The newest run as `/api/jobs` gives it, or None: with no open run, the banner says how it ended
+    ("<title> ended: <n> tasks landed on <base>", 009 FR-022)."""
+    try:
+        records = sdd_job.list_jobs(project)
+    except (OSError, ValueError):
+        return None
+    return job_view(project, records[0]) if records else None
 
 
 ANSWER_MAX_CHARS = 4000

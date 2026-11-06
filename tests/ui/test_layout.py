@@ -15,7 +15,7 @@ _spec.loader.exec_module(harness)
 
 TIMEOUT_MS = 10000
 WIDTHS = (1700, 1024, 390)
-SECTIONS = ("overview", "docs", "tasks", "blocked", "decisions", "config", "jobs", "status")
+SECTIONS = ("overview", "docs", "tasks", "blocked", "decisions", "config", "runs", "status")
 
 # A log panel under the first task card, as a running task's live output looks (liveOutputHtml()), holding
 # a line that cannot wrap (an unbroken 2500px box stands in for whatever a real log holds). The log must

@@ -1,5 +1,5 @@
-"""Browser tests of the Start job panel in the Jobs view (005 FR-003, FR-011; it replaced 003's Start run
-panel, FR-034): it lists the runnable phases with their task counts, shows the reason when a Job cannot
+"""Browser tests of the Start run panel in the Runs view (009 FR-022; 005 FR-003, FR-011; it replaced 003's
+Start run panel, FR-034): it lists the runnable phases with their task counts, shows the reason when a run cannot
 start, asks for confirmation, and a confirmed click calls `POST /api/jobs/start` once.
 
 No Job starts. The dashboard runs in this test process (on an OS-chosen port, in a thread) so that
@@ -45,7 +45,7 @@ TASKS = ("# Tasks\n\n## Phase 1: Setup\n\n"
 PHASES = {"1": 2, "2": 1}
 HELD = 1
 NOT_GIT_REASON = "the project is not a git repository"
-CONFIRM_START = "Start the job"
+CONFIRM_START = "Start the run"
 
 
 def build_toy(root, git):
@@ -137,14 +137,14 @@ class StartJobTestCase(unittest.TestCase):
         self.launcher.reset()
 
     @contextlib.contextmanager
-    def open_jobs(self, element, hash_="#jobs"):
-        """The dashboard at `#jobs`; returns once `element` in the Start job panel is visible. Every
+    def open_jobs(self, element, hash_="#runs"):
+        """The dashboard at `#runs`; returns once `element` in the Start run panel is visible. Every
         `POST /api/jobs/start` the page sends is in `ui.start_posts`."""
         with harness.browser_page(self.url + hash_, name=self.id()) as ui:
             ui.start_posts = []
             ui.page.on("request", lambda r: ui.start_posts.append(r.post_data_json)
                        if r.method == "POST" and r.url.endswith("/api/jobs/start") else None)
-            ui.page.locator("#section-jobs").wait_for(state="visible", timeout=TIMEOUT_MS)
+            ui.page.locator("#section-runs").wait_for(state="visible", timeout=TIMEOUT_MS)
             ui.page.locator("#start-job-body " + element).first.wait_for(state="visible", timeout=TIMEOUT_MS)
             yield ui
             ui.page.wait_for_load_state("networkidle")
@@ -173,10 +173,12 @@ class CanStartTest(StartJobTestCase):
             self.assertTrue(ui.page.locator("#start-job-btn").is_enabled())
         self.assertEqual(self.launcher.calls, [])  # opening the panel starts nothing
 
-    def test_runs_hash_redirects_to_jobs(self):
-        with self.open_jobs("#start-job-btn", hash_="#runs") as ui:
-            self.assertTrue(ui.page.url.endswith("#jobs"), ui.page.url)
-            self.assertEqual(ui.page.locator("#page-title").inner_text().strip(), "Jobs")
+    def test_jobs_hash_redirects_to_runs(self):
+        """009 FR-022: the view is Runs (`#runs`); the old `#jobs` redirects to it."""
+        with self.open_jobs("#start-job-btn", hash_="#jobs") as ui:
+            self.assertTrue(ui.page.url.endswith("#runs"), ui.page.url)
+            self.assertEqual(ui.page.locator("#page-title").inner_text().strip(), "Runs")
+            self.assertEqual(ui.page.locator("#start-job-btn").inner_text().strip(), "Start run")
 
     def test_dismissed_confirmation_starts_nothing(self):
         with self.open_jobs("#start-job-btn") as ui:
@@ -213,7 +215,7 @@ class CanStartTest(StartJobTestCase):
             self.assertEqual(len(asked), 1, "Start job did not ask for confirmation")
             self.assertEqual(asked[0][0], "confirm")
             self.assertIn(CONFIRM_START + ' "Phase 1" (2 tasks)', asked[0][1])
-            ui.page.locator("#toasts .toast", has_text="Job started").wait_for(state="visible", timeout=TIMEOUT_MS)
+            ui.page.locator("#toasts .toast", has_text="Run started").wait_for(state="visible", timeout=TIMEOUT_MS)
             ui.page.wait_for_timeout(500)  # a second POST, had one been sent, would have landed by now
             self.assertEqual(ui.start_posts, [{"phases": ["1"], "max_tasks": 3}])
         self.assertEqual(self.launcher.calls, [{"project": self.project, "feature": self.feature,

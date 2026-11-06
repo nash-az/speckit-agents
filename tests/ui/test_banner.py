@@ -1,7 +1,7 @@
 """Browser tests of the run banner (FR-029, data-model.md §12.4): which buttons show for each
-supervisor state, and what a click writes to `control.json`. With an open Job (005 FR-012, T019) the
-banner uses the words of 005 data-model.md §9, never a run id, and while the Job is paused it has the
-usage checkbox (research R11), whose flips write hold and release.
+supervisor state, and what a click writes to `control.json`. With a run record (009 FR-022, T009) the
+banner speaks of the run in words, never its id, offers the buttons of its shown state, and while the run
+is paused it has the usage checkbox (research R11), whose flips write hold and release.
 
 No real supervisor runs. `FakeSupervisor` writes the `status.json` that `bin/sdd-supervise.py`
 would write (its `pid` is this test process, so `supervisor_alive()` sees a live one) into the
@@ -338,36 +338,46 @@ class NoSupervisorBannerTest(BannerTestCase):
 
 
 class NoJobBannerTest(BannerTestCase):
-    """No open Job and nothing running (005 FR-012): the banner says so and offers Start job."""
+    """No run record and nothing running (009 FR-022): the banner says so and offers Start run."""
 
-    def test_no_job_running_offers_start_job(self):
+    def test_no_run_going_offers_start_run(self):
         with self.open_page() as ui:
             text = ui.page.locator("#run-banner .run-banner-text")
-            self.assertEqual(text.inner_text().strip(), "No job running")
-            start = ui.page.locator("#run-banner button[data-go='jobs']", has_text="Start job")
+            self.assertEqual(text.inner_text().strip(), "No run going")
+            start = ui.page.locator("#run-banner button[data-go='runs']", has_text="Start run")
             self.assertEqual(start.count(), 1)
             start.click()
-            ui.page.locator("#section-jobs").wait_for(state="visible", timeout=TIMEOUT_MS)
+            ui.page.locator("#section-runs").wait_for(state="visible", timeout=TIMEOUT_MS)
 
 
 JOB_ID = "20261031-1012"
-JOB_TITLE = "Toy job"
+JOB_TITLE = "Toy run"
 
 
 class JobBannerTestCase(PausedBannerTestCase):
-    """An open Job in the toy's `.sdd/jobs/` (005 data-model §1): the banner speaks of it (FR-012)."""
+    """A run record in the toy's `.sdd/jobs/` (009 plan "Run record"): the banner speaks of it (FR-022).
+    `RECORD` adds or replaces record fields; `RUN_JSON` (a journal, or None) writes this run's own
+    `.sdd/run.json` with a workflow dir holding that journal."""
 
     STATE = "working"
+    RECORD = {}
+    RUN_JSON = None
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        sdd_job.save(cls.dashboard.project, {
+        project = cls.dashboard.project
+        sdd_job.save(project, {
             "id": JOB_ID, "title": JOB_TITLE, "feature": "001-only", "scope": {"tasks": ["T001", "T006", "T012"]},
             "scope_tasks": ["T001", "T006", "T012"], "blocked_at_start": 0,
             "limits": {"max_tasks": None, "until": None, "max_runs": 20}, "branch": "auto/" + JOB_ID,
             "base": {"branch": "main", "commit": "abc1234"}, "state": cls.STATE, "reason": None,
-            "runs": [JOB_ID], "no_progress_runs": 0, "created": 1, "ended": None, "merge_commit": None})
+            "runs": [JOB_ID], "no_progress_runs": 0, "created": 1, "ended": None, "merge_commit": None,
+            **cls.RECORD})
+        if cls.RUN_JSON is not None:
+            wf = harness.fixtures.write_workflow_dir(Path(cls._tmp.name) / "transcripts" / "wf_banner", cls.RUN_JSON)
+            (Path(project) / ".sdd" / "run.json").write_text(
+                json.dumps({"job": JOB_ID, "branch": "auto/" + JOB_ID, "workflow_dir": str(wf)}), encoding="utf-8")
 
     def banner_text(self, ui):
         return ui.page.locator("#run-banner .run-banner-text").inner_text().strip()
@@ -387,10 +397,11 @@ class WorkingJobBannerTest(JobBannerTestCase):
             ui.page.locator("#ov-progress .ov-run", has_text="Working on " + JOB_TITLE).wait_for(timeout=TIMEOUT_MS)
             self.assert_no_run_id(ui)
 
-    def test_interrupted_job_offers_continue(self):
-        with self.open_page() as ui:  # stored `working`, no supervisor: shown `interrupted`
-            self.assertEqual(self.banner_text(ui), "Stopped unexpectedly: Continue to resume")
-            self.assertEqual(ui.page.locator("#run-banner button[data-job-action='continue']").count(), 1)
+    def test_working_without_a_supervisor_or_run_json_offers_land(self):
+        with self.open_page() as ui:  # stored `working`, no supervisor, no run.json: ended, landing pending
+            self.assertEqual(self.banner_text(ui), JOB_TITLE + " ended: 1 task not landed on main yet")
+            self.assertEqual(ui.page.locator("#run-banner button[data-job-action]").count(), 1)
+            self.assertEqual(ui.page.locator("#run-banner button[data-job-action='land']").count(), 1)
             self.assertEqual(ui.page.locator("#run-banner button[data-control]").count(), 0)
             self.assert_no_run_id(ui)
 
@@ -459,13 +470,49 @@ class PausedJobBannerTest(JobBannerTestCase):
             self.assert_no_run_id(ui)
 
 
-class HeldJobBannerTest(JobBannerTestCase):
-    STATE = "held"
+class SuspendedJobBannerTest(JobBannerTestCase):
+    """009 FR-022: a suspended run (its own run.json, no supervisor) names the task it was on and offers
+    Continue and Drop."""
 
-    def test_held_job_says_continue_to_resume(self):
+    STATE = "suspended"
+    RECORD = {"reason": "stopped by you"}
+    RUN_JSON = [{"type": "launched"},
+                {"type": "started", "key": "v2:01", "agentId": "a01", "label": "impl:T012", "phase": "Build"}]
+
+    def test_suspended_run_says_the_task_and_offers_continue_and_drop(self):
         with self.open_page() as ui:
-            self.assertEqual(self.banner_text(ui), "Held after the usage reset: Continue to resume")
-            self.assertEqual(ui.page.locator("#run-banner button[data-job-action='continue']").count(), 1)
+            ui.page.locator("#run-banner button[data-job-action='drop']").wait_for(timeout=TIMEOUT_MS)
+            self.assertEqual(self.banner_text(ui), "Suspended during T012: stopped by you. Continue or Drop")
+            actions = ui.page.locator("#run-banner button[data-job-action]")
+            self.assertEqual([actions.nth(i).get_attribute("data-job-action") for i in range(actions.count())],
+                             ["continue", "drop"])
+            self.assert_no_run_id(ui)
+
+
+class EndedJobBannerTest(JobBannerTestCase):
+    """009 FR-022: after a clean end the banner says how many tasks landed, and offers Start run."""
+
+    STATE = "ended"
+    RECORD = {"outcome": "done", "landing": {"state": "landed", "commit": "1234567890", "files": []}}
+
+    def test_ended_run_says_what_landed(self):
+        with self.open_page() as ui:
+            self.assertEqual(self.banner_text(ui), JOB_TITLE + " ended: 1 task landed on main")
+            self.assertEqual(ui.page.locator("#run-banner button[data-job-action]").count(), 0)
+            self.assertEqual(ui.page.locator("#run-banner button[data-go='runs']", has_text="Start run").count(), 1)
+            self.assert_no_run_id(ui)
+
+
+class NeedsMergeJobBannerTest(JobBannerTestCase):
+    STATE = "ended"
+    RECORD = {"outcome": "done", "landing": {"state": "needs-merge", "commit": None, "files": ["src/a.py"]}}
+
+    def test_needs_merge_names_the_files_and_offers_merge(self):
+        with self.open_page() as ui:
+            self.assertEqual(self.banner_text(ui), JOB_TITLE + " ended: needs merge (conflicts in src/a.py)")
+            actions = ui.page.locator("#run-banner button[data-job-action]")
+            self.assertEqual(actions.count(), 1)
+            self.assertEqual(actions.first.get_attribute("data-job-action"), "merge")
             self.assert_no_run_id(ui)
 
 

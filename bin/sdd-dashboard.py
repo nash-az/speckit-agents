@@ -44,14 +44,16 @@ Endpoints:
     GET /api/doc/state?name=      -- spec | constitution: its hash, whether it has uncommitted edits, why editing is off
     POST /api/doc/save            -- { "name", "text", "base" } replace spec.md or the constitution (sdd-edit.py, FR-035)
     POST /api/doc/commit          -- { "name", "message" } commit just that file
-    GET /api/jobs                 -- {"jobs": [record + shown + progress, ...]}, open first, then newest (005)
-    GET /api/jobs/<id>            -- one Job plus its runs as /api/runs gives them (404 for a bad or unknown id)
-    GET /api/jobs/plan            -- Start job preview: {phases, runnable, held, can_start, reason}
+    GET /api/jobs                 -- {"jobs": [record + shown + progress + in_flight + tasks_done, ...]},
+                                     open runs first, then newest (009; the route keeps 005's name)
+    GET /api/jobs/<id>            -- one run plus its sessions as /api/runs gives them (404 for a bad or unknown id)
+    GET /api/jobs/plan            -- Start run preview: {phases, runnable, held, can_start, reason}
     POST /api/jobs/start          -- { "phases"?, "tasks"?, "max_tasks"?, "until"?, "max_runs"?, "title"? }
-                                     start a Job (sdd-launch.py launch_job)
-    POST /api/jobs/<id>/continue  -- { "max_tasks"?, "until"?, "max_runs"? } (number or null) continue a Job
-    POST /api/jobs/<id>/merge     -- {} merge the Job's branch into its base (sdd-job.py merge)
-    POST /api/jobs/<id>/drop      -- {} drop the Job, keeping its branch (sdd-job.py drop)
+                                     start a run (sdd-launch.py launch_job)
+    POST /api/jobs/<id>/continue  -- { "max_tasks"?, "until"?, "max_runs"? } (number or null) continue a suspended run
+    POST /api/jobs/<id>/merge     -- {} merge a 005 Job's branch into its base (sdd-job.py merge)
+    POST /api/jobs/<id>/land      -- {} land an ended run on its base (sdd-job.py land; Merge and Land in the page)
+    POST /api/jobs/<id>/drop      -- {} drop a suspended run (sdd-job.py drop_suspended), else a 005 Job (drop)
 Every POST needs an allowed Origin and `Content-Type: application/json` (data-model.md §4.9).
 The control routes write one request to `control.json`, and the answer route one file per answer in
 `answers/` of the supervisor's state directory, both outside the project. Applying an answer calls
@@ -121,6 +123,7 @@ list_job_views = sdd_views.list_job_views
 get_job = sdd_views.get_job
 job_plan = sdd_views.job_plan
 open_job_view = sdd_views.open_job_view
+last_job_view = sdd_views.last_job_view
 get_events = sdd_views.get_events
 get_report = sdd_views.get_report
 ANSWER_MAX_CHARS = sdd_views.ANSWER_MAX_CHARS
@@ -207,7 +210,9 @@ def run_state(project, now=None):
     if state == "stopping":
         result["stopping"] = True
     job = open_job_view(project)
-    if job is not None:  # only with an open Job, so the 003 shape stays as it was without one
+    if job is None and result.get("state") == "none":
+        job = last_job_view(project)  # nothing going: the banner says how the newest run ended (009 FR-022)
+    if job is not None:  # only with a run record, so the 003 shape stays as it was without one
         result["job"] = job
     return result
 
@@ -264,7 +269,7 @@ CONTROL_ROUTES = {"/api/run/stop": "stop", "/api/run/resume": "resume",
                   "/api/run/hold": "hold", "/api/run/release": "release"}
 
 # `POST /api/jobs/<id>/<action>` (005 contracts/jobs-api.md).
-JOB_ACTION_RE = re.compile(r"^/api/jobs/([^/]+)/(continue|merge|drop)$")
+JOB_ACTION_RE = re.compile(r"^/api/jobs/([^/]+)/(continue|merge|land|drop)$")
 
 
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
@@ -488,10 +493,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self._send_json({"ok": True, "job": result["job"]}, 202, cors)
 
     def _job_action(self, job_id, action):
-        """`POST /api/jobs/<id>/continue|merge|drop` (005 contracts/jobs-api.md), after the §4.9 checks: 404 for an
-        id not in the run id form or unknown, 400 for a bad body, 409 when refused (the reason in `error`;
-        nothing changed). Continue answers `202 {"ok": true}`, Merge `200 {"ok": true, "commit"}`, Drop
-        `200 {"ok": true}`."""
+        """`POST /api/jobs/<id>/continue|merge|land|drop` (005 contracts/jobs-api.md, 009 plan "Engine changes"
+        6), after the §4.9 checks: 404 for an id not in the run id form or unknown, 400 for a bad body, 409 when
+        refused (the reason in `error`; nothing changed, except the `needs-merge` landing a conflict stores).
+        Continue answers `202 {"ok": true}`, Merge `200 {"ok": true, "commit"}`, Land `200 {"ok": true,
+        "landed", "commit", "fast_forward", "landing"}`, Drop `200 {"ok": true}` (plus `tasks` and `stash`
+        for a suspended run, which `drop_suspended` drops)."""
         cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
         proj = DashboardHandler.project
         if not RUN_ID_RE.match(job_id) or sdd_job.load(proj, job_id) is None:
@@ -514,11 +521,21 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_json({"ok": True}, 202, cors)
             return
         try:
-            result = sdd_job.merge(proj, job_id) if action == "merge" else sdd_job.drop(proj, job_id)
+            if action == "merge":
+                result = sdd_job.merge(proj, job_id)
+                answer = {"ok": True, "commit": result["commit"]}
+            elif action == "land":
+                result = sdd_job.land(proj, job_id)
+                answer = {"ok": True, **{k: result.get(k) for k in ("landed", "commit", "fast_forward", "landing")}}
+            elif sdd_job.shown_state(proj, sdd_job.load(proj, job_id) or {})["state"] == "suspended":
+                result = sdd_job.drop_suspended(proj, job_id)
+                answer = {"ok": True, "tasks": result.get("tasks"), "stash": result.get("stash")}
+            else:
+                sdd_job.drop(proj, job_id)
+                answer = {"ok": True}
         except sdd_job.Refused as e:
             self._send_json({"error": str(e)}, 409, cors)
             return
-        answer = {"ok": True, "commit": result["commit"]} if action == "merge" else {"ok": True}
         self._send_json(answer, 200, cors)
 
     def _doc_edit(self, action):
@@ -1186,15 +1203,15 @@ def build_html():
   .start-task { display: block; margin: 0.2rem 0; font-size: 0.85rem; }
   .start-limits { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
 
-  /* Jobs view (005 FR-011) */
+  /* Runs view (009 FR-021; 005 FR-011) */
   .job-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.875rem 1rem; margin-bottom: 0.75rem; }
   .job-card.open-job { border-color: var(--accent); }
   .job-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; cursor: pointer; }
   .job-title { font-weight: 600; font-size: 0.9375rem; flex: 1; min-width: 10rem; }
   .job-state { font-size: 0.75rem; font-weight: 600; padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
-  .job-working, .job-paused { color: var(--st-running); } .job-waiting, .job-held { color: var(--st-held); }
-  .job-interrupted, .job-failed { color: var(--st-blocked); } .job-stopped { color: var(--st-retrying); }
-  .job-done, .job-merged { color: var(--st-done); } .job-dropped { color: var(--st-wontfix); }
+  .job-working, .job-paused { color: var(--st-running); } .job-waiting, .job-not-landed { color: var(--st-held); }
+  .job-suspended, .job-needs-merge, .job-failed { color: var(--st-blocked); } .job-stopped, .job-limit { color: var(--st-retrying); }
+  .job-done, .job-ended { color: var(--st-done); } .job-dropped { color: var(--st-wontfix); }
   .job-branch { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted); }
   .job-reason { font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.375rem; }
   .job-card .ov-bar { margin: 0.625rem 0 0.375rem; }
@@ -1261,7 +1278,7 @@ def build_html():
       <div class="nav-item" data-section="blocked"><span class="icon">🚫</span>Blocked</div>
       <div class="nav-item" data-section="decisions"><span class="icon">⚖️</span>Decisions</div>
       <div class="nav-item" data-section="config"><span class="icon">⚙️</span>Config</div>
-      <div class="nav-item" data-section="jobs"><span class="icon">🔄</span>Jobs</div>
+      <div class="nav-item" data-section="runs"><span class="icon">🔄</span>Runs</div>
       <div class="nav-item" data-section="status"><span class="icon">⚡</span>Status</div>
     </div>
   </div>
@@ -1350,13 +1367,13 @@ def build_html():
         </div>
       </section>
 
-      <!-- Jobs (005 FR-011): one card per Job, open first; runs without a Job under "Earlier runs" -->
-      <section id="section-jobs" class="section" style="display:none;">
+      <!-- Runs (009 FR-021; 005 FR-011): one card per run, open first; sessions without a run under "Earlier runs" -->
+      <section id="section-runs" class="section" style="display:none;">
         <div class="card" id="start-job-card">
-          <div class="card-title">Start job</div>
+          <div class="card-title">Start run</div>
           <div id="start-job-body"></div>
         </div>
-        <div class="section-title">Jobs</div>
+        <div class="section-title">Runs</div>
         <div id="jobs-list"></div>
         <div class="section-title" style="margin-top:1.25rem">Earlier runs</div>
         <div id="earlier-runs"></div>
@@ -1717,8 +1734,8 @@ def build_html():
     }
 
     // The newest run that touched the task, as a chip that opens that run; the title lists every run.
-    // A run that belonged to a Job names the Job instead ("done in job <title>") and opens that Job;
-    // the run is one click deeper, inside the Job's card (005 FR-013).
+    // A session that belonged to a run record names the run instead ("done in run <title>") and opens that
+    // run's card; the session is one click deeper, inside it (005 FR-013, 009 FR-022).
     function taskRunChipHtml(id) {
       var runs = taskRuns[id];
       if (!runs || !runs.length) return '';
@@ -1727,7 +1744,7 @@ def build_html():
       if (r.job) {
         var word = r.outcome === 'committed' ? 'done' : (OUTCOME_LABELS[r.outcome] || r.outcome);
         return '<span class="run-chip" data-open-job="' + escapeHtml(r.job) + '" title="' + escapeHtml(title) + '">' +
-          '<span class="run-outcome o-' + escapeHtml(r.outcome) + '">' + escapeHtml(word) + '</span> in job ' +
+          '<span class="run-outcome o-' + escapeHtml(r.outcome) + '">' + escapeHtml(word) + '</span> in run ' +
           escapeHtml(r.title || r.job) + (r.commits.length ? ' · <span class="mono">' + escapeHtml(r.commits[0]) + '</span>' : '') +
           (runs.length > 1 ? ' · +' + (runs.length - 1) + ' more' : '') + '</span>';
       }
@@ -2056,7 +2073,7 @@ def build_html():
         var note = document.getElementById('feature-runs-note');
         var differs = f.runs && f.active && f.runs !== f.active;
         note.textContent = differs ? 'runs use ' + f.runs : '';
-        note.title = differs ? 'You are looking at ' + f.active + '; /sdd-run and Start job use ' + f.runs + ' (.specify/feature.json).' : '';
+        note.title = differs ? 'You are looking at ' + f.active + '; /sdd-run and Start run use ' + f.runs + ' (.specify/feature.json).' : '';
         box.style.display = '';
       }).catch(function(e) { console.error('loadFeatureSelect error', e); });
     }
@@ -2089,7 +2106,7 @@ def build_html():
     function sectionFromHash() {
       var name = decodeURIComponent(location.hash.replace(/^#\\/?/, ''));
       if (name === 'docs') return lastDoc;
-      if (name === 'runs') { history.replaceState(null, '', '#jobs'); return 'jobs'; }  // the Runs view became Jobs (005 FR-011)
+      if (name === 'jobs') { history.replaceState(null, '', '#runs'); return 'runs'; }  // the Jobs view became Runs (009 FR-022)
       var known = DOC_GROUP.indexOf(name) >= 0 || (/^[a-z-]+$/.test(name) && document.querySelector('.nav-item[data-section="' + name + '"]'));
       return known ? name : 'overview';
     }
@@ -2120,7 +2137,7 @@ def build_html():
         if (name === 'tasks') loadTasks();
         if (name === 'blocked') loadBlocked();
         if (name === 'decisions') loadDecisions();
-        if (name === 'jobs') { loadJobs(); loadStartJob(); }
+        if (name === 'runs') { loadJobs(); loadStartJob(); }
         if (name === 'status') loadStatus();
         if (isDoc) loadDoc(name);
       } catch(e) { console.error('showSection error', e); }
@@ -2309,14 +2326,14 @@ def build_html():
     }
 
     function runPillHtml(run) {
-      // With an open Job the pill says what the banner says (005 FR-012); never a run id.
+      // With a run record the pill says what the banner says (009 FR-022); never a run id.
       if (run && run.job) {
         return '<span class="ov-run ' + escapeHtml(jobPillClass(run.job)) + '"><span class="dot"></span>' +
           escapeHtml(jobBannerText(run.job, bannerActivity, bannerKeep(run.job))) + '</span>';
       }
       var state = (run && run.state) || 'none';
-      // Words for the person, never the run id (that lives in the Jobs view).
-      var label = { running: 'Working', paused: 'Paused', stale: 'Stopped unexpectedly', none: 'No job running' }[state] || 'No job running';
+      // Words for the person, never the run id (that lives in the Runs view).
+      var label = { running: 'Working', paused: 'Paused', stale: 'Stopped unexpectedly', none: 'No run going' }[state] || 'No run going';
       return '<span class="ov-run ' + escapeHtml(state) + '"><span class="dot"></span>' + escapeHtml(label) + '</span>';
     }
 
@@ -2440,7 +2457,7 @@ def build_html():
         return '<div class="ov-row" data-run="' + escapeHtml(r.id) + '"><span class="id">#' + escapeHtml(r.id) + '</span>' +
           '<span class="txt">' + r.approved + ' approved · ' + r.blocked + ' blocked' + (r.interrupted ? ' · ' + r.interrupted + ' interrupted' : '') + '</span>' +
           '<span class="meta">' + state + '</span></div>';
-      }).join('') + (runs.length > 5 ? '<div class="ov-more" data-go="jobs">' + (runs.length - 5) + ' older in Jobs</div>' : '');
+      }).join('') + (runs.length > 5 ? '<div class="ov-more" data-go="runs">' + (runs.length - 5) + ' older in Runs</div>' : '');
     }
 
     // The tasks with the selected run's transient states merged in (as the Tasks view shows them).
@@ -2663,34 +2680,68 @@ def build_html():
       }).catch(function(e) { console.error('loadDecisions error', e); });
     }
 
-    // Jobs view (005 FR-011, data-model.md §9). The helpers from here to "End of the Jobs view helpers" read
+    // Runs view (009 FR-021, FR-022). A run's record keeps 005's internal names (`job`, /api/jobs), but
+    // every word the person reads says "run". The helpers from here to "End of the Runs view helpers" read
     // nothing but their arguments, so tests/test_sdd_dashboard.py runs them in node.
-    var JOB_STATE_WORDS = { working: 'Working', paused: 'Paused: usage limit', held: 'Held after the usage reset',
-      waiting: 'Waiting on you', interrupted: 'Stopped unexpectedly', stopped: 'Stopped', failed: 'Failed',
-      done: 'Done', merged: 'Merged', dropped: 'Dropped' };
+    var JOB_STATE_WORDS = { working: 'Working', paused: 'Paused: usage limit', suspended: 'Suspended', ended: 'Ended' };
+    // How an ended run ended (009 FR-002).
+    var JOB_OUTCOME_WORDS = { done: 'Done', stopped: 'Stopped', limit: 'Limit reached', waiting: 'Waiting on you',
+      failed: 'Failed', dropped: 'Dropped' };
     var JOB_LIMIT_NAMES = ['max_tasks', 'until', 'max_runs'];
-    var JOB_CLOSED = ['merged', 'dropped'];
+    var JOB_OPEN_LANDINGS = ['needs-merge', 'pending'];
 
     function hhmm(epoch) {
       var d = new Date(epoch * 1000);
       return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
     }
 
-    // The shown state (sdd-job.py display_state): `paused` and `interrupted` come from the supervisor.
+    // The shown state (sdd-job.py shown_state): working, paused, suspended or ended.
     function jobShown(job) { return (job && job.shown && job.shown.state) || (job && job.state) || 'unknown'; }
+
+    // An ended run's landing ({state, commit, files}) or {} (sdd-job.py shown_state).
+    function jobLanding(job) { return (job && job.shown && job.shown.landing) || {}; }
+
+    // The reason in words: the shown one (sdd-job.py shown_state may give one of its own), else the record's.
+    function jobReason(job) { return (job && job.shown && job.shown.reason) || (job && job.reason) || null; }
+
+    // A run blocks a new one while working, paused or suspended, or ended with its landing still to do
+    // (sdd-job.py is_open).
+    function jobIsOpen(job) {
+      var s = jobShown(job);
+      return ['working', 'paused', 'suspended'].indexOf(s) >= 0 ||
+        (s === 'ended' && JOB_OPEN_LANDINGS.indexOf(jobLanding(job).state) >= 0);
+    }
+
+    // The CSS state class of the card's state chip (.job-<key>).
+    function jobStateKey(job) {
+      var s = jobShown(job), landing = jobLanding(job).state;
+      if (s !== 'ended') return s;
+      if (landing === 'needs-merge') return 'needs-merge';
+      if (landing === 'pending') return 'not-landed';
+      return JOB_OUTCOME_WORDS[job.shown.outcome] ? job.shown.outcome : 'ended';
+    }
 
     function jobStateText(job) {
       var s = jobShown(job);
       if (s === 'paused' && job.shown.resets_at) return 'Paused until ' + hhmm(job.shown.resets_at) + ': usage limit';
+      if (s === 'ended') {
+        var landing = jobLanding(job).state, how = JOB_OUTCOME_WORDS[job.shown.outcome] || 'Ended';
+        if (landing === 'needs-merge') return 'Needs merge';
+        if (landing === 'pending') return how + ', not landed';
+        return how;
+      }
       return JOB_STATE_WORDS[s] || s;
     }
 
-    // The banner and Overview headline for the open Job (005 FR-012, data-model.md §9), never a run id.
-    // `activity` is what the agents are doing ({id, step, since}) or null; `keepPaused` overrides
-    // shown.keep_paused while a flip of the usage checkbox waits for the supervisor; `now` is in ms.
+    function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+
+    // The banner and Overview headline for the run (009 FR-022), never a run id. `activity` is what the
+    // agents are doing ({id, step, since}) or null; `keepPaused` overrides shown.keep_paused while a flip of
+    // the usage checkbox waits for the supervisor; `now` is in ms.
     function jobBannerText(job, activity, keepPaused, now) {
-      if (!job) return 'No job running';
-      var s = jobShown(job), title = job.title || 'the job', p = job.progress || {};
+      if (!job) return 'No run going';
+      var s = jobShown(job), title = job.title || 'the run', p = job.progress || {};
+      var base = (job.base && job.base.branch) || 'the base branch';
       if (s === 'working') {
         if (!activity) return 'Working on ' + title;
         var mins = Math.floor(((now || Date.now()) - Date.parse(activity.since)) / 60000);
@@ -2702,46 +2753,56 @@ def build_html():
         return 'Paused until ' + (job.shown.resets_at ? hhmm(job.shown.resets_at) : '?') + ': usage limit; ' +
           (keep ? 'stays paused' : 'continues by itself');
       }
-      if (s === 'held') return 'Held after the usage reset: Continue to resume';
-      if (s === 'waiting') {
-        var n = p.waiting_on_you || 0;
-        return 'Waiting on you: ' + n + ' item' + (n === 1 ? '' : 's');
+      if (s === 'suspended') {
+        var tasks = job.in_flight || [];
+        return 'Suspended during ' + (tasks.length ? tasks.join(', ') : 'its last task') + ': ' +
+          (jobReason(job) || 'the run was cut off') + '. Continue or Drop';
       }
-      if (s === 'interrupted') return 'Stopped unexpectedly: Continue to resume';
-      if (s === 'stopped' || s === 'done' || s === 'failed') {
-        var d = p.done || 0, base = (job.base && job.base.branch) || 'the base branch';
-        return title + ' ' + s + ': ' + d + ' task' + (d === 1 ? '' : 's') + ' done; Merge to bring them into ' + base + ', or Drop';
+      if (s === 'ended') {
+        var landing = jobLanding(job), n = typeof job.tasks_done === 'number' ? job.tasks_done : (p.done || 0);
+        if (landing.state === 'landed') return title + ' ended: ' + plural(n, 'task') + ' landed on ' + base;
+        if (landing.state === 'needs-merge') return title + ' ended: needs merge (conflicts in ' + ((landing.files || []).join(', ') || 'some files') + ')';
+        if (landing.state === 'pending') return title + ' ended: ' + plural(n, 'task') + ' not landed on ' + base + ' yet';
+        return title + ' ended: nothing landed';
       }
       return title + ' ' + s;
     }
 
-    // The usage checkbox's label while the Job is paused (research R11).
+    // The usage checkbox's label while the run is paused (research R11).
     function jobKeepLabel(job) {
       return 'Continue when the limit resets (' + (job && job.shown && job.shown.resets_at ? hhmm(job.shown.resets_at) : '?') + ')';
     }
 
-    // The Overview pill's dot class (.ov-run.<class>) for a Job's shown state.
+    // The Overview pill's dot class (.ov-run.<class>) for a run's shown state.
     function jobPillClass(job) {
-      var s = jobShown(job);
-      return s === 'working' ? 'running' : ['paused', 'held', 'waiting'].indexOf(s) >= 0 ? 'paused'
-        : s === 'interrupted' || s === 'failed' ? 'stale' : 'none';
+      var s = jobShown(job), landing = jobLanding(job).state;
+      if (s === 'working') return 'running';
+      if (s === 'paused' || landing === 'pending') return 'paused';
+      return s === 'suspended' || landing === 'needs-merge' ? 'stale' : 'none';
     }
 
-    // The limit a stopped Job was stopped by ("max_tasks 10 reached"), as sdd-launch.py reads it; else null.
+    // The limit named in a suspended run's reason ("max_tasks 10 reached"), as sdd-launch.py reads it; else null.
     function limitInReason(job) {
-      var reason = job && job.reason;
-      if (!job || job.state !== 'stopped' || typeof reason !== 'string' || !/ reached$/.test(reason)) return null;
+      var reason = jobReason(job);
+      if (!job || jobShown(job) !== 'suspended' || typeof reason !== 'string' || !/ reached$/.test(reason)) return null;
       var name = reason.split(' ')[0];
       return JOB_LIMIT_NAMES.indexOf(name) >= 0 ? name : null;
     }
 
-    // Which buttons a Job accepts in its shown state (data-model.md §2): {stop, continue, merge, drop}.
+    // Which buttons a run offers (009 plan "Engine changes" 6): Continue and Drop while suspended, Merge when
+    // its landing needs a merge, Land when its landing is still to do, nothing otherwise.
     function jobActions(job) {
-      var s = jobShown(job);
-      return { stop: s === 'working' || s === 'paused',
-               'continue': ['waiting', 'interrupted', 'held', 'stopped'].indexOf(s) >= 0,
-               merge: ['done', 'stopped', 'failed'].indexOf(s) >= 0,
-               drop: ['done', 'stopped', 'failed'].indexOf(s) >= 0 };
+      var s = jobShown(job), landing = jobLanding(job).state;
+      return { 'continue': s === 'suspended', drop: s === 'suspended',
+               merge: s === 'ended' && landing === 'needs-merge', land: s === 'ended' && landing === 'pending' };
+    }
+
+    // The offered buttons, in the order Continue, Drop, Merge, Land.
+    var JOB_BUTTONS = [['continue', 'Continue'], ['drop', 'Drop'], ['merge', 'Merge'], ['land', 'Land']];
+    function jobButtonsHtml(job) {
+      var a = jobActions(job);
+      return JOB_BUTTONS.filter(function(b) { return a[b[0]]; })
+        .map(function(b) { return jobButtonHtml(job, b[0], b[1], true); }).join('');
     }
 
     function jobButtonHtml(job, action, label, enabled, why) {
@@ -2749,7 +2810,22 @@ def build_html():
         (enabled ? '' : ' disabled title="' + escapeHtml(why) + '"') + '>' + label + '</button>';
     }
 
-    // Progress over the Job's scope (sdd-job.py progress): a bar of done, waiting on you and left, and the counts.
+    // What the landing says under the card: the files of a conflict, or why a land could not run.
+    function jobLandingHtml(job) {
+      var landing = jobLanding(job), base = (job.base && job.base.branch) || 'the base branch';
+      if (jobShown(job) !== 'ended') return '';
+      if (landing.state === 'needs-merge') {
+        return '<div class="job-reason job-landing">Needs merge: the merge into ' + escapeHtml(base) + ' conflicts in ' +
+          escapeHtml((landing.files || []).join(', ') || 'some files') + '. Resolve it, then press Merge.</div>';
+      }
+      if (landing.state === 'pending') {
+        return '<div class="job-reason job-landing">Not landed on ' + escapeHtml(base) + ' yet' +
+          (landing.reason ? ': ' + escapeHtml(landing.reason) : '') + '. Land brings its tasks in.</div>';
+      }
+      return '';
+    }
+
+    // Progress over the run's scope (sdd-job.py progress): a bar of done, waiting on you and left, and the counts.
     function jobProgressHtml(p) {
       if (!p) return '<div class="job-reason">Progress is not available: the tasks file cannot be read.</div>';
       var total = p.total || 0, pct = function(n) { return total ? (n * 100 / total) : 0; };
@@ -2761,26 +2837,21 @@ def build_html():
         '<span><b>' + p.waiting_on_you + '</b> waiting on you</span><span><b>' + p.left + '</b> left</span></div>';
     }
 
-    // One Job card: title, shown state in words, branch, the last reason, progress and the buttons.
+    // One run card: title, shown state in words, branch, the reason, the landing, progress and the buttons
+    // its state offers (none for a run that ended and landed).
     function jobCardHtml(job) {
-      var s = jobShown(job), a = jobActions(job);
-      var closed = JOB_CLOSED.indexOf(job.state) >= 0;
-      var buttons = closed ? '' : '<div class="job-actions">' +
-        jobButtonHtml(job, 'stop', 'Stop', a.stop, 'only a working job can be stopped') +
-        jobButtonHtml(job, 'continue', 'Continue', a['continue'], 'only a waiting, interrupted, held or stopped job can continue') +
-        jobButtonHtml(job, 'merge', 'Merge', a.merge, 'only a done, stopped or failed job can be merged') +
-        jobButtonHtml(job, 'drop', 'Drop', a.drop, 'only a done, stopped or failed job can be dropped') + '</div>';
+      var buttons = jobButtonsHtml(job), landing = jobLanding(job), reason = jobReason(job);
       var base = job.base && job.base.branch ? ' from ' + escapeHtml(job.base.branch) : '';
-      var merged = job.state === 'merged' && job.merge_commit ? ' · merged as <span class="mono">' + escapeHtml(String(job.merge_commit).slice(0, 7)) + '</span>' : '';
+      var landed = landing.state === 'landed' && landing.commit ? ' · landed as <span class="mono">' + escapeHtml(String(landing.commit).slice(0, 7)) + '</span>' : '';
       return '<div class="job-head" data-job-toggle="' + escapeHtml(job.id) + '">' +
         '<span class="job-title">' + escapeHtml(job.title || job.id) + '</span>' +
-        '<span class="job-state job-' + escapeHtml(s) + '">' + escapeHtml(jobStateText(job)) + '</span>' +
-        '<span class="job-branch">' + escapeHtml(job.branch || '') + base + merged + '</span></div>' +
-        (job.reason ? '<div class="job-reason">' + escapeHtml(job.reason) + '</div>' : '') +
-        jobProgressHtml(job.progress) + buttons;
+        '<span class="job-state job-' + escapeHtml(jobStateKey(job)) + '">' + escapeHtml(jobStateText(job)) + '</span>' +
+        '<span class="job-branch">' + escapeHtml(job.branch || '') + base + landed + '</span></div>' +
+        (reason ? '<div class="job-reason">' + escapeHtml(reason) + '</div>' : '') + jobLandingHtml(job) +
+        jobProgressHtml(job.progress) + (buttons ? '<div class="job-actions">' + buttons + '</div>' : '');
     }
 
-    // The runs of a Job, as GET /api/jobs/<id> picks them: `job` in workflows.json, or listed in the record.
+    // The sessions of a run, as GET /api/jobs/<id> picks them: `job` in workflows.json, or listed in the record.
     function jobRuns(job, runs) {
       var listed = (job.runs || []).map(String);
       return (runs || []).filter(function(r) { return r.job === job.id || listed.indexOf(r.id) >= 0; });
@@ -2873,16 +2944,16 @@ def build_html():
       return /^[0-9]+$/.test(t) && +t >= 1 ? { value: +t } : { error: 'give a whole number of 1 or more, or none' };
     }
 
-    // The question Continue asks for a Job stopped by a limit (FR-009).
+    // The question Continue asks for a suspended run cut off by a limit (FR-009).
     function limitPrompt(job, name) {
-      var what = { max_tasks: 'a new task cap (tasks done in the whole job)', until: 'a new stop-by time (HH:MM)',
-                   max_runs: 'a new maximum number of runs' }[name];
-      return job.title + ' stopped: ' + job.reason + '. Give ' + what + ', or none for no limit.';
+      var what = { max_tasks: 'a new task cap (tasks done in the whole run)', until: 'a new stop-by time (HH:MM)',
+                   max_runs: 'a new maximum number of sessions' }[name];
+      return job.title + ' stopped: ' + jobReason(job) + '. Give ' + what + ', or none for no limit.';
     }
 
-    // Start job (005 FR-003, FR-014): the scope (phases or tasks), the limits and a title.
+    // Start run (009 FR-022; 005 FR-003, FR-014): the scope (phases or tasks), the limits and a title.
     function startJobHtml(plan) {
-      if (!plan) return '<div class="empty"><div>Could not read the job plan.</div></div>';
+      if (!plan) return '<div class="empty"><div>Could not read the run plan.</div></div>';
       var head = '<div class="start-summary">' + plan.runnable + ' runnable, ' + plan.held + ' held.</div>';
       if (!plan.can_start) return head + '<div class="start-reason">Cannot start: ' + escapeHtml(plan.reason) + '</div>';
       var phases = (plan.phases || []).map(function(p) {
@@ -2906,7 +2977,7 @@ def build_html():
         '<label class="start-option">Stop by <input type="time" id="start-until"></label>' +
         '<label class="start-option">Max runs <input type="number" id="start-max-runs" min="1" max="500" placeholder="20" style="width:5rem"></label></div>' +
         '<label class="start-option">Title <input type="text" id="start-title" placeholder="the scope in words" style="width:16rem"></label>' +
-        '<div><button class="btn" id="start-job-btn">Start job</button></div>';
+        '<div><button class="btn" id="start-job-btn">Start run</button></div>';
     }
 
     // The POST /api/jobs/start body from the form's values ({scope, phases, tasks, max_tasks, until, max_runs,
@@ -2936,7 +3007,26 @@ def build_html():
       if (title) body.title = title;
       return { body: body, count: count, title: title || jobDefaultTitle(body) };
     }
-    // End of the Jobs view helpers.
+
+    // The question Drop asks before dropping a suspended run (009 FR-010).
+    function jobDropQuestion(job) {
+      var base = (job.base && job.base.branch) || 'the base branch';
+      return 'Drop ' + (job.title || 'this run') + '? The half-done work is stashed and saved in the task\\'s history; ' +
+        'finished tasks land on ' + base + '.';
+    }
+
+    // The toast after a card button: `r` is postJSON's answer ({ok, status, body}).
+    function jobDoneText(job, action, r) {
+      var base = (job.base && job.base.branch) || 'the base branch', b = (r && r.body) || {};
+      if (!r || !r.ok) return 'Could not ' + action + ' the run: ' + (b.error || 'request failed (' + (r ? r.status : '?') + ')');
+      var sha = b.commit ? ' (' + String(b.commit).slice(0, 7) + ')' : '';
+      if (action === 'continue') return 'Run continues';
+      if (action === 'merge') return 'Merged into ' + base + sha;
+      if (action === 'land') return b.landing && b.landing.state === 'nothing' ? 'Nothing to land on ' + base : 'Landed on ' + base + sha;
+      if (action === 'drop') return 'Run dropped' + (b.stash ? '; the half-done work is in the stash' : '');
+      return 'Done';
+    }
+    // End of the Runs view helpers.
 
     function loadStartJob() {
       var el = document.getElementById('start-job-body');
@@ -2950,7 +3040,7 @@ def build_html():
       });
     }
 
-    // The Start job tick boxes: a phase box is ticked when all its tasks are, empty when none, mixed otherwise.
+    // The Start run tick boxes: a phase box is ticked when all its tasks are, empty when none, mixed otherwise.
     function syncStartBoxes() {
       var el = document.getElementById('start-job-body');
       if (!el) return;
@@ -3006,14 +3096,15 @@ def build_html():
         title: document.getElementById('start-title').value
       }, Date.now());
       if (made.error) { toast('Cannot start: ' + made.error); return; }
-      if (!window.confirm('Start the job "' + made.title + '" (' + made.count + ' task' + (made.count === 1 ? '' : 's') + ')? ' +
-          'It runs unattended until its scope is done, waits on you, or reaches a limit; it makes commits on its own auto/ branch and uses your usage.')) return;
+      if (!window.confirm('Start the run "' + made.title + '" (' + made.count + ' task' + (made.count === 1 ? '' : 's') + ')? ' +
+          'It runs unattended until its scope is done, waits on you, or reaches a limit; it makes commits on its own auto/ branch, ' +
+          'lands them on the base branch when it ends, and uses your usage.')) return;
       postJSON('/api/jobs/start', made.body).then(function(r) {
-        toast(r.ok ? 'Job started: ' + made.title : 'Could not start: ' + (r.body.error || 'unknown error'));
+        toast(r.ok ? 'Run started: ' + made.title : 'Could not start: ' + (r.body.error || 'unknown error'));
         el._key = null;
         if (r.ok) expandedJob = r.body.job || null;
         loadStartJob(); loadJobs(); loadRunState();
-      }).catch(function(e) { console.error('startJob error', e); toast('Could not start the job'); });
+      }).catch(function(e) { console.error('startJob error', e); toast('Could not start the run'); });
     }
 
     // POST a JSON body; resolves to {ok, status, body} (a 409's reason is in body.error).
@@ -3024,12 +3115,13 @@ def build_html():
         });
     }
 
-    // The card buttons. Stop asks the supervisor to stop after the current task (/api/run/stop); Continue asks for a
-    // new value first when a limit stopped the Job; Drop asks for confirmation.
+    // The card buttons (009 plan "Engine changes" 6). Continue asks for a new value first when a limit cut the run
+    // off; Drop asks for confirmation; Merge and Land post at once (a conflict's files come back in the 409).
+    // Merge retries a landing that conflicted, so it posts to /land as Land does (sdd-job.py land).
     function jobAction(id, action) {
       var job = jobsById[id];
       if (!job) return;
-      var url = '/api/jobs/' + encodeURIComponent(id) + '/' + action, body = {};
+      var url = '/api/jobs/' + encodeURIComponent(id) + '/' + (action === 'merge' ? 'land' : action), body = {};
       if (action === 'stop') {
         url = '/api/run/stop';
         body = { mode: 'after-task' };
@@ -3043,17 +3135,12 @@ def build_html():
           body[name] = got.value;
         }
       } else if (action === 'drop') {
-        var base = (job.base && job.base.branch) || 'its base branch';
-        if (!window.confirm('Drop the job "' + job.title + '"? The checkout goes back to ' + base +
-            '; nothing is merged, and the branch ' + job.branch + ' keeps its commits.')) return;
+        if (!window.confirm(jobDropQuestion(job))) return;
       }
-      var done = { stop: 'Stopping after the current task', 'continue': 'Job continues', merge: 'Merged into ' + ((job.base && job.base.branch) || 'the base branch'),
-                   drop: 'Job dropped' };
       postJSON(url, body).then(function(r) {
-        toast(r.ok ? done[action] + (action === 'merge' && r.body.commit ? ' (' + String(r.body.commit).slice(0, 7) + ')' : '')
-                   : 'Could not ' + action + ': ' + (r.body.error || 'request failed (' + r.status + ')'));
+        toast(action === 'stop' && r.ok ? 'Stopping after the current task' : jobDoneText(job, action, r));
         loadJobs(); loadStartJob(); loadRunState();
-      }).catch(function(e) { console.error('jobAction error', e); toast('Could not ' + action + ' the job'); });
+      }).catch(function(e) { console.error('jobAction error', e); toast('Could not ' + action + ' the run'); });
     }
 
     function applyDecision(task) {
@@ -3222,10 +3309,10 @@ def build_html():
         if (runDetailEl.parentNode) runDetailEl.parentNode.removeChild(runDetailEl);  // keep it (and its scroll) across the rebuild
         list.innerHTML = '';
         earlier.innerHTML = '';
-        if (!jobs.length) list.innerHTML = '<div class="ov-ok">No jobs yet. Start one above.</div>';
+        if (!jobs.length) list.innerHTML = '<div class="ov-ok">No runs yet. Start one above.</div>';
         jobs.forEach(function(job) {
           var card = document.createElement('div');
-          card.className = 'job-card' + (JOB_CLOSED.indexOf(job.state) < 0 ? ' open-job' : '');
+          card.className = 'job-card' + (jobIsOpen(job) ? ' open-job' : '');
           card.setAttribute('data-job', job.id);
           card.innerHTML = jobCardHtml(job) + jobLiveHtml(job, runs);
           if (expandedJob === job.id) {
@@ -3233,12 +3320,12 @@ def build_html():
             var here = !!job.feature && job.feature === activeFeature;
             var detail = document.createElement('div');
             detail.className = 'job-detail';
-            detail.innerHTML = '<div class="card-title">Tasks in this job</div>' +
-              (here ? '' : '<div class="live-output-empty">This job is for ' + escapeHtml(job.feature || 'an unknown feature') +
+            detail.innerHTML = '<div class="card-title">Tasks in this run</div>' +
+              (here ? '' : '<div class="live-output-empty">This run is for ' + escapeHtml(job.feature || 'an unknown feature') +
                 '; choose that feature in the header to open its tasks.</div>') +
               '<div class="run-tasks job-tasks">' + jobTasksHtml(jobTasks(mine), here, runTaskText) + '</div>' +
-              '<div class="card-title job-runs">Runs <span class="badge">' + mine.length + '</span></div>' +
-              (mine.length ? '' : '<div class="live-output-empty">No runs yet.</div>');
+              '<div class="card-title job-runs">Sessions <span class="badge">' + mine.length + '</span></div>' +
+              (mine.length ? '' : '<div class="live-output-empty">No sessions yet.</div>');
             mine.forEach(function(run) { detail.appendChild(runItemEl(run)); });
             card.appendChild(detail);
           }
@@ -3252,10 +3339,10 @@ def build_html():
       }).catch(function(e) { console.error('loadJobs error', e); });
     }
 
-    // The technical log of a running Job, right on its card: the transcript of the agent working on the running
+    // The technical log of a working run, right on its card: the transcript of the agent working on the running
     // task (implementer, verifier or commit), the same feed as Live output in Tasks. Filled by pollJobLive().
     function jobLiveHtml(job, runs) {
-      if (JOB_CLOSED.indexOf(job.state) >= 0) return '';
+      if (jobShown(job) === 'ended') return '';
       var mine = jobRuns(job, runs), run = mine.filter(function(x) { return !x.finished && !x.stopped; })[0];
       if (!run) return '';
       var task = jobTasks([run]).filter(function(t) { return t.outcome === 'running'; })[0];
@@ -3480,7 +3567,7 @@ def build_html():
       var reason = c.reason || null, buttons = [], text, attrs = '', box = '';
       var stopQuestion = 'Stop the run now? The current agent is stopped and its task is resumed from the journal on the next start.';
       if (s === 'working' && sup === 'stopping') {
-        text = 'Stopping after ' + (stoppingTask || 'the current task') + '…';
+        text = 'Stopping after ' + (stoppingTask || 'the current task');
         buttons.push(controlButton('Stop now', 'stop', 'now', !!c.stop, reason, stopQuestion));
       } else if (s === 'working') {
         attrs = ' data-job-activity';
@@ -3495,11 +3582,11 @@ def build_html():
           (can ? '' : ' disabled title="' + escapeHtml(reason || 'not available now') + '"') + '> ' +
           escapeHtml(jobKeepLabel(job)) + '</label>';
       } else {
+        // Suspended: Continue and Drop; ended: Merge or Land while its landing is to do, else Start run.
         text = jobBannerText(job);
-        var a = jobActions(job);
-        if (a['continue']) buttons.push(jobButtonHtml(job, 'continue', 'Continue', true));
-        if (a.merge) buttons.push(jobButtonHtml(job, 'merge', 'Merge', true));
-        if (a.drop) buttons.push(jobButtonHtml(job, 'drop', 'Drop', true));
+        var offered = jobButtonsHtml(job);
+        if (offered) buttons.push(offered);
+        else if (s === 'ended') buttons.push('<button type="button" class="btn" data-go="runs">Start run</button>');
       }
       var anyDisabled = buttons.some(function(b) { return b.indexOf(' disabled ') !== -1; });
       var html = '<span class="run-banner-text"' + attrs + '>' + escapeHtml(text) + '</span>' + box +
@@ -3541,10 +3628,10 @@ def build_html():
       bannerJob = null;
       keepWanted = null;
       if (state === 'none' && !hasRun) {
-        // No open Job and nothing running (005 FR-012): say so and offer Start job (in the Jobs view).
+        // No run record and nothing running (009 FR-022): say so and offer Start run (in the Runs view).
         lastBannerState = 'none';
         el.innerHTML = '<span class="run-banner-text">' + escapeHtml(jobBannerText(null)) + '</span>' +
-          '<span class="run-banner-actions"><button type="button" class="btn" data-go="jobs">Start job</button></span>';
+          '<span class="run-banner-actions"><button type="button" class="btn" data-go="runs">Start run</button></span>';
         el.style.display = '';
         stoppingTask = null;
         bannerActivity = null;
@@ -3562,7 +3649,7 @@ def build_html():
         buttons.push(controlButton('Stop now', 'stop', 'now', true, reason,
           'Stop the run now? The current agent is stopped and its task is resumed from the journal on the next start.'));
       } else if (state === 'stopping') {
-        text = 'Stopping after ' + escapeHtml(stoppingTask || 'the current task') + '…';
+        text = 'Stopping after ' + escapeHtml(stoppingTask || 'the current task');
         buttons.push(controlButton('Stop now', 'stop', 'now', !!c.stop, reason,
           'Stop the run now? The current agent is stopped and its task is resumed from the journal on the next start.'));
       } else if (state === 'held') {
@@ -3611,7 +3698,7 @@ def build_html():
         if (id !== stoppingTask) {
           stoppingTask = id;
           var el = document.querySelector('#run-banner .run-banner-text');
-          if (el) el.textContent = 'Stopping after ' + (id || 'the current task') + '…';
+          if (el) el.textContent = 'Stopping after ' + (id || 'the current task');
         }
       });
     }
@@ -3650,7 +3737,7 @@ def build_html():
       if (selectedSection === 'tasks') loadTasks();
       if (selectedSection === 'blocked') loadBlocked();
       if (selectedSection === 'decisions') loadDecisions();
-      if (selectedSection === 'jobs') { loadJobs(); loadEvents(); loadStartJob(); }
+      if (selectedSection === 'runs') { loadJobs(); loadEvents(); loadStartJob(); }
       if (selectedSection === 'status') loadStatus();
       try { document.getElementById('refresh-time').textContent = new Date().toLocaleTimeString(); } catch(e) {}
     }
@@ -3693,18 +3780,18 @@ def build_html():
         }
       });
 
-      // Overview rows: `data-go` opens a view, `data-run` opens that run in Jobs, inside its Job when it has one.
+      // Overview rows: `data-go` opens a view, `data-run` opens that session in Runs, inside its run when it has one.
       document.addEventListener('click', function(ev) {
         var row = ev.target.closest ? ev.target.closest('[data-go], [data-run]') : null;
         if (!row) return;
         if (row.hasAttribute('data-run')) {
           selectedRunId = row.getAttribute('data-run'); expandedRun = selectedRunId; reportRun = null; revealRun = selectedRunId;
         }
-        showSection(row.hasAttribute('data-run') ? 'jobs' : row.getAttribute('data-go'));
+        showSection(row.hasAttribute('data-run') ? 'runs' : row.getAttribute('data-go'));
         if (row.hasAttribute('data-run')) { loadEvents(); loadReport(); }
       });
 
-      // A task chip naming a Job (005 FR-013) opens that Job's card in Jobs; its runs are inside it.
+      // A task chip naming a run (005 FR-013) opens that run's card in Runs; its sessions are inside it.
       document.addEventListener('click', function(ev) {
         var ref = ev.target.closest ? ev.target.closest('a.doc-ref') : null;
         if (!ref || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button) return;
@@ -3717,7 +3804,7 @@ def build_html():
         if (!chip) return;
         expandedJob = chip.getAttribute('data-open-job');
         revealRun = null;
-        showSection('jobs');
+        showSection('runs');
       });
 
       document.querySelectorAll('button[data-raw]').forEach(function(btn) {
