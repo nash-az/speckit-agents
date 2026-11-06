@@ -180,6 +180,206 @@ class DisplayStateTest(unittest.TestCase):
         self.assertEqual(job.display_state(self.root, record("20261031-1012", state="held")), {"state": "held"})
 
 
+PENDING = {"state": "pending", "commit": None, "files": []}
+
+
+class RunStateTest(unittest.TestCase):
+    """009 plan "Data model": `owns_run_json`, `normalize`, `shown_state`, `is_open`, `open_run`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve() / "project"
+        (self.root / ".sdd").mkdir(parents=True)
+        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(self.tmp.name) / "state")})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def write_status(self, **fields):
+        (job.sdd_supervise.state_dir(self.root) / "status.json").write_text(json.dumps(fields))
+
+    def write_run_json(self, **fields):
+        (self.root / ".sdd" / "run.json").write_text(json.dumps(fields))
+
+    def own_run_json(self, job_id="20261031-1012"):
+        self.write_run_json(run_id="20261031-1013", job=job_id, branch=f"auto/{job_id}")
+
+    # owns_run_json
+
+    def test_owns_run_json_by_job_or_branch(self):
+        r = record("20261031-1012")
+        self.assertFalse(job.owns_run_json(self.root, r))
+        self.write_run_json(job="20261031-1012")
+        self.assertTrue(job.owns_run_json(self.root, r))
+        self.write_run_json(job="20261101-0900", branch="auto/20261031-1012")
+        self.assertTrue(job.owns_run_json(self.root, r))
+        self.write_run_json(job="20261101-0900", branch="auto/other")
+        self.assertFalse(job.owns_run_json(self.root, r))
+        self.write_run_json(job=None, branch=None)
+        self.assertFalse(job.owns_run_json(self.root, record("20261031-1012", branch=None)))
+        (self.root / ".sdd" / "run.json").write_text("{not json")
+        self.assertFalse(job.owns_run_json(self.root, r))
+        (self.root / ".sdd" / "run.json").write_text("[]")
+        self.assertFalse(job.owns_run_json(self.root, r))
+
+    # normalize: one test per table row, with and without a run.json of its own
+
+    def test_merged_is_ended_landed(self):
+        for own in (False, True):
+            if own:
+                self.own_run_json()
+            n = job.normalize(self.root, record("20261031-1012", state="merged", merge_commit="abc123"))
+            self.assertEqual((n["state"], n["outcome"]), ("ended", "done"), own)
+            self.assertEqual(n["landing"], {"state": "landed", "commit": "abc123", "files": []})
+            n = job.normalize(self.root, record("20261031-1012", state="merged", reason="max_tasks reached",
+                                                merge_commit="abc123"))
+            self.assertEqual(n["outcome"], "limit")
+
+    def test_dropped_is_ended_not_landed(self):
+        for own in (False, True):
+            if own:
+                self.own_run_json()
+            n = job.normalize(self.root, record("20261031-1012", state="dropped", reason="stopped by you"))
+            self.assertEqual((n["state"], n["outcome"]), ("ended", "dropped"), own)
+            self.assertEqual(n["landing"], {"state": "not-landed", "commit": None, "files": []})
+
+    def test_closed_005_states_with_their_run_json_are_suspended(self):
+        self.own_run_json()
+        for state in ("done", "stopped", "failed", "waiting", "held"):
+            n = job.normalize(self.root, record("20261031-1012", state=state, reason="kept paused at the reset"))
+            self.assertEqual(n["state"], "suspended", state)
+            self.assertEqual(n["reason"], "kept paused at the reset")
+            self.assertNotIn("outcome", n)
+            self.assertNotIn("landing", n)
+
+    def test_closed_005_states_without_their_run_json_are_ended_pending(self):
+        self.write_run_json(job="20261101-0900", branch="auto/20261101-0900")  # another run's
+        for state in ("done", "stopped", "failed", "waiting"):
+            n = job.normalize(self.root, record("20261031-1012", state=state))
+            self.assertEqual((n["state"], n["outcome"], n["landing"]), ("ended", state, PENDING), state)
+        n = job.normalize(self.root, record("20261031-1012", state="stopped", reason="until 18:00 reached"))
+        self.assertEqual(n["outcome"], "limit")
+
+    def test_held_without_its_run_json_is_ended_stopped(self):
+        n = job.normalize(self.root, record("20261031-1012", state="held"))
+        self.assertEqual((n["state"], n["outcome"], n["landing"]), ("ended", "stopped", PENDING))
+
+    def test_working_stays_working(self):
+        for own in (False, True):
+            if own:
+                self.own_run_json()
+            n = job.normalize(self.root, record("20261031-1012"))
+            self.assertEqual(n["state"], "working", own)
+            self.assertNotIn("landing", n)
+
+    def test_outcome_from_the_reason(self):
+        cases = [("max_runs reached", "limit"), ("only items that need you are left", "waiting"),
+                 ("no progress in two runs", "failed"), ("stopped by you", "stopped"),
+                 ("kept paused for 12 hours", "stopped"), ("something else", "done"), (None, "done")]
+        for reason, outcome in cases:
+            n = job.normalize(self.root, record("20261031-1012", state="done", reason=reason))
+            self.assertEqual(n["outcome"], outcome, reason)
+        n = job.normalize(self.root, record("20261031-1012", state="failed", reason="something else"))
+        self.assertEqual(n["outcome"], "failed")
+
+    def test_009_records_kept_and_unknown_states_read_as_working(self):
+        landed = {"state": "landed", "commit": "abc", "files": []}
+        r = record("20261031-1012", state="ended", outcome="done", landing=landed)
+        self.assertEqual(job.normalize(self.root, r), r)
+        n = job.normalize(self.root, record("20261031-1012", state="ended", outcome="done", landing="x"))
+        self.assertEqual(n["landing"], PENDING)
+        r = record("20261031-1012", state="suspended", reason="the run was cut off")
+        self.assertEqual(job.normalize(self.root, r), r)
+        self.assertEqual(job.normalize(self.root, record("20261031-1012", state="interrupted"))["state"], "working")
+        self.assertEqual(job.normalize(self.root, record("20261031-1012", state=None))["state"], "working")
+
+    def test_normalize_returns_a_copy_and_writes_nothing(self):
+        r = record("20261031-1012", state="merged", merge_commit="abc")
+        job.save(self.root, r)
+        before = (self.root / ".sdd" / "jobs" / "20261031-1012.json").read_text()
+        n = job.normalize(self.root, r)
+        n["base"]["branch"] = "changed"
+        self.assertEqual(r["state"], "merged")
+        self.assertEqual(r["base"]["branch"], "main")
+        self.assertEqual((self.root / ".sdd" / "jobs" / "20261031-1012.json").read_text(), before)
+
+    # shown_state
+
+    def test_shown_paused_with_a_live_supervisor_in_the_usage_wait(self):
+        self.write_status(state="waiting", pid=os.getpid(), resets_at=1793460000, keep_paused=True)
+        self.assertEqual(job.shown_state(self.root, record("20261031-1012")),
+                         {"state": "paused", "outcome": None, "reason": None, "landing": None,
+                          "resets_at": 1793460000, "keep_paused": True})
+        self.write_status(state="waiting", pid=os.getpid(), resets_at=1793460000)
+        self.assertIs(job.shown_state(self.root, record("20261031-1012"))["keep_paused"], False)
+
+    def test_shown_working_with_a_live_running_supervisor(self):
+        self.write_status(state="running", pid=os.getpid())
+        self.assertEqual(job.shown_state(self.root, record("20261031-1012")),
+                         {"state": "working", "outcome": None, "reason": None, "landing": None})
+
+    def test_shown_suspended_when_no_supervisor_and_its_run_json(self):
+        self.own_run_json()
+        self.write_status(state="waiting", pid=dead_pid(), resets_at=1793460000)
+        self.assertEqual(job.shown_state(self.root, record("20261031-1012")),
+                         {"state": "suspended", "outcome": None, "reason": "the run was cut off", "landing": None})
+        shown = job.shown_state(self.root, record("20261031-1012", reason="kept paused at the reset"))
+        self.assertEqual(shown["reason"], "kept paused at the reset")
+
+    def test_shown_ended_when_no_supervisor_and_no_run_json_of_its_own(self):
+        expected = {"state": "ended", "outcome": "stopped",
+                    "reason": "the supervisor ended without recording the run's end", "landing": PENDING}
+        self.assertEqual(job.shown_state(self.root, record("20261031-1012")), expected)
+        self.write_run_json(job="20261101-0900", branch="auto/20261101-0900")
+        self.write_status(state="running", pid=dead_pid())
+        self.assertEqual(job.shown_state(self.root, record("20261031-1012")), expected)
+
+    def test_shown_otherwise_the_normalized_state(self):
+        self.write_status(state="waiting", pid=os.getpid(), resets_at=1793460000)
+        self.assertEqual(job.shown_state(self.root, record("20261031-1012", state="merged", merge_commit="abc")),
+                         {"state": "ended", "outcome": "done", "reason": None,
+                          "landing": {"state": "landed", "commit": "abc", "files": []}})
+        self.assertEqual(job.shown_state(self.root, record("20261031-1012", state="suspended", reason="r")),
+                         {"state": "suspended", "outcome": None, "reason": "r", "landing": None})
+        self.assertEqual(job.shown_state(self.root, record("20261031-1012", state="waiting",
+                                                           reason="only items that need you are left")),
+                         {"state": "ended", "outcome": "waiting", "reason": "only items that need you are left",
+                          "landing": PENDING})
+
+    # is_open and open_run
+
+    def test_is_open_for_each_landing_state(self):
+        for state, opened in (("landed", False), ("nothing", False), ("not-landed", False),
+                              ("needs-merge", True), ("pending", True)):
+            r = record("20261031-1012", state="ended", outcome="done",
+                       landing={"state": state, "commit": None, "files": []})
+            self.assertIs(job.is_open(self.root, r), opened, state)
+
+    def test_is_open_for_working_paused_and_suspended(self):
+        self.assertTrue(job.is_open(self.root, record("20261031-1012", state="suspended")))
+        self.write_status(state="running", pid=os.getpid())
+        self.assertTrue(job.is_open(self.root, record("20261031-1012")))
+        self.write_status(state="waiting", pid=os.getpid(), resets_at=1793460000)
+        self.assertTrue(job.is_open(self.root, record("20261031-1012")))
+        self.assertFalse(job.is_open(self.root, record("20261031-1012", state="merged")))
+        self.assertFalse(job.is_open(self.root, record("20261031-1012", state="dropped")))
+
+    def test_open_run_chooses_the_newest_open_record(self):
+        self.assertIsNone(job.open_run(self.root))
+        landed = {"state": "landed", "commit": "abc", "files": []}
+        job.save(self.root, record("20261029-0900", state="ended", outcome="done", landing=landed))
+        job.save(self.root, record("20261030-0900", state="merged", merge_commit="abc"))
+        self.assertIsNone(job.open_run(self.root))
+        job.save(self.root, record("20261030-1000", state="suspended"))
+        job.save(self.root, record("20261031-0900", state="done"))  # 005, no run.json: ended, landing pending
+        job.save(self.root, record("20261101-0900", state="dropped"))
+        self.assertEqual(job.open_run(self.root)["id"], "20261031-0900")
+        job.save(self.root, record("20261031-0900", state="ended", outcome="done", landing=landed))
+        self.assertEqual(job.open_run(self.root)["id"], "20261030-1000")
+
+
 class ScopeArgsTest(unittest.TestCase):
     def test_each_form(self):
         self.assertEqual(job.scope_args(record("20261031-1012", scope={"phases": ["3", "5"]})), "--phases 3,5")

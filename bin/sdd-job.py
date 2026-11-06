@@ -8,6 +8,8 @@ At most one Job per project is open (state not `merged` or `dropped`); `open_job
 Functions so far: `load`, `save`, `list_jobs`, `open_job`, `new_id`, `default_title`, `display_state`,
 `scope_args`, `progress`, `limit_reached`, `merge`, `drop` (these two raise `Refused`, changing nothing),
 `after_settle` (continues a `waiting` Job after a settle; never raises).
+Spec 009 (the record is the run record, plan "Data model"): `owns_run_json`, `normalize`, `shown_state`,
+`is_open`, `open_run`.
 
     bin/sdd-job.py list [project]          -> [record + shown + progress, ...]
     bin/sdd-job.py show <id> [project]     -> record + shown + progress
@@ -18,6 +20,7 @@ A refusal prints `{"contract": "1.0", "error": "<reason>"}` and exits 1 (contrac
 """
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import os
@@ -199,6 +202,114 @@ def display_state(project, record: dict) -> dict:
         if not alive:
             return {"state": "interrupted"}
     return {"state": stored}
+
+
+# 009 run states (plan "Data model"): the record is the run record; 005 states are read through `normalize`.
+RUN_STATES = ("working", "suspended", "ended")
+OPEN_LANDINGS = ("needs-merge", "pending")
+CUT_OFF_REASON = "the run was cut off"
+NO_END_REASON = "the supervisor ended without recording the run's end"
+
+
+def _landing(state: str, commit: str | None = None) -> dict:
+    return {"state": state, "commit": commit, "files": []}
+
+
+def owns_run_json(project, record: dict) -> bool:
+    """This run's `.sdd/run.json`: it is readable and its `job` is the record's `id`, or the record has a
+    `branch` and run.json's `branch` equals it (plan "Run record")."""
+    try:
+        run = json.loads((Path(project) / ".sdd" / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(run, dict):
+        return False
+    if record.get("id") and run.get("job") == record.get("id"):
+        return True
+    return bool(record.get("branch")) and run.get("branch") == record.get("branch")
+
+
+def _outcome_from_reason(reason, default: str) -> str:
+    """A 005 record's outcome from its reason words, else `default`."""
+    if not isinstance(reason, str):
+        return default
+    if reason.endswith(" reached"):
+        return "limit"
+    if reason == "only items that need you are left":
+        return "waiting"
+    if reason.startswith("no progress"):
+        return "failed"
+    if reason == "stopped by you" or reason.startswith("kept paused"):
+        return "stopped"
+    return default
+
+
+def normalize(project, record: dict) -> dict:
+    """The record read as a 009 run record (plan "Run record" table), as a copy; nothing is written.
+    A record already `working`, `suspended` or `ended` is kept (an `ended` one without a dict `landing` gets
+    landing `pending`); 005 states are mapped by the table; any other state reads as `working`."""
+    out = copy.deepcopy(record)
+    stored = record.get("state")
+    if stored in RUN_STATES:
+        if stored == "ended" and not isinstance(out.get("landing"), dict):
+            out["landing"] = _landing("pending")
+        return out
+    if stored == "merged":
+        out.update(state="ended", outcome=_outcome_from_reason(record.get("reason"), "done"),
+                   landing=_landing("landed", record.get("merge_commit")))
+    elif stored == "dropped":
+        out.update(state="ended", outcome="dropped", landing=_landing("not-landed"))
+    elif stored in ("done", "stopped", "failed", "waiting", "held"):
+        if owns_run_json(project, record):
+            out["state"] = "suspended"
+        else:
+            default = "stopped" if stored == "held" else stored
+            out.update(state="ended", outcome=_outcome_from_reason(record.get("reason"), default),
+                       landing=_landing("pending"))
+    else:
+        out["state"] = "working"
+    return out
+
+
+def shown_state(project, record: dict) -> dict:
+    """The run's shown state (plan "Shown state"), first rule wins: `working` with a live supervisor in the
+    usage wait -> `paused` (plus `resets_at` and `keep_paused`); `working` with no live supervisor ->
+    `suspended` when this run's run.json exists, else `ended` (outcome `stopped`, landing `pending`);
+    otherwise the normalized state. Returns `{"state", "outcome", "reason", "landing"}`."""
+    run = normalize(project, record)
+    state, reason = run.get("state"), run.get("reason")
+    if state == "working":
+        status = _status(project)
+        if _pid_alive(status):
+            if status.get("state") == "waiting":
+                return {"state": "paused", "outcome": None, "reason": reason, "landing": None,
+                        "resets_at": status.get("resets_at"), "keep_paused": bool(status.get("keep_paused"))}
+        elif owns_run_json(project, record):
+            return {"state": "suspended", "outcome": None, "reason": reason or CUT_OFF_REASON, "landing": None}
+        else:
+            return {"state": "ended", "outcome": "stopped", "reason": NO_END_REASON,
+                    "landing": _landing("pending")}
+    if state == "ended":
+        return {"state": "ended", "outcome": run.get("outcome"), "reason": reason, "landing": run.get("landing")}
+    return {"state": state, "outcome": None, "reason": reason, "landing": None}
+
+
+def is_open(project, record: dict) -> bool:
+    """A run blocks a new one while shown `working`, `paused` or `suspended`, or `ended` with landing
+    `needs-merge` or `pending`."""
+    shown = shown_state(project, record)
+    if shown["state"] in ("working", "paused", "suspended"):
+        return True
+    landing = shown.get("landing")
+    return shown["state"] == "ended" and isinstance(landing, dict) and landing.get("state") in OPEN_LANDINGS
+
+
+def open_run(project) -> dict | None:
+    """The newest record that `is_open`, else None."""
+    for record in list_jobs(project):
+        if is_open(project, record):
+            return record
+    return None
 
 
 def scope_args(record: dict) -> str:
