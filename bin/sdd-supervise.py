@@ -195,6 +195,7 @@ class Cycle:
         # the run stops at the first task boundary from there (spec 009).
         self.stop_from: tuple[Path | None, int] | None = None
         self.boundary = False  # the run was stopped at a task boundary, or before any task (spec 009)
+        self.before_any_task = False  # that stop came before any agent started (research R5)
         self.run_id: str | None = None  # the run's id, read from .sdd/run.json while it is live (005 R5)
         self.until_sent = False  # the Job's stop-by time passed and the stop request was sent (005 §6)
         self.lock = threading.Lock()
@@ -375,6 +376,7 @@ class Cycle:
                 if started == 0:
                     self.stop_reason = "operator"
                     self.boundary = True
+                    self.before_any_task = True
                     say("stop requested before any task: stopping the run")
                     stop(proc)
                     break
@@ -649,8 +651,9 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
 
     Returns (how it ended, exit code, the run id seen in .sdd/run.json or None). How it ended:
     `finished`, `cut-off` (ended with .sdd/run.json still there), `operator` (only with --job: a stop after
-    the current task, the operator's or the run's stop-by time, stopped at a task boundary or before any
-    task; without --job an operator stop holds), `stop-now` (only with --job: an operator stop that did
+    the current task, the operator's or the run's stop-by time, stopped at a task boundary; without --job an
+    operator stop holds), `before-task` (only with --job: that stop came before any agent started, research
+    R5), `stop-now` (only with --job: an operator stop that did
     not wait for a task boundary: Stop now, or a usage pause reached first), `stop-wait` (only with --job:
     an operator stop during the usage wait), `held` (only with --job: kept paused at the usage reset),
     `held-too-long`, `no-reset`, `too-late` (never with --job: a run waits for any reset) or `max-cycles`."""
@@ -672,6 +675,8 @@ def run_cycles(args: argparse.Namespace, logs: Path, status: Path) -> tuple[str,
         if outcome == "operator":
             say(f"cycle {cycle_no}: stopped by the operator" + (" (the job's stop-by time)" if cycle.until_sent else ""))
             if args.job:
+                if cycle.before_any_task:
+                    return "before-task", 0, run_id
                 return ("operator" if cycle.boundary else "stop-now"), 0, run_id
             if not hold(args, logs, status, cycle_no, "stopped by operator"):
                 say("held longer than --max-hold-hours: stopping")
@@ -905,6 +910,15 @@ def run_job(args: argparse.Namespace, logs: Path, status: Path) -> int:
         elif not run_id:
             say("the run's id is unknown (no .sdd/run.json was seen)")
         sdd_job.save(project, record)
+        if outcome == "before-task":
+            # A stop before any agent started (research R5): nothing was done, so the session is closed and
+            # the run ends; landing finds no commit the base lacks.
+            until = (record.get("limits") or {}).get("until")
+            by_time = until is not None and time.time() >= until
+            close_session(sdd_job, project, job_id)
+            if by_time:
+                return end_run(sdd_job, project, status, job_id, "limit", limit_reason("until", record["limits"]))
+            return end_run(sdd_job, project, status, job_id, "stopped", "stopped before any task")
         if outcome == "operator":
             # A stop at a task boundary (spec 009): with a clean tree the session is closed and the run ends
             # and lands; work left in the tree (a task started after the boundary) is stashed first (research R4).

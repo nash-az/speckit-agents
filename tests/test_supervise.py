@@ -1048,6 +1048,24 @@ class JobTest(unittest.TestCase):
         self.assertIn("- [ ] T002", tasks, "the task whose edits were stashed is still open")
         self.assertFalse((self.project / "b.py").exists())
 
+    def test_a_stop_before_any_agent_starts_ends_the_run_stopped_before_any_task(self):
+        self.save_job()
+        # The stop comes during the session's start-up, before /sdd-run has written .sdd/run.json.
+        run = [{"transcript": True}, {"control": {"command": "stop", "mode": "after-task"}}, {"sleep": 30},
+               {"run": "r1"}, started("a", "impl:T001"), {"tick": "T001"}, {"finish": True}, *DONE]
+        out, calls, took = self.supervise([run, job_run("r2", "T002")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 1)
+        self.assertLess(took, 25, "the run stopped at once")
+        self.assertIn("stop requested before any task: stopping the run", out.stdout)
+        self.assertNotIn("suspended", out.stdout)
+        record = self.assert_ended("stopped", "stopped before any task", landing="nothing")
+        self.assertEqual(record["runs"], [])
+        self.assertFalse((self.project / ".sdd" / "run.json").exists())
+        self.assertEqual(self.git_out("rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertNotIn("feat(T001)", self.git_out("log", "--format=%s", "main"))
+        self.assertIn("- [ ] T001", self.tasks.read_text())
+
     def test_a_cut_off_suspends_the_run_and_fast_forwards_the_finished_commits(self):
         self.save_job()
         # The session ends by itself with .sdd/run.json still there, mid-T002: a cut-off (a crash, say).
