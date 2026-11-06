@@ -806,6 +806,14 @@ class JobTest(unittest.TestCase):
         self.assertEqual(record["runs"], [])
         self.assertEqual(self.tasks.read_text(), self.TASKS)
 
+    def test_a_rate_limit_event_leaves_the_usage_peak_on_the_record(self):
+        self.save_job()
+        run = job_run("r1", "T001")
+        run[2:2] = [rate(utilization=0.92), {"sleep": 0.2}]
+        out, _, _ = self.supervise([run, job_run("r2", "T002"), job_run("r3", "T003")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(self.job()["usage_peak"], {"five_hour": 0.92})
+
     def test_max_tasks_passes_the_tasks_left_to_the_run(self):
         self.tasks.write_text(self.TASKS.replace("- [ ] T001", "- [x] T001"))
         self.save_job(limits={"max_tasks": 2, "until": None, "max_runs": 20})

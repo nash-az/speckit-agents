@@ -233,6 +233,12 @@ class Cycle:
                     self.last_step[name] = step
                     resets = window.get("resets_at")
                     say(f"usage {name} {u:.0%}" + (f", resets {time.strftime('%a %H:%M', time.localtime(resets))}" if resets else ""))
+            if JOB_ID:
+                # The highest usage per window on the run's record (research R9); note_usage never raises.
+                seen = {k: v.get("utilization") for k, v in self.usage.windows.items()
+                        if v.get("utilization") is not None}
+                if seen:
+                    (SDD_JOB or load_sdd_job()).note_usage(self.args.project, JOB_ID, seen)
             if self.status and before != {k: v.get("utilization") for k, v in self.usage.windows.items()}:
                 extra = {"state": "stopping", "mode": "after-task"} if self.operator else {"state": "running"}
                 write_status(self.status, **extra, cycle=self.cycle_no, stream=str(self.log_path),
@@ -435,6 +441,7 @@ def sleep_until(target: float) -> None:
 
 
 JOB_ID: str | None = None  # set by --job; every status.json then names the Job (005 data-model §6)
+SDD_JOB = None  # bin/sdd-job.py as run_job() loaded it (for the usage peak, research R9)
 
 
 def engine_version() -> str:
@@ -838,8 +845,8 @@ SUSPEND_REASONS = {
 def run_job(args: argparse.Namespace, logs: Path, status: Path) -> int:
     """The run loop (005 data-model §6; endings per spec 009): session after session until the run ends
     (`end_run`) or is suspended (`suspend_run`)."""
-    global JOB_ID
-    sdd_job = load_sdd_job()
+    global JOB_ID, SDD_JOB
+    sdd_job = SDD_JOB = load_sdd_job()
     project, job_id = args.project, args.job
     record = sdd_job.load(project, job_id)
     if record is None:

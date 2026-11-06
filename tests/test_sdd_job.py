@@ -1047,5 +1047,43 @@ class AfterSettleTest(unittest.TestCase):
             self.assertEqual(job.after_settle(self.root), {"started": False, "reason": "could not start a run: bad"})
 
 
+class UsagePeakTest(unittest.TestCase):
+    """note_usage() (research R9): the highest utilization per window, only ever raised."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        job.save(self.root, record("20261031-1012"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def path(self):
+        return self.root / ".sdd" / "jobs" / "20261031-1012.json"
+
+    def test_only_raises(self):
+        self.assertEqual(job.note_usage(self.root, "20261031-1012", {"five_hour": 0.91}), {"five_hour": 0.91})
+        self.assertEqual(job.note_usage(self.root, "20261031-1012", {"five_hour": 0.95, "seven_day": 0.4}),
+                         {"five_hour": 0.95, "seven_day": 0.4})
+        self.assertEqual(job.note_usage(self.root, "20261031-1012", {"five_hour": 0.92, "seven_day": 0.41}),
+                         {"five_hour": 0.95, "seven_day": 0.41})
+        self.assertEqual(job.load(self.root, "20261031-1012")["usage_peak"], {"five_hour": 0.95, "seven_day": 0.41})
+
+    def test_saves_only_when_one_rose(self):
+        job.note_usage(self.root, "20261031-1012", {"five_hour": 0.95})
+        before = self.path().read_text()
+        with mock.patch.object(job, "save", side_effect=AssertionError("saved")) as save:
+            self.assertEqual(job.note_usage(self.root, "20261031-1012", {"five_hour": 0.9}), {"five_hour": 0.95})
+            self.assertEqual(job.note_usage(self.root, "20261031-1012", {}), {"five_hour": 0.95})
+        save.assert_not_called()
+        self.assertEqual(self.path().read_text(), before)
+
+    def test_unknown_run_is_none_and_errors_never_raise(self):
+        self.assertIsNone(job.note_usage(self.root, "20261031-9999", {"five_hour": 0.9}))
+        self.assertIsNone(job.note_usage(self.root, "../x", {"five_hour": 0.9}))
+        with mock.patch.object(job, "save", side_effect=OSError("disk full")):
+            self.assertIsNone(job.note_usage(self.root, "20261031-1012", {"five_hour": 0.9}))
+
+
 if __name__ == "__main__":
     unittest.main()

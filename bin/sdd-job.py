@@ -576,6 +576,32 @@ def record_in_flight(project, record: dict, step: str, **fields) -> list[str]:
     return tasks
 
 
+def note_usage(project, run_id: str, windows: dict) -> dict | None:
+    """Raise the record's `usage_peak` (research R9) to each window's utilization in `windows`
+    (`{"five_hour": 0.92}`) when it is higher; the record is saved only when one rose. Returns the new
+    `usage_peak`, or None for an unknown run; never raises."""
+    try:
+        record = load(project, run_id)
+        if record is None:
+            return None
+        peak = record.get("usage_peak")
+        peak = dict(peak) if isinstance(peak, dict) else {}
+        rose = False
+        for name, value in (windows or {}).items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            old = peak.get(name)
+            if not isinstance(old, (int, float)) or isinstance(old, bool) or value > old:
+                peak[name] = value
+                rose = True
+        if rose:
+            record["usage_peak"] = peak
+            save(project, record)
+        return peak
+    except Exception:  # noqa: BLE001 - a usage note must never break the supervisor
+        return None
+
+
 DROP_DIFF_LIMIT = 200_000
 # Run bookkeeping that a Drop writes before it stashes; it stays in the tree for `finalize` to commit.
 KEEP_OUT_OF_STASH = (".", ":(exclude).sdd/tasks")
