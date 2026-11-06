@@ -5,7 +5,7 @@
 
 ## Phase 1: Engine (US3, US4)
 
-- [ ] T001 Create `bin/sdd-history.py` per plan "Task history" and "Run summary" (`harvest`, `append`, `read`, `write_summary`, `finalize`, CLI `harvest` and `show`), with tests in `tests/test_sdd_history.py` (harvest twice adds nothing; a rejected-then-approved task has both attempts and the problems; a session without a report gets a short one; finalize commits only `.sdd/tasks/` and `.sdd/runs/` files; nothing to commit makes no commit).
+- [x] T001 Create `bin/sdd-history.py` per plan "Task history" and "Run summary" (`harvest`, `append`, `read`, `write_summary`, `finalize`, CLI `harvest` and `show`), with tests in `tests/test_sdd_history.py` (harvest twice adds nothing; a rejected-then-approved task has both attempts and the problems; a session without a report gets a short one; finalize commits only `.sdd/tasks/` and `.sdd/runs/` files; nothing to commit makes no commit).
 
 ## Phase 2: The run record and landing (US1, US2, US5)
 
