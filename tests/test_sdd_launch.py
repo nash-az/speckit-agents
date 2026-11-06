@@ -277,6 +277,16 @@ class LaunchJobTest(unittest.TestCase):
                                                       "resets_at": 1793450000}))
         self.refused_by_open_run("another run is going: Phase 9")
 
+    def test_refuses_while_another_run_is_preparing(self):
+        """009 FR-002 (T028): a live supervisor whose run has not started an agent yet is preparing, and open."""
+        launch.sdd_job.save(self.root, {"id": "20261030-0900", "title": "Phase 9", "state": "working"})
+        logs = launch.sdd_supervise.state_dir(self.root)
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "status.json").write_text(json.dumps({"state": "running", "pid": os.getpid()}))
+        record = launch.sdd_job.load(self.root, "20261030-0900")
+        self.assertEqual(launch.sdd_job.shown_state(self.root, record)["state"], "preparing")
+        self.refused_by_open_run("another run is going: Phase 9")
+
     def test_an_ended_and_landed_run_does_not_block(self):
         for landing in ("landed", "nothing", "not-landed"):
             with self.subTest(landing=landing):
@@ -460,7 +470,7 @@ class ContinueJobTest(unittest.TestCase):
         self.refused("this run cannot be continued: it is ended")
         self.set(state="working")
         self.status(state="running", pid=os.getpid())
-        self.refused("this run cannot be continued: it is working")
+        self.refused("this run cannot be continued: it is preparing")  # no run.json of its own yet
         self.status(state="waiting", pid=os.getpid(), resets_at=1793450000)
         self.refused("this run cannot be continued: it is paused")
 

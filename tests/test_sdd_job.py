@@ -258,10 +258,59 @@ class RunStateTest(unittest.TestCase):
         self.write_status(state="waiting", pid=os.getpid(), resets_at=1793460000)
         self.assertIs(job.shown_state(self.root, record("20261031-1012"))["keep_paused"], False)
 
+    def own_session(self, *journal_lines, job_id="20261031-1012"):
+        """This run's run.json with a workflow_dir whose journal.jsonl holds `journal_lines` (dicts or raw text);
+        no lines -> no journal file. Returns the workflow dir."""
+        workflow_dir = Path(self.tmp.name) / "workflows" / "wf-1"
+        workflow_dir.mkdir(parents=True, exist_ok=True)
+        if journal_lines:
+            text = "\n".join(line if isinstance(line, str) else json.dumps(line) for line in journal_lines)
+            (workflow_dir / "journal.jsonl").write_text(text + "\n")
+        self.write_run_json(run_id="20261031-1013", job=job_id, branch=f"auto/{job_id}",
+                            workflow_dir=str(workflow_dir))
+        return workflow_dir
+
     def test_shown_working_with_a_live_running_supervisor(self):
         self.write_status(state="running", pid=os.getpid())
+        self.own_session({"type": "started", "key": "k1", "label": "implement:T001#1"})
         self.assertEqual(job.shown_state(self.root, record("20261031-1012")),
                          {"state": "working", "outcome": None, "reason": None, "landing": None})
+
+    def test_shown_preparing_until_the_first_task_starts(self):
+        """009 FR-002, data-model §3 rule 2: a live supervisor whose session has not started an agent."""
+        preparing = {"state": "preparing", "outcome": None, "reason": None, "landing": None}
+        self.write_status(state="running", pid=os.getpid())
+        r = record("20261031-1012")
+        # no run.json at all, then one of another run's
+        self.assertEqual(job.shown_state(self.root, r), preparing)
+        self.write_run_json(job="20261101-0900", branch="auto/20261101-0900", workflow_dir=str(self.root))
+        self.assertEqual(job.shown_state(self.root, r), preparing)
+        # its own run.json without a workflow_dir
+        self.own_run_json()
+        self.assertEqual(job.shown_state(self.root, r), preparing)
+        # a workflow_dir with no journal yet, then a journal with no started line
+        workflow_dir = self.own_session()
+        self.assertEqual(job.shown_state(self.root, r), preparing)
+        self.own_session('{"type": "started", "key"', {"type": "result", "key": "k0", "result": {}})
+        self.assertEqual(job.shown_state(self.root, r), preparing)
+        self.assertTrue(job.is_open(self.root, r))
+        # the first started line ends preparing
+        with open(workflow_dir / "journal.jsonl", "a") as f:
+            f.write(json.dumps({"type": "started", "key": "k1", "label": "implement:T001#1"}) + "\n")
+        self.assertEqual(job.shown_state(self.root, r)["state"], "working")
+        # the usage wait still reads paused, and a dead supervisor is not preparing
+        (workflow_dir / "journal.jsonl").unlink()
+        self.write_status(state="waiting", pid=os.getpid(), resets_at=1793460000)
+        self.assertEqual(job.shown_state(self.root, r)["state"], "paused")
+        self.write_status(state="running", pid=dead_pid())
+        self.assertEqual(job.shown_state(self.root, r)["state"], "suspended")
+
+    def test_a_resumed_session_starting_with_verify_is_working(self):
+        """data-model §3 rule 2: any started line counts, whatever its label."""
+        self.write_status(state="running", pid=os.getpid())
+        for label in ("verify:T014#2", "commit:T014"):
+            self.own_session({"type": "started", "key": "k1", "label": label})
+            self.assertEqual(job.shown_state(self.root, record("20261031-1012"))["state"], "working", label)
 
     def test_shown_suspended_when_no_supervisor_and_its_run_json(self):
         self.own_run_json()

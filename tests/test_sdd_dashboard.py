@@ -2611,6 +2611,19 @@ class JobsViewTest(unittest.TestCase):
         self.assertIn('class="job-state job-done">Done<', landed)
         self.assertIn("Progress is not available", landed)
 
+    def test_preparing_card_and_helpers(self):
+        """009 FR-002 (T028): a preparing run reads "Preparing", is open, has the preparing chip and the running
+        pill, and its card offers no run action (the banner holds its Stop buttons)."""
+        job = ("{id: 'p', title: 'Phase 11', state: 'working', shown: {state: 'preparing', outcome: null,"
+               " reason: null, landing: null}, progress: null}")
+        got = self.run_js("[jobStateText(%s), jobStateKey(%s), jobIsOpen(%s), jobPillClass(%s), jobBannerText(%s)]"
+                          % (job, job, job, job, job))
+        self.assertEqual(got, ["Preparing", "preparing", True, "running", "Preparing Phase 11"])
+        buttons, html = self.card_buttons(job)
+        self.assertEqual(buttons, [])
+        self.assertIn('class="job-state job-preparing">Preparing<', html)
+        self.assertIn(".job-preparing, .job-working", self.html)
+
     SUMMARY = ("{duration_s: 4800, tasks: {done: ['T1', 'T2', 'T3'], dropped: ['T4'], blocked: []},"
                " attempts: 5, approved_first_time: 2, models: {implementer: 'claude-opus-5-5', verifier: 'qwen <q8>'},"
                " usage_peak: {five_hour: 0.934, seven_day: 0.41}}")
@@ -2827,6 +2840,8 @@ class JobBannerTest(unittest.TestCase):
         rows = [
             ("working", {**run, "controls": {**none, "stop": True}, "job": self.job("working")},
              "Working on Phase 11: T052, verifying (7 min)"),
+            ("preparing", {**run, "controls": {**none, "stop": True}, "job": self.job("working", "preparing")},
+             "Preparing Phase 11"),
             ("stopping", {**run, "stopping": True, "controls": {**none, "stop": True,
                           "reason": "stopping after the current task"}, "job": self.job("working")},
              "Stopping after the current task"),
@@ -2906,7 +2921,7 @@ class JobBannerTest(unittest.TestCase):
             self.assertIn("Continue when the limit resets (%s)" % hhmm, got[name]["html"])
             self.assertNotIn("data-control", got[name]["html"], name)
         actions = {name: re.findall(r'data-job-action="([a-z]+)"', g["html"]) for name, g in got.items()}
-        for name in ("working", "stopping", "paused, box checked", "paused, box unchecked", "landed", "nothing", "no run"):
+        for name in ("working", "preparing", "stopping", "paused, box checked", "paused, box unchecked", "landed", "nothing", "no run"):
             self.assertEqual(actions[name], [], name)
         self.assertEqual(actions["suspended"], ["continue", "drop"])
         self.assertEqual(actions["suspended, cut off"], ["continue", "drop"])
@@ -2918,6 +2933,21 @@ class JobBannerTest(unittest.TestCase):
             self.assertNotIn("Start run", got[name]["html"], name)
         for g in got.values():
             self.assertNotIn("job", g["shown"].lower().replace("data-job", ""))
+
+    def test_preparing_banner_offers_both_stop_buttons(self):
+        """009 FR-002 (T028): while no agent has started, the banner says "Preparing <title>" and offers
+        Stop after current task and Stop now, as while working; the pill shows it as running."""
+        rows = self.shown_states()
+        got = dict(zip([r[0] for r in rows], self.render(rows)))["preparing"]
+        rows = [r for r in rows if r[0] == "preparing"]
+        self.assertEqual(got["text"], "Preparing Phase 11")
+        self.assertIn('data-control="stop" data-mode="after-task"', got["html"])
+        self.assertIn('data-control="stop" data-mode="now"', got["html"])
+        self.assertIn("Stop after current task", got["html"])
+        self.assertIn("Stop now", got["html"])
+        self.assertIsNone(got["checkbox"])
+        self.assertNotIn("Start run", got["html"])
+        self.assertEqual(self.run_js("jobPillClass(%s)" % json.dumps(rows[0][1]["job"])), "running")
 
     def test_checkbox_posts_release_when_checked_and_hold_when_unchecked(self):
         js = self.html[self.html.index("function renderJobBanner("):self.html.index("function bindControlButtons(")]

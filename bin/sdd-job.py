@@ -249,11 +249,42 @@ def normalize(project, record: dict) -> dict:
     return out
 
 
+def _has_started_agent(project, record: dict) -> bool:
+    """This run's run.json names a `workflow_dir` whose `journal.jsonl` has a `started` line, whatever its
+    label (data-model §3 rule 2: a resumed session may start with a verify or commit agent)."""
+    if not owns_run_json(project, record):
+        return False
+    try:
+        run = json.loads((Path(project) / ".sdd" / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    workflow_dir = run.get("workflow_dir") if isinstance(run, dict) else None
+    if not workflow_dir or not isinstance(workflow_dir, str):
+        return False
+    journal = Path(workflow_dir)
+    if not journal.is_absolute():
+        journal = Path(project) / journal
+    try:
+        lines = (journal / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue  # a line cut off when the process was killed
+        if isinstance(event, dict) and event.get("type") == "started":
+            return True
+    return False
+
+
 def shown_state(project, record: dict) -> dict:
-    """The run's shown state (plan "Shown state"), first rule wins: `working` with a live supervisor in the
-    usage wait -> `paused` (plus `resets_at` and `keep_paused`); `working` with no live supervisor ->
-    `suspended` when this run's run.json exists, else `ended` (outcome `stopped`, landing `pending`);
-    otherwise the normalized state. Returns `{"state", "outcome", "reason", "landing"}`."""
+    """The run's shown state (data-model §3), first rule wins: `working` with a live supervisor in the
+    usage wait -> `paused` (plus `resets_at` and `keep_paused`); with a live supervisor and no agent started
+    in this session's journal (no run.json of its own, no workflow_dir, or no `started` line) -> `preparing`;
+    `working` with no live supervisor -> `suspended` when this run's run.json exists, else `ended` (outcome
+    `stopped`, landing `pending`); otherwise the normalized state. Returns
+    `{"state", "outcome", "reason", "landing"}`."""
     run = normalize(project, record)
     state, reason = run.get("state"), run.get("reason")
     if state == "working":
@@ -262,6 +293,8 @@ def shown_state(project, record: dict) -> dict:
             if status.get("state") == "waiting":
                 return {"state": "paused", "outcome": None, "reason": reason, "landing": None,
                         "resets_at": status.get("resets_at"), "keep_paused": bool(status.get("keep_paused"))}
+            if not _has_started_agent(project, record):
+                return {"state": "preparing", "outcome": None, "reason": reason, "landing": None}
         elif owns_run_json(project, record):
             return {"state": "suspended", "outcome": None, "reason": reason or CUT_OFF_REASON, "landing": None}
         else:
@@ -273,10 +306,10 @@ def shown_state(project, record: dict) -> dict:
 
 
 def is_open(project, record: dict) -> bool:
-    """A run blocks a new one while shown `working`, `paused` or `suspended`, or `ended` with landing
-    `needs-merge` or `pending`."""
+    """A run blocks a new one while shown `preparing`, `working`, `paused` or `suspended`, or `ended` with
+    landing `needs-merge` or `pending`."""
     shown = shown_state(project, record)
-    if shown["state"] in ("working", "paused", "suspended"):
+    if shown["state"] in ("preparing", "working", "paused", "suspended"):
         return True
     landing = shown.get("landing")
     return shown["state"] == "ended" and isinstance(landing, dict) and landing.get("state") in OPEN_LANDINGS

@@ -1294,7 +1294,7 @@ def build_html():
   .job-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; cursor: pointer; }
   .job-title { font-weight: 600; font-size: 0.9375rem; flex: 1; min-width: 10rem; }
   .job-state { font-size: 0.75rem; font-weight: 600; padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
-  .job-working, .job-paused { color: var(--st-running); } .job-waiting, .job-not-landed { color: var(--st-held); }
+  .job-preparing, .job-working, .job-paused { color: var(--st-running); } .job-waiting, .job-not-landed { color: var(--st-held); }
   .job-suspended, .job-needs-merge, .job-failed { color: var(--st-blocked); } .job-stopped, .job-limit { color: var(--st-retrying); }
   .job-done, .job-ended { color: var(--st-done); } .job-dropped { color: var(--st-wontfix); }
   .job-branch { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted); }
@@ -2852,7 +2852,7 @@ def build_html():
     // Runs view (009 FR-021, FR-022). A run's record keeps 005's internal names (`job`, /api/jobs), but
     // every word the person reads says "run". The helpers from here to "End of the Runs view helpers" read
     // nothing but their arguments, so tests/test_sdd_dashboard.py runs them in node.
-    var JOB_STATE_WORDS = { working: 'Working', paused: 'Paused: usage limit', suspended: 'Suspended', ended: 'Ended' };
+    var JOB_STATE_WORDS = { preparing: 'Preparing', working: 'Working', paused: 'Paused: usage limit', suspended: 'Suspended', ended: 'Ended' };
     // How an ended run ended (009 FR-002).
     var JOB_OUTCOME_WORDS = { done: 'Done', stopped: 'Stopped', limit: 'Limit reached', waiting: 'Waiting on you',
       failed: 'Failed', dropped: 'Dropped' };
@@ -2864,7 +2864,7 @@ def build_html():
       return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
     }
 
-    // The shown state (sdd-job.py shown_state): working, paused, suspended or ended.
+    // The shown state (sdd-job.py shown_state): preparing, working, paused, suspended or ended.
     function jobShown(job) { return (job && job.shown && job.shown.state) || (job && job.state) || 'unknown'; }
 
     // An ended run's landing ({state, commit, files}) or {} (sdd-job.py shown_state).
@@ -2873,11 +2873,11 @@ def build_html():
     // The reason in words: the shown one (sdd-job.py shown_state may give one of its own), else the record's.
     function jobReason(job) { return (job && job.shown && job.shown.reason) || (job && job.reason) || null; }
 
-    // A run blocks a new one while working, paused or suspended, or ended with its landing still to do
-    // (sdd-job.py is_open).
+    // A run blocks a new one while preparing, working, paused or suspended, or ended with its landing still
+    // to do (sdd-job.py is_open).
     function jobIsOpen(job) {
       var s = jobShown(job);
-      return ['working', 'paused', 'suspended'].indexOf(s) >= 0 ||
+      return ['preparing', 'working', 'paused', 'suspended'].indexOf(s) >= 0 ||
         (s === 'ended' && JOB_OPEN_LANDINGS.indexOf(jobLanding(job).state) >= 0);
     }
 
@@ -2911,6 +2911,7 @@ def build_html():
       if (!job) return 'No run going';
       var s = jobShown(job), title = job.title || 'the run', p = job.progress || {};
       var base = (job.base && job.base.branch) || 'the base branch';
+      if (s === 'preparing') return 'Preparing ' + title;
       if (s === 'working') {
         if (!activity) return 'Working on ' + title;
         var mins = Math.floor(((now || Date.now()) - Date.parse(activity.since)) / 60000);
@@ -2945,7 +2946,7 @@ def build_html():
     // The Overview pill's dot class (.ov-run.<class>) for a run's shown state.
     function jobPillClass(job) {
       var s = jobShown(job), landing = jobLanding(job).state;
-      if (s === 'working') return 'running';
+      if (s === 'working' || s === 'preparing') return 'running';
       if (s === 'paused' || landing === 'pending') return 'paused';
       return s === 'suspended' || landing === 'needs-merge' ? 'stale' : 'none';
     }
@@ -3779,8 +3780,13 @@ def build_html():
       lastBannerState = key;
       var reason = c.reason || null, buttons = [], text, attrs = '', box = '';
       var stopQuestion = 'Stop the run now? The current agent is stopped and its task is resumed from the journal on the next start.';
-      if (s === 'working' && sup === 'stopping') {
+      if ((s === 'working' || s === 'preparing') && sup === 'stopping') {
         text = 'Stopping after ' + (stoppingTask || 'the current task');
+        buttons.push(controlButton('Stop now', 'stop', 'now', !!c.stop, reason, stopQuestion));
+      } else if (s === 'preparing') {
+        // No agent has started yet (data-model §3 rule 2): both Stop buttons, as while working.
+        text = jobBannerText(job);
+        buttons.push(controlButton('Stop after current task', 'stop', 'after-task', !!c.stop, reason));
         buttons.push(controlButton('Stop now', 'stop', 'now', !!c.stop, reason, stopQuestion));
       } else if (s === 'working') {
         attrs = ' data-job-activity';
