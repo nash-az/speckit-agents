@@ -759,6 +759,82 @@ def request(test, method, path, body=None, status=200, host="127.0.0.1:8765", **
         return out.decode()
 
 
+class TaskHistoryRouteTest(unittest.TestCase):
+    """009 FR-019 (T010): `GET /api/project/task-history?id=<task id>` reads `.sdd/tasks/<feature>/<id>.jsonl`
+    of the selected feature through `sdd-history.py` `read`, with the run's title and whether the transcript
+    is still there; `&transcript=<index>` gives that entry's full output."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.root = base / "project"
+        for name in ("009-runs", "010-other"):
+            (self.root / "specs" / name).mkdir(parents=True)
+        (self.root / ".sdd" / "jobs").mkdir(parents=True)
+        (self.root / ".sdd" / "jobs" / "20261106-0900.json").write_text(
+            json.dumps({"id": "20261106-0900", "title": "Phase 5"}), encoding="utf-8")
+        self.wf = write_workflow_dir(base / "transcripts" / "wf_hist")
+        (self.wf / "agent-a01.jsonl").write_text(
+            json.dumps({"type": "assistant", "message": {"content": "I wrote the route."}}) + "\n" + "plain line\n",
+            encoding="utf-8")
+        self.entries = [
+            {"ts": "2026-11-06T09:01:00", "run": "20261106-0900", "session": "s1", "step": "implemented",
+             "attempt": 1, "transcript": str(self.wf / "agent-a01.jsonl"), "key": "k1"},
+            {"ts": "2026-11-06T09:05:00", "run": "20261106-0900", "session": "s1", "step": "verified",
+             "verdict": "reject", "problems": ["no test"], "transcript": str(self.wf / "agent-gone.jsonl"),
+             "key": "k2"},
+            {"ts": "2026-11-06T09:09:00", "run": "20261030-1515", "session": "s2", "step": "committed",
+             "commits": ["81e4f43"], "transcript": "/etc/passwd", "key": "k3"},
+        ]
+        for entry in self.entries:
+            dash.sdd_history.append(self.root, "009-runs", "T010", entry)
+        self.saved = (dash.DashboardHandler.project, dash.DashboardHandler.feature)
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.root, "009-runs"
+
+    def tearDown(self):
+        dash.DashboardHandler.project, dash.DashboardHandler.feature = self.saved
+        self.tmp.cleanup()
+
+    def test_entries_oldest_first_with_run_title_and_transcript(self):
+        data = request(self, "GET", "/api/project/task-history?id=T010")
+        self.assertEqual((data["task"], data["feature"]), ("T010", "009-runs"))
+        self.assertEqual([e["key"] for e in data["entries"]], ["k1", "k2", "k3"])
+        self.assertEqual([e["run_title"] for e in data["entries"]], ["Phase 5", "Phase 5", None])
+        # True only for an agent transcript that still exists inside a workflow directory.
+        self.assertEqual([e["transcript"] for e in data["entries"]], [True, False, False])
+        self.assertEqual(data["entries"][1]["problems"], ["no test"])
+
+    def test_task_without_history(self):
+        self.assertEqual(request(self, "GET", "/api/project/task-history?id=T099")["entries"], [])
+
+    def test_selected_feature_only(self):
+        dash.DashboardHandler.feature = "010-other"
+        self.assertEqual(request(self, "GET", "/api/project/task-history?id=T010")["entries"], [])
+
+    def test_bad_id_is_400(self):
+        for query in ("", "?id=", "?id=../../etc", "?id=T010&id=T011", "?id=x1", "?id=T010&transcript=-1",
+                      "?id=T010&transcript=a"):
+            data = request(self, "GET", "/api/project/task-history" + query, status=400)
+            self.assertIn("task id", data["error"], query)
+
+    def test_no_feature_is_409(self):
+        dash.DashboardHandler.feature = None
+        data = request(self, "GET", "/api/project/task-history?id=T010", status=409)
+        self.assertEqual(data["error"], "choose a feature")
+
+    def test_full_output_while_the_transcript_exists(self):
+        text = request(self, "GET", "/api/project/task-history?id=T010&transcript=0")
+        self.assertEqual(text, "assistant: I wrote the route.\nplain line\n")
+        for index in ("1", "2", "3"):  # gone, outside a workflow directory, no such entry
+            data = request(self, "GET", "/api/project/task-history?id=T010&transcript=" + index, status=404)
+            self.assertEqual(data["error"], "the transcript is gone")
+
+    def test_reads_nothing_but_the_history(self):
+        files = sorted(str(p) for p in self.root.rglob("*"))
+        request(self, "GET", "/api/project/task-history?id=T010")
+        self.assertEqual(sorted(str(p) for p in self.root.rglob("*")), files)
+
+
 class ActiveFeatureTest(unittest.TestCase):
     """data-model.md §4.2 (FR-027): config `run.feature`, then `.specify/feature.json`, then the
     only `specs/` folder, else 409 and the person chooses."""
@@ -1157,6 +1233,50 @@ class TasksViewTest(unittest.TestCase):
         self.assertIn(done_badge, done)
         self.assertIn("task-done", done)
         self.assertIn(queued_badge, queued)
+
+    HISTORY = ("{task: 'T010', entries: ["
+               "{ts: '2026-11-06T09:00:00', run: '20261106-0900', run_title: 'Phase 5', step: 'started', attempt: 1},"
+               "{ts: '2026-11-06T09:01:00', run: '20261106-0900', run_title: 'Phase 5', step: 'implemented', attempt: 2,"
+               " transcript: true},"
+               "{ts: '2026-11-06T09:05:00', run: '20261106-0900', run_title: 'Phase 5', step: 'verified',"
+               " verdict: 'reject', problems: ['no test', 'wrong <file>'], transcript: false},"
+               "{ts: '2026-11-06T09:07:00', run: '20261106-0900', run_title: 'Phase 5', step: 'verified', verdict: 'approve'},"
+               "{ts: '2026-11-06T09:09:00', run: '20261106-0900', run_title: 'Phase 5', step: 'committed', commits: ['81e4f43']},"
+               "{ts: '2026-11-07T10:00:00', run: '20261107-1000', run_title: null, step: 'blocked', reason: 'needs a key'},"
+               "{ts: '2026-11-07T11:00:00', run: '20261107-1000', run_title: 'Later', step: 'dropped'}]}")
+
+    def test_history_lines_in_words(self):
+        got = self.run_js("taskHistoryHtml('T010', " + self.HISTORY + ")")
+        words = re.findall(r'<span class="history-words">([^<]*)</span>', got)
+        self.assertEqual(words, ["Started (attempt 1)", "Implemented (attempt 2)",
+                                 "Rejected: no test; wrong &lt;file&gt;", "Approved", "Committed 81e4f43",
+                                 "Blocked: needs a key", "Dropped (half-done work saved)"])
+        meta = re.findall(r'<span class="history-meta">([^<]*)</span>', got)
+        self.assertEqual(meta[1], "run Phase 5 · 2026-11-06 09:01")
+        self.assertEqual(meta[5], "run #20261107-1000 · 2026-11-07 10:00")  # no record title
+        self.assertIn('<div class="task-history-title">History</div>', got)
+
+    def test_full_output_link_only_while_the_transcript_exists(self):
+        got = self.run_js("taskHistoryHtml('T010', " + self.HISTORY + ")")
+        links = re.findall(r'href="([^"]*)">full output</a>', got)
+        self.assertEqual(links, ["/api/project/task-history?id=T010&amp;transcript=1"])
+
+    def test_history_empty_and_error(self):
+        empty, error, loading = self.run_js("[taskHistoryBodyHtml('T1', {entries: []}),"
+                                            " taskHistoryBodyHtml('T1', {error: 'choose a feature'}),"
+                                            " taskHistoryBodyHtml('T1', undefined)]")
+        self.assertIn("No history yet.", empty)
+        self.assertIn("choose a feature", error)
+        self.assertIn("Loading", loading)
+
+    def test_opened_card_shows_history(self):
+        closed, opened = self.run_js(
+            "[taskCardHtml({id: 'T010', text: 'a', tags: [], status: null, done: true}),"
+            " (function() { openLogs['T010'] = true; taskHistories['T010'] = " + self.HISTORY + ";"
+            " return taskCardHtml({id: 'T010', text: 'a', tags: [], status: null, done: true}); })()]")
+        self.assertNotIn("task-history", closed)
+        self.assertIn('data-history-task="T010"', opened)
+        self.assertIn("Committed 81e4f43", opened)
 
     def test_phase_heading_rollup(self):
         got = self.run_js("[phaseHeadingHtml({title: 'Setup', status: 'blocked'}), phaseHeadingHtml({title: 'Empty', status: null}),"

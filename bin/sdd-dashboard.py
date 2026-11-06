@@ -18,6 +18,9 @@ Endpoints:
     GET /api/project/plan         -- alias of /api/doc?name=plan
     GET /api/project/tasks        -- read tasks.md (parsed)
     GET /api/project/blocked      -- read BLOCKED.md
+    GET /api/project/task-history?id=<task id> -- {task, feature, entries}: the task's history in the selected
+                                     feature, oldest first (sdd-history.py read; 400 for a bad id, 009 FR-019);
+                                     &transcript=<index> gives that entry's full output as text while it exists
     GET /api/project/decisions    -- alias of /api/doc?name=decisions
     GET /api/project/config       -- alias of /api/doc?name=config
     GET /api/runs                 -- list runs with status, counts and the tasks each touched
@@ -152,6 +155,54 @@ _whole_or_none = sdd_views._whole_or_none
 _number_or_none = sdd_views._number_or_none
 _id_list = sdd_views._id_list
 job_limits_from = sdd_views.job_limits_from
+# Task histories (009 plan "Task history"), the module sdd-job.py loaded.
+sdd_history = sdd_job.sdd_history
+
+TRANSCRIPT_NAME_RE = re.compile(r"^agent-[A-Za-z0-9_-]+\.jsonl$")
+
+
+def _transcript_file(entry) -> Path | None:
+    """The entry's transcript while it exists, else None. Only an `agent-<id>.jsonl` directly inside a
+    valid workflow directory counts, so a history line cannot make the dashboard read any other file."""
+    raw = entry.get("transcript") if isinstance(entry, dict) else None
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = Path(raw)
+    if not TRANSCRIPT_NAME_RE.match(path.name) or not sdd_tasks.valid_workflow_dir(path.parent):
+        return None
+    return path if path.is_file() else None
+
+
+def task_history(project, feature: str, task_id: str) -> dict:
+    """`GET /api/project/task-history?id=<task id>` (009 FR-019): the task's entries from `sdd-history.py`
+    `read`, oldest first, each with `run_title` (the run record's title, else None) and `transcript` turned
+    into a bool (true while the transcript exists; the page links to it by the entry's index)."""
+    titles: dict[str, str | None] = {}
+    entries = []
+    for entry in sdd_history.read(project, feature, task_id):
+        run = str(entry.get("run") or "")
+        if run not in titles:
+            record = sdd_job.load(project, run) if run else None
+            titles[run] = record.get("title") if isinstance(record, dict) and record.get("title") else None
+        entries.append({**entry, "run_title": titles[run], "transcript": _transcript_file(entry) is not None})
+    return {"task": task_id, "feature": feature, "entries": entries}
+
+
+def task_history_transcript(project, feature: str, task_id: str, index: int) -> str | None:
+    """The full output of the history entry at `index` as readable text, or None when the entry or its
+    transcript is gone."""
+    entries = sdd_history.read(project, feature, task_id)
+    if not 0 <= index < len(entries):
+        return None
+    path = _transcript_file(entries[index])
+    if path is None:
+        return None
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            lines = [line.rstrip("\n") for line in f]
+    except OSError:
+        return None
+    return "\n".join(t for t in (_readable_line(line) for line in lines) if t is not None) + "\n"
 
 
 def is_speckit_project(project):
@@ -627,6 +678,29 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return proj / "specs" / DashboardHandler.feature
         return active_feature(proj)
 
+    def _send_task_history(self, query):
+        """`GET /api/project/task-history?id=<task id>[&transcript=<index>]` (009 FR-019): the task's history
+        in the selected feature; with `transcript`, that entry's full output as text (404 once it is gone).
+        400 for a bad id or index, 409 without a feature."""
+        params = urllib.parse.parse_qs(query)
+        ids, indexes = params.get("id", []), params.get("transcript", [])
+        if len(ids) != 1 or not TASK_ID_RE.match(ids[0]) or len(indexes) > 1 \
+                or (indexes and not re.fullmatch(r"\d{1,6}", indexes[0])):
+            self._send_json({"error": "id must be a task id such as T010"}, 400)
+            return
+        proj, feature = DashboardHandler.project, self._feature_dir()
+        if feature is None:
+            self._send_json({"error": "choose a feature", "features": feature_names(proj)}, 409)
+            return
+        if not indexes:
+            self._send_json(task_history(proj, feature.name, ids[0]))
+            return
+        text = task_history_transcript(proj, feature.name, ids[0], int(indexes[0]))
+        if text is None:
+            self._send_json({"error": "the transcript is gone"}, 404)
+            return
+        self._send_text(text)
+
     def _send_json(self, obj, status=200, headers=None):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(status)
@@ -732,6 +806,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                                               proj / ".sdd" / "config.toml"))
             else:
                 self._send_json(project_blocked(feature / "BLOCKED.md"))
+            return
+        if path == "/api/project/task-history":
+            self._send_task_history(query)
             return
         if path == "/api/decisions":
             feature = self._feature_dir()
@@ -1127,6 +1204,13 @@ def build_html():
   .live-output { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.5rem; cursor: default; }
   .live-output-title { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; margin-bottom: 0.25rem; }
   .live-output-empty { font-size: 0.8125rem; color: var(--text-muted); }
+  .task-history { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.5rem; cursor: default; }
+  .task-history-title { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; margin-bottom: 0.25rem; }
+  .history-empty { font-size: 0.8125rem; color: var(--text-muted); }
+  .history-list { list-style: none; margin: 0; padding: 0; font-size: 0.8125rem; }
+  .history-entry { padding: 0.125rem 0; word-break: break-word; }
+  .history-meta { color: var(--text-muted); margin-left: 0.5rem; font-size: 0.75rem; }
+  .history-output { font-size: 0.75rem; margin-left: 0.25rem; }
   .job-live .live-output-lines { max-height: 320px; }
   .job-live-label { text-transform: none; letter-spacing: 0; font-weight: 400; }
   .live-output-lines { max-height: 240px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; color: var(--text); }
@@ -1755,6 +1839,76 @@ def build_html():
 
     function showsLog(t) { return taskStatusKey(t) === 'running' || !!openLogs[t.id]; }
 
+    // A task's history (009 FR-019), shown under "History" on the opened card: one line per entry, oldest
+    // first, from /api/project/task-history. taskHistories is {task id: that route's answer}.
+    var taskHistories = {};
+
+    function historyAttempt(e) { return e.attempt ? ' (attempt ' + e.attempt + ')' : ''; }
+
+    function historyProblems(p) {
+      if (Array.isArray(p)) return p.map(function(x) { return String(x); }).join('; ');
+      return p ? String(p) : '';
+    }
+
+    // One entry in words: "Implemented (attempt 2)", "Rejected: <problems>", "Approved", "Committed <sha>",
+    // "Blocked: <reason>", "Dropped (half-done work saved)", and the other steps the history keeps.
+    function historyWords(e) {
+      var step = e.step, why = e.reason ? ': ' + e.reason : '';
+      if (step === 'started') return 'Started' + historyAttempt(e);
+      if (step === 'implemented') return (e.role === 'evaluator' ? 'Evaluated' : 'Implemented') + historyAttempt(e);
+      if (step === 'verified') {
+        if (e.verdict === 'approve' || e.verdict === 'approved') return 'Approved';
+        var problems = historyProblems(e.problems);
+        return 'Rejected' + (problems ? ': ' + problems : '');
+      }
+      if (step === 'committed') return 'Committed' + ((e.commits || []).length ? ' ' + e.commits.join(', ') : '');
+      if (step === 'blocked') return 'Blocked' + why;
+      if (step === 'failed') return 'Failed' + why;
+      if (step === 'checks failed') return 'Checks failed';
+      if (step === 'repair') return 'Repair after failed checks';
+      if (step === 'suspended') return 'Suspended' + why;
+      if (step === 'resumed') return 'Resumed';
+      if (step === 'dropped') return 'Dropped (half-done work saved)';
+      return String(step || 'Unknown step');
+    }
+
+    // "2026-11-06T10:05:31" -> "2026-11-06 10:05" (the time as the history wrote it, no time zone math).
+    function historyTime(ts) { return ts ? String(ts).replace('T', ' ').slice(0, 16) : ''; }
+
+    function taskHistoryBodyHtml(id, h) {
+      if (!h) return '<div class="history-empty">Loading…</div>';
+      if (h.error) return '<div class="history-empty">' + escapeHtml(h.error) + '</div>';
+      if (!(h.entries || []).length) return '<div class="history-empty">No history yet.</div>';
+      return '<ol class="history-list">' + h.entries.map(function(e, i) {
+        var run = e.run_title ? 'run ' + e.run_title : (e.run ? 'run #' + e.run : '');
+        return '<li class="history-entry"><span class="history-words">' + escapeHtml(historyWords(e)) + '</span>' +
+          '<span class="history-meta">' + escapeHtml([run, historyTime(e.ts)].filter(Boolean).join(' · ')) + '</span>' +
+          (e.transcript ? ' <a class="history-output" target="_blank" rel="noopener" href="/api/project/task-history?id=' +
+            encodeURIComponent(id) + '&amp;transcript=' + i + '">full output</a>' : '') + '</li>';
+      }).join('') + '</ol>';
+    }
+
+    function taskHistoryHtml(id, h) {
+      return '<div class="task-history"><div class="task-history-title">History</div>' +
+        '<div class="task-history-body" data-history-task="' + escapeHtml(id) + '">' + taskHistoryBodyHtml(id, h) + '</div></div>';
+    }
+
+    // Fetch the history of each opened card; loadTasks runs every 3 s, so an opened card follows the run.
+    function pollTaskHistories(ids) {
+      Object.keys(taskHistories).forEach(function(id) { if (ids.indexOf(id) < 0) delete taskHistories[id]; });
+      ids.forEach(function(id) {
+        fetchJSON('/api/project/task-history?id=' + encodeURIComponent(id), 'GET').then(function(h) {
+          taskHistories[id] = h || { error: 'Could not read the history.' };
+          var el = document.querySelector('.task-history-body[data-history-task="' + id + '"]');
+          if (!el) return;
+          var html = taskHistoryBodyHtml(id, taskHistories[id]);
+          if (el.innerHTML === html || el._html === html) return;
+          el.innerHTML = html;
+          el._html = html;
+        });
+      });
+    }
+
     function taskCardHtml(t) {
       return '<div class="task-card' + (taskStatusKey(t) === 'done' ? ' task-done' : '') + (openLogs[t.id] ? ' log-open' : '') +
         '" data-task-card="' + escapeHtml(t.id) + '">' +
@@ -1763,7 +1917,8 @@ def build_html():
         (t.notYet ? '<div class="task-not-yet">Not yet: you can do this once the earlier phases are finished (' + t.notYet +
           (t.notYet === 1 ? ' task' : ' tasks') + ' left).</div>' : '') +
         '<div class="task-tags">' + tagsHtml(t.tags) + taskRunChipHtml(t.id) + '</div>' +
-        (showsLog(t) ? liveOutputHtml(t, liveLogs[t.id]) : '') + '</div>';
+        (showsLog(t) ? liveOutputHtml(t, liveLogs[t.id]) : '') +
+        (openLogs[t.id] ? taskHistoryHtml(t.id, taskHistories[t.id]) : '') + '</div>';
     }
 
     function phaseHeadingHtml(p) {
@@ -2569,6 +2724,7 @@ def build_html():
         });
       }
       pollLiveOutputs(runId, running);
+      pollTaskHistories(Object.keys(openLogs));
       if (pendingTask) {
         var target = tasksEl.querySelector('[data-task-card="' + pendingTask + '"]');
         pendingTask = null;
@@ -3178,7 +3334,7 @@ def build_html():
       if (t.classList.contains('decision-submit')) saveDecision(t.getAttribute('data-task'));
       if (t.classList.contains('decision-apply')) applyDecision(t.getAttribute('data-task'));
       var card = t.closest ? t.closest('[data-task-card]') : null;
-      if (card && !t.closest('.live-output, button, a, textarea, [data-run], [data-open-job]') &&!(window.getSelection && String(window.getSelection()))) {
+      if (card && !t.closest('.live-output, .task-history, button, a, textarea, [data-run], [data-open-job]') &&!(window.getSelection && String(window.getSelection()))) {
         var tid = card.getAttribute('data-task-card');
         if (openLogs[tid]) delete openLogs[tid]; else openLogs[tid] = true;
         loadTasks();
