@@ -80,17 +80,6 @@ class RecordTest(unittest.TestCase):
                          ["20261031-1012-10", "20261031-1012-2", "20261031-1012", "20261030-0900",
                           "20261029-2359"])
 
-    def test_open_job(self):
-        self.assertIsNone(job.open_job(self.root))
-        job.save(self.root, record("20261029-0900", state="merged"))
-        job.save(self.root, record("20261030-0900", state="dropped"))
-        self.assertIsNone(job.open_job(self.root))
-        for state in ("working", "waiting", "held", "stopped", "failed", "done"):
-            job.save(self.root, record("20261031-0900", state=state))
-            self.assertEqual(job.open_job(self.root)["id"], "20261031-0900", state)
-        job.save(self.root, record("20261031-0900", state="merged"))
-        self.assertIsNone(job.open_job(self.root))
-
 
 class IdTest(unittest.TestCase):
     def setUp(self):
@@ -132,52 +121,6 @@ def dead_pid():
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     proc.wait()
     return proc.pid
-
-
-class DisplayStateTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name).resolve() / "project"
-        self.root.mkdir()
-        self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(self.tmp.name) / "state")})
-        self.env.start()
-
-    def tearDown(self):
-        self.env.stop()
-        self.tmp.cleanup()
-
-    def write_status(self, **fields):
-        (job.sdd_supervise.state_dir(self.root) / "status.json").write_text(json.dumps(fields))
-
-    def test_paused_needs_working_waiting_and_a_live_pid(self):
-        self.write_status(state="waiting", pid=os.getpid(), resets_at=1793460000, keep_paused=True)
-        self.assertEqual(job.display_state(self.root, record("20261031-1012")),
-                         {"state": "paused", "resets_at": 1793460000, "keep_paused": True})
-        self.write_status(state="waiting", pid=os.getpid(), resets_at=1793460000)
-        self.assertEqual(job.display_state(self.root, record("20261031-1012"))["keep_paused"], False)
-
-    def test_waiting_status_with_a_dead_pid_is_interrupted(self):
-        self.write_status(state="waiting", pid=dead_pid(), resets_at=1793460000)
-        self.assertEqual(job.display_state(self.root, record("20261031-1012")), {"state": "interrupted"})
-
-    def test_working_without_a_live_supervisor_is_interrupted(self):
-        self.assertEqual(job.display_state(self.root, record("20261031-1012")), {"state": "interrupted"})
-        self.write_status(state="running", pid=dead_pid())
-        self.assertEqual(job.display_state(self.root, record("20261031-1012")), {"state": "interrupted"})
-        self.write_status(state="running", pid="12")
-        self.assertEqual(job.display_state(self.root, record("20261031-1012")), {"state": "interrupted"})
-
-    def test_working_with_a_live_running_supervisor_stays_working(self):
-        self.write_status(state="running", pid=os.getpid())
-        self.assertEqual(job.display_state(self.root, record("20261031-1012")), {"state": "working"})
-
-    def test_other_stored_states_are_shown_as_stored(self):
-        self.write_status(state="waiting", pid=os.getpid(), resets_at=1793460000)
-        for state in ("waiting", "held", "stopped", "failed", "done", "merged", "dropped"):
-            self.assertEqual(job.display_state(self.root, record("20261031-1012", state=state)),
-                             {"state": state}, state)
-        self.write_status(state="waiting", pid=dead_pid())
-        self.assertEqual(job.display_state(self.root, record("20261031-1012", state="held")), {"state": "held"})
 
 
 PENDING = {"state": "pending", "commit": None, "files": []}
@@ -557,91 +500,8 @@ class GitProjectCase(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
 
-class MergeDropTest(GitProjectCase):
-    """merge() and drop() on temp repos (research R9, FR-010, FR-017, SC-005)."""
-
-    def test_fast_forward(self):
-        result = job.merge(self.root, JOB_ID)
-        self.assertEqual(result, {"merged": True, "commit": self.job_commit, "fast_forward": True})
-        self.assertEqual(self.branch(), "main")
-        self.assertEqual(self.head("main"), self.job_commit)
-        self.assertEqual(self.head(f"auto/{JOB_ID}"), self.job_commit)  # branch kept
-        saved = job.load(self.root, JOB_ID)
-        self.assertEqual(saved["state"], "merged")
-        self.assertEqual(saved["merge_commit"], self.job_commit)
-        self.assertIsInstance(saved["ended"], int)
-
-    def test_merge_commit_after_the_base_moved(self):
-        self.git("switch", "-q", "main")
-        self.write_commit("c.txt", "elsewhere\n", "base moved")
-        moved = self.head()
-        self.git("switch", "-q", f"auto/{JOB_ID}")
-        job.save(self.root, {**job.load(self.root, JOB_ID), "state": "stopped"})
-        result = job.merge(self.root, JOB_ID)
-        self.assertFalse(result["fast_forward"])
-        self.assertEqual(self.branch(), "main")
-        self.assertEqual(result["commit"], self.head("main"))
-        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "merge: job Phase 11")
-        parents = self.git("log", "-1", "--format=%P").split()
-        self.assertEqual(parents, [moved, self.job_commit])
-        # SC-002: every Job commit is on the base branch now.
-        self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", self.job_commit, "main"],
-                                        cwd=self.root).returncode, 0)
-        saved = job.load(self.root, JOB_ID)
-        self.assertEqual((saved["state"], saved["merge_commit"]), ("merged", result["commit"]))
-
-    def test_conflict_leaves_base_branch_and_tree_unchanged(self):
-        self.git("switch", "-q", "main")
-        self.write_commit("b.txt", "other\n", "base edits b")
-        self.write_commit("d.txt", "x\n", "base adds d")
-        self.git("switch", "-q", f"auto/{JOB_ID}")
-        job.save(self.root, {**job.load(self.root, JOB_ID), "state": "failed"})
-        self.assertRefused(job.merge, "the merge conflicts in: b.txt")
-        self.assertEqual(self.branch(), f"auto/{JOB_ID}")
-        self.assertEqual((self.root / "b.txt").read_text(), "job\n")
-        self.assertFalse((self.root / ".git" / "MERGE_HEAD").exists())
-
-    def test_refuses_states_that_cannot_close(self):
-        for state in ("working", "waiting", "held", "merged", "dropped"):
-            job.save(self.root, {**job.load(self.root, JOB_ID), "state": state})
-            self.assertRefused(job.merge, f"this job cannot be merged in state {state}")
-            self.assertRefused(job.drop, f"this job cannot be dropped in state {state}")
-
-    def test_refuses_an_unknown_job(self):
-        for call in (job.merge, job.drop):
-            with self.assertRaises(job.Refused) as caught:
-                call(self.root, "20261031-0000")
-            self.assertEqual(str(caught.exception), "no such job: 20261031-0000")
-
-    def test_refuses_while_a_run_is_active(self):
-        run_json = self.root / ".sdd" / "run.json"
-        run_json.write_text("{}")
-        self.assertRefused(job.merge, "a run is active")
-        self.assertRefused(job.drop, "a run is active")
-        run_json.unlink()
-        status = job.sdd_supervise.state_dir(self.root) / "status.json"
-        status.write_text(json.dumps({"state": "running", "pid": os.getpid()}))
-        self.assertRefused(job.merge, "a run is active")
-        self.assertRefused(job.drop, "a run is active")
-        status.write_text(json.dumps({"state": "stopped", "pid": os.getpid()}))
-        self.assertTrue(job.drop(self.root, JOB_ID)["dropped"])
-
-    def test_refuses_a_dirty_tree(self):
-        (self.root / "b.txt").write_text("edited\n")
-        (self.root / "new.txt").write_text("new\n")
-        message = "the working tree has changes; commit or stash them first: b.txt, new.txt"
-        self.assertRefused(job.merge, message)
-        self.assertRefused(job.drop, message)
-
-    def test_drop_keeps_the_branch(self):
-        self.assertEqual(job.drop(self.root, JOB_ID), {"dropped": True})
-        self.assertEqual(self.branch(), "main")
-        self.assertEqual(self.head("main"), self.base_commit)
-        self.assertEqual(self.head(f"auto/{JOB_ID}"), self.job_commit)
-        saved = job.load(self.root, JOB_ID)
-        self.assertEqual(saved["state"], "dropped")
-        self.assertIsNone(saved["merge_commit"])
-        self.assertIsInstance(saved["ended"], int)
+class RunCliTest(GitProjectCase):
+    """The 009 CLI on temp repos: merge = land, drop only a suspended run, list/show give the shown state."""
 
     def cli(self, *args):
         env = {**os.environ, "XDG_STATE_HOME": self.state_home}

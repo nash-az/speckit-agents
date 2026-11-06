@@ -2243,13 +2243,13 @@ class JobsRouteTest(unittest.TestCase):
         for bad in ("..", "run-001", "20261031-1012X", "..%2F..%2Fetc", "20261031-0000"):
             request(self, "GET", f"/api/jobs/{bad}", status=404)
         with mock.patch.object(dash.sdd_launch, "continue_job") as cont, \
-                mock.patch.object(dash.sdd_job, "merge") as merge:
+                mock.patch.object(dash.sdd_job, "land") as land:
             for bad in ("..", "20261031-0000"):
                 request(self, "POST", f"/api/jobs/{bad}/continue", {}, status=404)
                 request(self, "POST", f"/api/jobs/{bad}/merge", {}, status=404)
                 request(self, "POST", f"/api/jobs/{bad}/drop", {}, status=404)
         cont.assert_not_called()
-        merge.assert_not_called()
+        land.assert_not_called()
 
     def test_plan_says_whether_a_job_can_start(self):
         data = request(self, "GET", "/api/jobs/plan")
@@ -2339,9 +2339,7 @@ class JobsRouteTest(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "auto/20261031-1012")  # nothing changed
         self.record("20261031-1012", "ended", outcome="done",
                     landing={"state": "pending", "commit": None, "files": []})
-        with mock.patch.object(dash.sdd_job, "merge") as old_merge:
-            data = request(self, "POST", "/api/jobs/20261031-1012/merge", {}, status=200)
-        old_merge.assert_not_called()
+        data = request(self, "POST", "/api/jobs/20261031-1012/merge", {}, status=200)
         sha = self.git("rev-parse", "HEAD")
         self.assertEqual(data, {"ok": True, "landed": True, "commit": sha, "fast_forward": True,
                                 "landing": {"state": "landed", "commit": sha, "files": []}})
@@ -2350,10 +2348,8 @@ class JobsRouteTest(unittest.TestCase):
         self.assertEqual((record["state"], record["landing"]["state"]), ("ended", "landed"))  # not 005's merged
 
         # an ended run is not dropped (no 005 Drop any more); the route still calls drop_suspended
-        with mock.patch.object(dash.sdd_job, "drop") as old_drop:
-            refused = request(self, "POST", "/api/jobs/20261031-1012/drop", {}, status=409)
+        refused = request(self, "POST", "/api/jobs/20261031-1012/drop", {}, status=409)
         self.assertEqual(refused, {"error": "this run cannot be dropped: it is ended"})
-        old_drop.assert_not_called()
         self.record("20261031-1100", "stopped")  # a 005 state: refused too, nothing changed
         with mock.patch.object(dash.sdd_job, "drop_suspended",
                                side_effect=dash.sdd_job.Refused("this run cannot be dropped: it is ended")) as dropped:
@@ -2480,12 +2476,10 @@ class JobsRouteTest(unittest.TestCase):
         self.record("20261031-1012", "suspended", reason="the run was cut off")
         (self.root / ".sdd" / "run.json").write_text(json.dumps({"job": "20261031-1012"}), encoding="utf-8")
         answer = {"dropped": True, "tasks": ["T001"], "stash": "sdd-run 20261031-1012: dropped T001", "end": {}}
-        with mock.patch.object(dash.sdd_job, "drop_suspended", return_value=answer) as dropped, \
-                mock.patch.object(dash.sdd_job, "drop") as old_drop:
+        with mock.patch.object(dash.sdd_job, "drop_suspended", return_value=answer) as dropped:
             data = request(self, "POST", "/api/jobs/20261031-1012/drop", {}, status=200)
         self.assertEqual(data, {"ok": True, "tasks": ["T001"], "stash": "sdd-run 20261031-1012: dropped T001"})
         self.assertEqual(dropped.call_args.args, (self.root, "20261031-1012"))
-        old_drop.assert_not_called()
         with mock.patch.object(dash.sdd_job, "drop_suspended", side_effect=dash.sdd_job.Refused("a run is active")):
             refused = request(self, "POST", "/api/jobs/20261031-1012/drop", {}, status=409)
         self.assertEqual(refused, {"error": "a run is active"})

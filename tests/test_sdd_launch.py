@@ -199,12 +199,12 @@ class LaunchJobTest(unittest.TestCase):
         self.assertEqual((record["runs"], record["reason"], record["ended"], record["merge_commit"]),
                          ([], None, None, None))
         self.assertIsInstance(record["created"], int)
-        self.assertEqual(launch.sdd_job.open_job(self.root)["id"], job_id)
+        self.assertEqual(launch.sdd_job.open_run(self.root)["id"], job_id)
 
     def test_the_command_line_has_the_job_and_no_wait_cap(self):
         self.start()
         cmd = self.popen.call_args.args[0]
-        job_id = launch.sdd_job.open_job(self.root)["id"]
+        job_id = launch.sdd_job.open_run(self.root)["id"]
         self.assertTrue(cmd[1].endswith("sdd-supervise.py"))
         self.assertEqual(cmd[2:], ["--project", str(self.root), "--job", job_id])
         self.assertNotIn("--max-wait-hours", cmd)
@@ -231,7 +231,7 @@ class LaunchJobTest(unittest.TestCase):
         self.assertEqual(result["command"][-2:], ["--job", result["job"]])
         self.assertEqual(result["record"]["state"], "working")
         self.assertEqual(self.branch(), "main")
-        self.assertIsNone(launch.sdd_job.open_job(self.root))
+        self.assertIsNone(launch.sdd_job.open_run(self.root))
         self.popen.assert_not_called()
 
     def refused_by_open_run(self, text):

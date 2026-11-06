@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""Jobs: the record of one piece of work that spans several runs (spec 005, data-model §1 and §7).
+"""Runs: the record of one short-lived run (spec 009, plan "Data model"); 005 Job records are read as runs.
 
-A Job lives in `.sdd/jobs/<id>.json`. Every write goes through `save()`, which writes `<id>.json.tmp` and
-then `os.replace`s it, so a reader never sees half a record; keys this module does not know are kept.
-At most one Job per project is open (state not `merged`, `dropped` or `ended`); `open_job()` returns it.
+A run record lives in `.sdd/jobs/<id>.json`. Every write goes through `save()`, which writes `<id>.json.tmp`
+and then `os.replace`s it, so a reader never sees half a record; keys this module does not know are kept.
+At most one run per project is open; `open_run()` returns it.
 
-Functions so far: `load`, `save`, `list_jobs`, `open_job`, `new_id`, `default_title`, `display_state`,
-`scope_args`, `progress`, `limit_reached`, `merge`, `drop` (these two raise `Refused`, changing nothing),
-`after_settle` (continues a `waiting` Job, or starts a new run for a run that ended `waiting`, after a
-settle; never raises).
-Spec 009 (the record is the run record, plan "Data model"): `owns_run_json`, `normalize`, `shown_state`,
-`is_open`, `open_run`, `land` (raises `Refused`), `land_ready`, `end` (never raises), `suspend`,
-`drop_suspended` (raises `Refused`).
+Functions: `load`, `save`, `list_jobs`, `new_id`, `default_title`, `scope_args`, `progress`, `tasks_done`,
+`limit_reached`, `owns_run_json`, `normalize`, `shown_state`, `is_open`, `open_run`, `land` (raises
+`Refused`), `land_ready`, `end` (never raises), `suspend`, `drop_suspended` (raises `Refused`),
+`after_settle` (starts a new run after a settle when the newest run ended `waiting`; never raises).
 
     bin/sdd-job.py list [project]          -> [record + shown (shown_state) + progress, ...]
     bin/sdd-job.py show <id> [project]     -> record + shown (shown_state) + progress
@@ -51,8 +48,6 @@ sdd_supervise = _load_module("sdd_supervise", "sdd-supervise.py")
 sdd_history = _load_module("sdd_history", "sdd-history.py")
 
 ID_RE = re.compile(r"^\d{8}-\d{4}(?:-(\d+))?$")
-# An `ended` 009 run is closed for `open_job` too; whether it still blocks a new run is `open_run`'s call.
-CLOSED_STATES = ("merged", "dropped", "ended")
 # sdd-tasks.py hold tags for dropped work (not counted in progress). Of the other holds, `held` (behind a
 # held dependency) waits on another task; every other tag (manual, decision, dep, download, blocked, or an
 # unknown one) waits on the person, as the dashboard's "Waiting on you" counts them.
@@ -121,14 +116,6 @@ def list_jobs(project) -> list[dict]:
     return sorted(records, key=lambda r: _id_key(str(r.get("id", ""))), reverse=True)
 
 
-def open_job(project) -> dict | None:
-    """The record whose state is not `merged` or `dropped` (newest if several), else None."""
-    for record in list_jobs(project):
-        if record.get("state") not in CLOSED_STATES:
-            return record
-    return None
-
-
 def new_id(project, now: float | None = None) -> str:
     """`YYYYMMDD-HHMM` in local time; `-2`, `-3`, ... when a record with that id already exists (R12)."""
     base = time.strftime("%Y%m%d-%H%M", time.localtime(time.time() if now is None else now))
@@ -192,24 +179,6 @@ def _pid_alive(status) -> bool:
     except OSError:
         return False
     return True
-
-
-def display_state(project, record: dict) -> dict:
-    """The shown state (data-model §2), first rule wins:
-    1. stored `working`, `status.json` state `waiting` and a live pid -> `paused` (with `resets_at`, `keep_paused`);
-    2. stored `working` and no live supervisor -> `interrupted`;
-    3. otherwise the stored state.
-    Returns `{"state": ...}`, plus `resets_at` and `keep_paused` for `paused`."""
-    stored = record.get("state")
-    if stored == "working":
-        status = _status(project)
-        alive = _pid_alive(status)
-        if alive and status.get("state") == "waiting":
-            return {"state": "paused", "resets_at": status.get("resets_at"),
-                    "keep_paused": bool(status.get("keep_paused"))}
-        if not alive:
-            return {"state": "interrupted"}
-    return {"state": stored}
 
 
 # 009 run states (plan "Data model"): the record is the run record; 005 states are read through `normalize`.
@@ -391,23 +360,6 @@ def progress(project, record: dict) -> dict:
     return {"done": done, "total": done + waiting + left, "waiting_on_you": waiting, "left": left}
 
 
-COMPLETE_REASON = "every task in the scope is done or skipped"
-
-
-def finish_if_complete(project, record: dict) -> bool:
-    """A `waiting` Job with nothing left in its scope (no task waiting on the person, none left to run) is
-    `done`: the person settled the last item, for example by skipping it, so there is nothing to continue
-    and the Job can be merged. Stores the new state and returns True; otherwise changes nothing."""
-    if record.get("state") != "waiting":
-        return False
-    counts = progress(project, record)
-    if counts["waiting_on_you"] or counts["left"]:
-        return False
-    record["state"], record["reason"] = "done", COMPLETE_REASON
-    save(project, record)
-    return True
-
-
 def tasks_done(project, record: dict) -> int:
     """Ids in `scope_tasks` now ticked in `tasks.md` (data-model §3; counting never resets)."""
     ticked = _ticked(_parsed(project, record))
@@ -454,18 +406,6 @@ def _dirty_files(project) -> str:
     return ", ".join(line[3:] for line in dirty.splitlines()[:5]) if dirty else ""
 
 
-def _closable(project, job_id: str, verb: str) -> dict:
-    """The record, after the refusals shared by Merge and Drop (research R9); raises `Refused`."""
-    record = load(project, job_id)
-    if record is None:
-        raise Refused(f"no such job: {job_id}")
-    state = record.get("state")
-    if state not in ("done", "stopped", "failed"):
-        raise Refused(f"this job cannot be {verb} in state {state}")
-    _refuse_unsafe_checkout(project)
-    return record
-
-
 def _refuse_unsafe_checkout(project) -> None:
     """The refusals that keep a branch switch safe: an active run, no git repository, a dirty tree."""
     if _run_active(project):
@@ -481,49 +421,6 @@ def _switch(project, branch: str) -> None:
     switched = _git(project, "switch", branch)
     if switched.returncode != 0:
         raise Refused(f"could not switch to {branch}: {switched.stderr.strip()}")
-
-
-def merge(project, job_id: str) -> dict:
-    """Merge the Job's branch into its base branch (FR-010, research R9): switch to the base, fast-forward
-    when possible, else one merge commit "merge: job <title>". On a conflict the merge is aborted, the checkout
-    goes back to where it was (the Job's branch) and `Refused` names the files. Never forces, pushes or
-    deletes a branch. Returns `{"merged": true, "commit": sha, "fast_forward": bool}`."""
-    project = Path(project)
-    record = _closable(project, job_id, "merged")
-    branch, base = record.get("branch"), (record.get("base") or {}).get("branch")
-    if not branch or not base:
-        raise Refused("the job has no branch or base branch")
-    current = _git(project, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-    back = current if current and current != "HEAD" else branch
-    _switch(project, base)
-    fast_forward = _git(project, "merge", "--ff-only", branch).returncode == 0
-    if not fast_forward:
-        merged = _git(project, "merge", "--no-ff", "-m", f"merge: job {record.get('title') or job_id}", branch)
-        if merged.returncode != 0:
-            conflicted = _git(project, "diff", "--name-only", "--diff-filter=U").stdout.split()
-            _git(project, "merge", "--abort")
-            _git(project, "switch", back)
-            if conflicted:
-                raise Refused(f"the merge conflicts in: {', '.join(conflicted)}")
-            raise Refused(f"the merge failed: {(merged.stderr or merged.stdout).strip()}")
-    commit = _git(project, "rev-parse", "HEAD").stdout.strip()
-    record.update(state="merged", merge_commit=commit, ended=int(time.time()))
-    save(project, record)
-    return {"merged": True, "commit": commit, "fast_forward": fast_forward}
-
-
-def drop(project, job_id: str) -> dict:
-    """Drop the Job (FR-017): switch to its base branch and set `dropped`; the Job's branch and commits are
-    kept. Same refusals as `merge`. Returns `{"dropped": true}`."""
-    project = Path(project)
-    record = _closable(project, job_id, "dropped")
-    base = (record.get("base") or {}).get("branch")
-    if not base:
-        raise Refused("the job has no base branch")
-    _switch(project, base)
-    record.update(state="dropped", ended=int(time.time()))
-    save(project, record)
-    return {"dropped": True}
 
 
 # 009 landing (plan "Engine changes" 2): an ended run's branch goes into its base by itself.
