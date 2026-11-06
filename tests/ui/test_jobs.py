@@ -47,6 +47,14 @@ PENDING_ID, PENDING_TITLE = "20261029-0900", "Not landed run"
 MERGE_ID, MERGE_TITLE = "20261028-0900", "Conflicting run"
 LANDED_ID, LANDED_TITLE = "20261027-0900", "Landed run"
 CONFLICTS = ["src/a.py", "README.md"]
+# The landed run's summary (009 data-model §6): its card shows the past-run line (FR-021, US4).
+LANDED_SUMMARY = {"contract": "1.0", "id": LANDED_ID, "title": LANDED_TITLE, "duration_s": 4800,
+                  "outcome": "done", "tasks": {"done": ["T001", "T006"], "blocked": [], "dropped": ["T012"]},
+                  "attempts": 4, "approved_first_time": 1,
+                  "models": {"implementer": "claude-opus-5-5", "verifier": "claude-opus-5-5"},
+                  "usage_peak": {"five_hour": 0.93, "seven_day": 0.41}}
+LANDED_LINE = ("1 h 20 min · 2 done, 1 dropped, 0 blocked · 4 attempts, 1 approved first time · "
+               "implementer claude-opus-5-5, verifier claude-opus-5-5 · peak usage 93% (5 h), 41% (7 d)")
 
 
 CHIP_TASK = "T012"  # an open task of the toy that the run's newest session worked on
@@ -95,6 +103,7 @@ def build_jobs_project(root):
                       landing={"state": "needs-merge", "commit": None, "files": CONFLICTS}))
     save(root, record(LANDED_ID, LANDED_TITLE, "ended", outcome="done",
                       landing={"state": "landed", "commit": "1234567890abcdef", "files": []}))
+    (root / ".sdd" / "runs" / (LANDED_ID + ".json")).write_text(json.dumps(LANDED_SUMMARY), encoding="utf-8")
     return root
 
 
@@ -231,6 +240,16 @@ class JobsViewTest(unittest.TestCase):
             self.assertEqual(card(MERGE_ID).locator(".job-state").inner_text().strip(), "Needs merge")
             self.assertEqual(card(LANDED_ID).locator(".job-state").inner_text().strip(), "Done")
             self.assertIn("landed as 1234567", " ".join(card(LANDED_ID).locator(".job-branch").inner_text().split()))
+
+    def test_a_past_run_shows_its_summary_line(self):
+        """009 T025 (FR-021, US4): an ended run with a summary shows the past-run line; the others none."""
+        with self.runs_page() as ui:
+            card = lambda run_id: ui.page.locator('#jobs-list .job-card[data-job="%s"]' % run_id)
+            line = card(LANDED_ID).locator(".job-summary")
+            line.wait_for(state="visible", timeout=TIMEOUT_MS)
+            self.assertEqual(line.inner_text().strip(), LANDED_LINE)
+            for run_id in (JOB_ID, PENDING_ID, MERGE_ID):
+                self.assertEqual(card(run_id).locator(".job-summary").count(), 0, run_id)
 
     def test_land_and_merge_post_to_land(self):
         with self.runs_page() as ui:

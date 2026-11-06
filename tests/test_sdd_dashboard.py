@@ -2221,6 +2221,34 @@ class JobsRouteTest(unittest.TestCase):
                                             "landing": None})
         self.assertEqual(jobs[1]["in_flight"], [])
 
+    def test_an_ended_run_carries_its_summary(self):
+        """009 T025 (FR-021): `job_view` gives an ended run's summary from `.sdd/runs/<id>.json` and takes
+        tasks_done from it; None without the file, and None for a run not shown ended."""
+        summary = {"contract": "1.0", "id": "20261028-0900", "duration_s": 4800,
+                   "tasks": {"done": ["T001", "T002"], "blocked": [], "dropped": []}, "attempts": 3,
+                   "approved_first_time": 1, "models": {"implementer": "m1", "verifier": "m2"},
+                   "usage_peak": {"five_hour": 0.93, "seven_day": 0.41}}
+        landed = {"state": "landed", "commit": "e" * 40, "files": []}
+        self.record("20261028-0900", "ended", outcome="done", landing=landed)
+        self.record("20261029-0900", "ended", outcome="done", landing=landed)
+        self.record("20261027-0900", "suspended", reason="stopped by you")
+        (self.root / ".sdd" / "run.json").write_text(json.dumps({"job": "20261027-0900"}), encoding="utf-8")
+        (self.root / ".sdd" / "runs").mkdir()
+        for run_id in ("20261028-0900", "20261027-0900"):
+            (self.root / ".sdd" / "runs" / (run_id + ".json")).write_text(json.dumps(summary), encoding="utf-8")
+        jobs = {j["id"]: j for j in request(self, "GET", "/api/jobs")["jobs"]}
+        self.assertEqual(jobs["20261028-0900"]["summary"], summary)
+        self.assertEqual(jobs["20261028-0900"]["tasks_done"], 2)
+        self.assertIsNone(jobs["20261029-0900"]["summary"])
+        self.assertIsNone(jobs["20261029-0900"]["tasks_done"])
+        self.assertIsNone(jobs["20261027-0900"]["summary"])  # suspended, not ended
+        self.assertIsNone(jobs["20261027-0900"]["tasks_done"])
+        view = dash.sdd_views.job_view(self.root, dash.sdd_job.load(self.root, "20261028-0900"))
+        self.assertEqual(view["summary"], summary)
+        (self.root / ".sdd" / "runs" / "20261028-0900.json").write_text("{not json", encoding="utf-8")
+        view = dash.sdd_views.job_view(self.root, dash.sdd_job.load(self.root, "20261028-0900"))
+        self.assertIsNone(view["summary"])
+
     def test_one_job_with_its_runs_and_runs_name_their_job(self):
         self.record("20261031-1012", "waiting", runs=["20261031-1012"])
         wf = write_workflow_dir(Path(self.tmp.name).resolve() / "transcripts" / "wf_job")
@@ -2582,6 +2610,45 @@ class JobsViewTest(unittest.TestCase):
         self.assertIn('landed as <span class="mono">1234567</span>', landed)
         self.assertIn('class="job-state job-done">Done<', landed)
         self.assertIn("Progress is not available", landed)
+
+    SUMMARY = ("{duration_s: 4800, tasks: {done: ['T1', 'T2', 'T3'], dropped: ['T4'], blocked: []},"
+               " attempts: 5, approved_first_time: 2, models: {implementer: 'claude-opus-5-5', verifier: 'qwen <q8>'},"
+               " usage_peak: {five_hour: 0.934, seven_day: 0.41}}")
+
+    def with_summary(self, summary, landing="landed"):
+        return "Object.assign(%s, {summary: %s})" % (self.ended(landing), summary)
+
+    def test_summary_line_with_a_full_summary(self):
+        """009 T025 (FR-021, US4): the contract's past-run card line, under an ended run's card."""
+        line = self.run_js("jobSummaryHtml(" + self.with_summary(self.SUMMARY) + ")")
+        self.assertEqual(line, '<div class="job-reason job-summary">1 h 20 min · 3 done, 1 dropped, 0 blocked · '
+                               '5 attempts, 2 approved first time · implementer claude-opus-5-5, verifier qwen &lt;q8&gt; · '
+                               'peak usage 93% (5 h), 41% (7 d)</div>')
+        card = self.run_js("jobCardHtml(" + self.with_summary(self.SUMMARY) + ")")
+        self.assertIn(line, card)
+        self.assertLess(card.index("Progress is not available"), card.index(line))
+        # only an ended run's card gets it
+        working = "{id: 'w', title: 'W', state: 'working', shown: {state: 'working'}, progress: null, summary: %s}"
+        self.assertNotIn("job-summary", self.run_js("jobCardHtml(" + working % self.SUMMARY + ")"))
+
+    def test_summary_line_without_usage_or_other_data(self):
+        no_usage = ("{duration_s: 2100, tasks: {done: ['T1'], dropped: [], blocked: ['T2']}, attempts: 2,"
+                    " approved_first_time: 1, models: {implementer: 'm1', verifier: 'm2'}, usage_peak: null}")
+        self.assertEqual(self.run_js("jobSummaryHtml(" + self.with_summary(no_usage) + ")"),
+                         '<div class="job-reason job-summary">35 min · 1 done, 0 dropped, 1 blocked · 2 attempts, '
+                         '1 approved first time · implementer m1, verifier m2</div>')
+        sparse = ("{duration_s: null, tasks: {done: [], dropped: [], blocked: []}, attempts: 0, approved_first_time: 0,"
+                  " models: {verifier: 'm2'}, usage_peak: {seven_day: 0.5}}")
+        self.assertEqual(self.run_js("jobSummaryHtml(" + self.with_summary(sparse) + ")"),
+                         '<div class="job-reason job-summary">0 done, 0 dropped, 0 blocked · 0 attempts, '
+                         '0 approved first time · verifier m2 · peak usage 50% (7 d)</div>')
+        self.assertEqual(self.run_js("[7200, 3540, 59].map(jobDurationText)"), ["2 h", "59 min", "1 min"])
+
+    def test_no_summary_line_without_a_summary(self):
+        self.assertEqual(self.run_js("jobSummaryHtml(" + self.ended("landed") + ")"), "")
+        self.assertEqual(self.run_js("jobSummaryHtml(" + self.with_summary("null") + ")"), "")
+        self.assertEqual(self.run_js("jobSummaryHtml(" + self.with_summary("{}") + ")"), "")
+        self.assertNotIn("job-summary", self.run_js("jobCardHtml(" + self.ended("landed") + ")"))
 
     def test_open_runs_are_marked(self):
         got = self.run_js("[%s].map(jobIsOpen)" % ", ".join([

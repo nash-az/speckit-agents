@@ -219,10 +219,17 @@ def _in_flight(project, record) -> list:
         return []
 
 
-def _tasks_done(project, run_id):
-    """How many tasks the run's summary (`.sdd/runs/<run id>.json`, 009 plan "Run summary") lists as done,
-    or None without a readable summary."""
+def _run_summary(project, run_id):
+    """The run's summary (`.sdd/runs/<run id>.json`, 009 data-model §6) as a dict, or None when the run id
+    is not in the run id form or the file is missing or unreadable."""
+    if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id):
+        return None
     summary = read_json(Path(project) / ".sdd" / "runs" / f"{run_id}.json")
+    return summary if isinstance(summary, dict) else None
+
+
+def _tasks_done(summary):
+    """How many tasks a run summary lists as done, or None without one."""
     done = ((summary or {}).get("tasks") or {}).get("done") if isinstance(summary, dict) else None
     return len(done) if isinstance(done, list) else None
 
@@ -230,15 +237,17 @@ def _tasks_done(project, run_id):
 def job_view(project, record):
     """A run as `/api/jobs` gives it (009 plan "Shown state"; 005 data-model §9): the record plus `shown`
     (sdd-job.py `shown_state`), `progress` (None when tasks.md cannot be read), `in_flight` (the tasks a
-    suspended run was on, else []) and `tasks_done` (the tasks an ended run's summary lists as done, else None)."""
+    suspended run was on, else []), `summary` (an ended run's `.sdd/runs/<id>.json`, 009 data-model §6, else
+    None; the past-run card, FR-021) and `tasks_done` (the tasks that summary lists as done, else None)."""
     try:
         counts = sdd_job.progress(project, record)
     except (OSError, ValueError, KeyError, TypeError):
         counts = None
     shown = sdd_job.shown_state(project, record)
     in_flight = _in_flight(project, record) if shown["state"] == "suspended" else []
-    done = _tasks_done(project, record.get("id")) if shown["state"] == "ended" and record.get("id") else None
-    return {**record, "shown": shown, "progress": counts, "in_flight": in_flight, "tasks_done": done}
+    summary = _run_summary(project, record.get("id")) if shown["state"] == "ended" else None
+    return {**record, "shown": shown, "progress": counts, "in_flight": in_flight, "summary": summary,
+            "tasks_done": _tasks_done(summary)}
 
 
 def list_job_views(project):

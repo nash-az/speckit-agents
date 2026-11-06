@@ -3006,8 +3006,48 @@ def build_html():
         '<span><b>' + p.waiting_on_you + '</b> waiting on you</span><span><b>' + p.left + '</b> left</span></div>';
     }
 
-    // One run card: title, shown state in words, branch, the reason, the landing, progress and the buttons
-    // its state offers (none for a run that ended and landed).
+    // A run's duration in words: "1 h 20 min", "2 h", "35 min" (seconds rounded to whole minutes).
+    function jobDurationText(seconds) {
+      var mins = Math.round(seconds / 60), h = Math.floor(mins / 60), m = mins % 60;
+      if (!h) return m + ' min';
+      return h + ' h' + (m ? ' ' + m + ' min' : '');
+    }
+
+    // The past-run card line (009 FR-021, US4; contracts/dashboard-routes.md "Past-run card line") from an
+    // ended run's summary (data-model §6): "<duration> · <n> done, <d> dropped, <b> blocked · <a> attempts,
+    // <f> approved first time · <models> · peak usage <5h>% (5 h), <7d>% (7 d)". Parts with no data are left
+    // out; '' for a run without a summary.
+    function jobSummaryHtml(job) {
+      var s = job && job.summary;
+      if (!s || typeof s !== 'object') return '';
+      var num = function(v) { return typeof v === 'number' && isFinite(v); };
+      var parts = [];
+      if (num(s.duration_s)) parts.push(jobDurationText(s.duration_s));
+      var t = s.tasks;
+      if (t && typeof t === 'object') {
+        var count = function(k) { return Array.isArray(t[k]) ? t[k].length : 0; };
+        parts.push(count('done') + ' done, ' + count('dropped') + ' dropped, ' + count('blocked') + ' blocked');
+      }
+      var tries = [];
+      if (num(s.attempts)) tries.push(s.attempts + ' attempts');
+      if (num(s.approved_first_time)) tries.push(s.approved_first_time + ' approved first time');
+      if (tries.length) parts.push(tries.join(', '));
+      var models = s.models || {}, named = [];
+      ['implementer', 'evaluator', 'verifier'].forEach(function(role) {
+        if (models[role]) named.push(role + ' ' + models[role]);
+      });
+      if (named.length) parts.push(named.join(', '));
+      var peak = s.usage_peak || {}, usage = [];
+      [['five_hour', '5 h'], ['seven_day', '7 d']].forEach(function(w) {
+        if (num(peak[w[0]])) usage.push(Math.round(peak[w[0]] * 100) + '% (' + w[1] + ')');
+      });
+      if (usage.length) parts.push('peak usage ' + usage.join(', '));
+      if (!parts.length) return '';
+      return '<div class="job-reason job-summary">' + escapeHtml(parts.join(' · ')) + '</div>';
+    }
+
+    // One run card: title, shown state in words, branch, the reason, the landing, progress, the past-run
+    // line of an ended run and the buttons its state offers (none for a run that ended and landed).
     function jobCardHtml(job) {
       var buttons = jobButtonsHtml(job), landing = jobLanding(job), reason = jobReason(job);
       var base = job.base && job.base.branch ? ' from ' + escapeHtml(job.base.branch) : '';
@@ -3017,7 +3057,8 @@ def build_html():
         '<span class="job-state job-' + escapeHtml(jobStateKey(job)) + '">' + escapeHtml(jobStateText(job)) + '</span>' +
         '<span class="job-branch">' + escapeHtml(job.branch || '') + base + landed + '</span></div>' +
         (reason ? '<div class="job-reason">' + escapeHtml(reason) + '</div>' : '') + jobLandingHtml(job) +
-        jobProgressHtml(job.progress) + (buttons ? '<div class="job-actions">' + buttons + '</div>' : '');
+        jobProgressHtml(job.progress) + (job.shown && job.shown.state === 'ended' ? jobSummaryHtml(job) : '') +
+        (buttons ?'<div class="job-actions">' + buttons + '</div>' : '');
     }
 
     // The sessions of a run, as GET /api/jobs/<id> picks them: `job` in workflows.json, or listed in the record.
