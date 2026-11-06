@@ -42,6 +42,8 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
 - Q: At Stop after this task, a task that started after the boundary may have left edits. Suspend or end? → A: Stash
   and end (user). The edits are saved as a patch in that task's history and stashed, the run ends `stopped`, and its
   finished tasks land.
+- Q: Which `waiting` run restarts when the person settles an item? → A: Only the newest run of the project, so a
+  stale run never restarts by itself (default chosen in clarify; analyze flagged the risk).
 - Q: Who enforces the usage-limit pause? → A: The supervisor only (user): concerns stay separate and the workflow
   stays simple. Every run is started through the supervisor (launcher or Start run). `/sdd-run` stays the
   supervisor's single cycle and never starts a supervisor itself; typed into a session without one, it warns that the
@@ -217,7 +219,8 @@ merged), upgrade; check each shows as described and the two open ones can be con
   `waiting` (only the person's items left), `failed` (no progress, with the reason), `dropped` (ended by Drop), and
   its landing: `landed` (with the commit), `nothing to land`, or `needs merge` (with the files).
 - **FR-003**: A run MAY use several sessions (a usage-limit wait, a crash followed by Continue); they share the run
-  id, branch, scope, limits and record. Sessions MUST NOT be shown as separate runs.
+  id, branch, scope, limits and record. Sessions MUST NOT be shown as separate runs: the run list has one entry per
+  run id, and a run's sessions are listed inside it.
 - **FR-004**: Limits (task cap, stop-by time, maximum sessions, default 20) MUST count over the whole run. Reaching
   one MUST stop the run after the current task (clean end, reason `limit`).
 
@@ -285,7 +288,8 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - **FR-023**: Every action MUST also exist on the command line with the same refusals: start, stop after task, stop
   now, continue, drop, merge and land. On the command line, merge of a 009 run MUST do what Land does.
 - **FR-024**: When a run ended `waiting` and the person settles an item that makes a task in that run's scope
-  runnable, a new run with the same scope and limits MUST start by itself (005 FR-016 kept, now as a new run).
+  runnable, a new run with the same scope and limits MUST start by itself (005 FR-016 kept, now as a new run), but
+  only when that run is the newest run of the project; an older `waiting` run never restarts.
 
 **Carry-over**
 - **FR-025**: Existing records MUST carry over without loss (US5): merged and dropped Jobs become past runs (their
@@ -306,7 +310,8 @@ merged), upgrade; check each shows as described and the two open ones can be con
   for every task. `bin/sdd-tasks.py` MUST parse it as the task's `summary` and MUST NOT treat it as part of the task
   text, its files or its dependencies; a task without one has `summary: null`. Plain Spec Kit still reads the file.
 - **FR-029**: The task card MUST show the summary as the task's main text and the exact task text behind an
-  expander ("Details"); a task without a summary shows its exact text as today.
+  expander ("Details"), and the Start run form's task list MUST show the summary; a task without a summary shows its
+  exact text as today.
 - **FR-030**: 009's `tasks.md` MUST have a summary for every task, done ones included. 005's and 008's MUST NOT be
   changed for this.
 
