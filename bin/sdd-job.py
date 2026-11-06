@@ -672,21 +672,62 @@ def drop_suspended(project, run_id: str) -> dict:
         raise Refused("a run is active")
     if _git(project, "rev-parse", "--is-inside-work-tree").returncode != 0:
         raise Refused("the project is not a git repository")
+    tasks, stash = _stash_in_flight(project, run_id, record, "dropped")
+    reason = f"dropped by you during {', '.join(tasks)}" if tasks else "dropped by you"
+    return {"dropped": True, "tasks": tasks, "stash": stash, "end": end(project, run_id, "dropped", reason)}
+
+
+STASHED_REASON = "started after the stop; its edits were stashed"
+
+
+def stash_and_end(project, run_id: str, outcome: str, reason: str | None) -> dict:
+    """End a run stopped at a task boundary while a later task left edits in the tree (research R4): save the
+    edits as a patch in the history of each task in flight (step `dropped`, reason `STASHED_REASON`), stash
+    them (`sdd-run <id>: stopped, stashed <tasks>`), archive `.sdd/run.json` under `.sdd/runs/<session>/`, then
+    `end` the run with `outcome` and `reason`, which commits the histories and lands the finished commits.
+    Those tasks stay open. Returns `{"tasks", "stash", "end"}`."""
+    project = Path(project)
+    record = load(project, run_id)
+    if record is None:
+        raise Refused(f"no such run: {run_id}")
+    if _git(project, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        raise Refused("the project is not a git repository")
+    tasks, stash = _stash_in_flight(project, run_id, record, "stopped, stashed", live=True,
+                                   reason=STASHED_REASON)
+    return {"tasks": tasks, "stash": stash, "end": end(project, run_id, outcome, reason)}
+
+
+def _live_run_json(project: Path) -> dict | None:
+    """`.sdd/run.json` as a dict, or None when it is missing or unreadable."""
+    try:
+        run = json.loads((project / ".sdd" / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return run if isinstance(run, dict) else None
+
+
+def _stash_in_flight(project: Path, run_id: str, record: dict, verb: str, live: bool = False,
+                     **fields) -> tuple[list[str], str | None]:
+    """The part Drop and a dirty boundary stop share: record step `dropped` with the patch (cut to
+    `DROP_DIFF_LIMIT`) and `fields` in the history of each task in flight of the run's `.sdd/run.json`, stash
+    the tree over `KEEP_OUT_OF_STASH` as `sdd-run <id>: <verb> <tasks or 'partial work'>`, archive run.json
+    under `.sdd/runs/<session>/` and add the session to the record's `runs`. The run.json is the run's when
+    the record owns it (`owns_run_json`), or whenever it exists with `live` (the supervisor's own session has
+    just stopped). Returns the tasks and the stash message (None when there was nothing to stash). `Refused`
+    when the stash fails."""
     run_json = project / ".sdd" / "run.json"
-    run = None
-    if owns_run_json(project, record):
-        run = json.loads(run_json.read_text(encoding="utf-8"))
+    run = _live_run_json(project) if live or owns_run_json(project, record) else None
     tasks = in_flight(run)
     session = str(run["run_id"]) if run and run.get("run_id") else None
 
     patch = _uncommitted_patch(project)
     for task_id in tasks:
         sdd_history.record_step(project, record, task_id, "dropped", session=session,
-                                diff=patch[:DROP_DIFF_LIMIT])
+                                diff=patch[:DROP_DIFF_LIMIT], **fields)
     what = ", ".join(tasks) if tasks else "partial work"
     stash = None
     if _git(project, "status", "--porcelain", "--", *KEEP_OUT_OF_STASH).stdout.strip():
-        message = f"sdd-run {run_id}: dropped {what}"
+        message = f"sdd-run {run_id}: {verb} {what}"
         stashed = _git(project, "stash", "push", "-u", "-m", message, "--", *KEEP_OUT_OF_STASH)
         if stashed.returncode != 0:
             raise Refused(f"could not stash the half-done work: {(stashed.stderr or stashed.stdout).strip()}")
@@ -701,8 +742,7 @@ def drop_suspended(project, run_id: str) -> dict:
         if session not in runs:
             runs.append(session)
             save(project, record)
-    reason = f"dropped by you during {', '.join(tasks)}" if tasks else "dropped by you"
-    return {"dropped": True, "tasks": tasks, "stash": stash, "end": end(project, run_id, "dropped", reason)}
+    return tasks, stash
 
 
 _launcher_module = None

@@ -1017,6 +1017,37 @@ class JobTest(unittest.TestCase):
         self.assertTrue((self.project / ".sdd" / "runs" / f"{JOB_ID}.json").exists(), "the summary is committed")
         self.assertIn(f".sdd/runs/{JOB_ID}.json", self.git_out("ls-tree", "-r", "--name-only", "main"))
 
+    def test_stop_after_this_task_with_edits_of_the_next_task_stashes_them_and_ends_the_run(self):
+        self.save_job()
+        stop = {"control": {"command": "stop", "mode": "after-task"}}
+        # run.json as the skill writes it, so the journal shows T002 in flight when the run stops.
+        run_json = {"write": {"path": ".sdd/run.json", "text": json.dumps(
+            {"run_id": "r1", "job": JOB_ID, "branch": f"auto/{JOB_ID}", "workflow_dir": str(self.dir / "wf")})}}
+        run = self.two_tasks_run([stop, run_json], [{"write": {"path": "b.py", "text": "B = half\n"}},
+                                                    {"sleep": 30}, {"tick": "T002"}, {"finish": True}, *DONE])
+        # T001's commit passed its checks, so the journal no longer has T001 in flight.
+        run[run.index(finished("c"))] = {"journal": {"type": "result", "key": "c",
+                                                     "result": {"checks_ran": True, "checks_passed": True}}}
+        out, calls, took = self.supervise([run, job_run("r2", "T002")])
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(len(calls), 1)
+        self.assertLess(took, 25, "the run stopped at T001's commit")
+        self.assertIn(f"run {JOB_ID}: ended stopped (stopped by you); stashed the edits of T002", out.stdout)
+        record = self.assert_ended("stopped", "stopped by you", landing="landed")
+        self.assertEqual(record["runs"], ["r1"])
+        self.assertFalse((self.project / ".sdd" / "run.json").exists())
+        self.assertTrue((self.project / ".sdd" / "runs" / "r1" / "run.json").exists(), "run.json archived")
+        self.assertEqual(self.git_out("status", "--porcelain"), "")
+        self.assertEqual(self.git_out("stash", "list", "--format=%s"),
+                         f"On auto/{JOB_ID}: sdd-run {JOB_ID}: stopped, stashed T002")
+        self.assertEqual(self.git_out("show", "stash@{0}^3:b.py"), "B = half")
+        self.assertEqual(self.git_out("rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertIn("feat(T001): first", self.git_out("log", "--format=%s", "main"))
+        tasks = self.git_out("show", "main:specs/005-jobs/tasks.md")
+        self.assertIn("- [x] T001", tasks)
+        self.assertIn("- [ ] T002", tasks, "the task whose edits were stashed is still open")
+        self.assertFalse((self.project / "b.py").exists())
+
     def test_a_cut_off_suspends_the_run_and_fast_forwards_the_finished_commits(self):
         self.save_job()
         # The session ends by itself with .sdd/run.json still there, mid-T002: a cut-off (a crash, say).

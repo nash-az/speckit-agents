@@ -36,8 +36,9 @@ committed and the run lands on its base) as `done`, `waiting` (only items that n
 `limit`. A stop-by time passing mid-run stops the run at the next task boundary. --max-cycles then
 counts per run; status.json names the run. A run waits for any usage reset (--max-wait-hours does not
 apply to that wait). A stop after the current task (the operator's or the stop-by time's) that reaches a
-task boundary with a clean tree closes the session (.sdd/run.json moved to .sdd/runs/<session>/) and ends
-the run `stopped` (or `limit`); any other cut-off (a boundary with work in the tree, Stop now, a stop
+task boundary closes the session (.sdd/run.json moved to .sdd/runs/<session>/) and ends the run
+`stopped` (or `limit`); work a later task left in the tree is first saved in its history and stashed
+(`sdd-job.py stash_and_end`, research R4). Any other cut-off (Stop now, a stop
 during the usage wait, a kept pause at the reset, a session that ended with .sdd/run.json still there)
 suspends it (`sdd-job.py suspend`) for Continue or Drop. status.json then says `done` (ended) or
 `stopped` (suspended) with the reason, and the supervisor exits instead of holding for Resume.
@@ -818,6 +819,25 @@ def end_run(sdd_job, project: Path, status: Path, job_id: str, outcome: str, rea
     return 1 if outcome == "failed" else 0
 
 
+def stash_end_run(sdd_job, project: Path, status: Path, job_id: str, outcome: str, reason: str | None) -> int:  # noqa: ANN001
+    """End a run stopped at a task boundary while a later task left edits in the tree (research R4,
+    `sdd-job.py stash_and_end`): the edits are saved in the task's history and stashed, `.sdd/run.json` is
+    archived, and the run ends and lands. status.json says `done` first, as in `end_run`."""
+    write_status(status, state="done", reason=reason or outcome, outcome=outcome)
+    try:
+        result = sdd_job.stash_and_end(project, job_id, outcome, reason)
+    except sdd_job.Refused as e:
+        say(f"could not stash the edits of run {job_id}: {e}")
+        return suspend_run(sdd_job, project, status, job_id, f"{reason}; the tree has uncommitted changes", 0)
+    landing = (sdd_job.load(project, job_id) or {}).get("landing") or {}
+    error = ((result.get("end") or {}).get("land") or {}).get("error")
+    what = ", ".join(result.get("tasks") or []) or "partial work"
+    say(f"run {job_id}: ended {outcome}" + (f" ({reason})" if reason else "") + f"; stashed the edits of {what}"
+        + f"; landing {landing.get('state')}" + (f": {error}" if error else ""))
+    write_status(status, state="done", reason=reason or outcome, outcome=outcome, landing=landing)
+    return 1 if outcome == "failed" else 0
+
+
 def suspend_run(sdd_job, project: Path, status: Path, job_id: str, reason: str, code: int) -> int:  # noqa: ANN001
     """Suspend the run (spec 009, `sdd-job.py suspend`): `.sdd/run.json` and the tree stay for Continue or
     Drop; finished work is fast-forwarded onto the base when it can be. Returns `code`."""
@@ -887,14 +907,15 @@ def run_job(args: argparse.Namespace, logs: Path, status: Path) -> int:
         sdd_job.save(project, record)
         if outcome == "operator":
             # A stop at a task boundary (spec 009): with a clean tree the session is closed and the run ends
-            # and lands; work left in the tree (a task started after the boundary) suspends it instead.
+            # and lands; work left in the tree (a task started after the boundary) is stashed first (research R4).
             until = (record.get("limits") or {}).get("until")
             by_time = until is not None and time.time() >= until
             reason = limit_reason("until", record["limits"]) if by_time else "stopped by you"
+            ending = "limit" if by_time else "stopped"
             if tree_clean(project):
                 close_session(sdd_job, project, job_id)
-                return end_run(sdd_job, project, status, job_id, "limit" if by_time else "stopped", reason)
-            return suspend_run(sdd_job, project, status, job_id, f"{reason}; the tree has uncommitted changes", code)
+                return end_run(sdd_job, project, status, job_id, ending, reason)
+            return stash_end_run(sdd_job, project, status, job_id, ending, reason)
         if outcome == "cut-off":
             return suspend_run(sdd_job, project, status, job_id, sdd_job.CUT_OFF_REASON, code)
         if outcome in SUSPEND_REASONS:
