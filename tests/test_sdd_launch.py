@@ -1,5 +1,7 @@
 """bin/sdd-launch.py (FR-034): what a dashboard-started run would do, and when it refuses."""
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -462,14 +464,6 @@ class ContinueJobTest(unittest.TestCase):
         self.status(state="waiting", pid=os.getpid(), resets_at=1793450000)
         self.refused("this run cannot be continued: it is paused")
 
-    def test_from_waiting_keeps_the_005_after_settle_path(self):
-        self.set(state="waiting", reason="only items that need you are left")
-        git(self.root, "switch", "-q", "main")
-        self.refused("this run cannot be continued: it is ended")
-        result = launch.continue_job(self.root, self.job, from_waiting=True)
-        self.assertEqual((result["pid"], result["resumes"]), (4444, None))
-        self.assertEqual((self.branch(), self.record()["state"]), (self.job_branch, "working"))
-
     def test_unknown_job(self):
         with self.assertRaises(launch.Refused) as caught:
             launch.continue_job(self.root, "20990101-0000")
@@ -505,18 +499,18 @@ class ContinueJobTest(unittest.TestCase):
         self.refused("no task in the scope is runnable")
         self.assertEqual((self.branch(), self.record()["state"]), ("main", "suspended"))
 
-    def test_continue_with_nothing_left_makes_the_job_done(self):
-        # the 005 path (`after_settle` passes from_waiting) keeps finishing a waiting Job with nothing left
+    def test_a_suspended_run_with_nothing_runnable_is_refused(self):
+        # 009: Continue never finishes a run; with nothing runnable it refuses and the record stays suspended
         git(self.root, "switch", "-q", self.job_branch)
         for task_id in ("T001", "T003", "T004"):  # T002 is done in the fixture
             self.tick(task_id)
         git(self.root, "switch", "-q", "main")
-        self.set(state="waiting", reason="only items that need you are left")
-        with self.assertRaises(launch.Refused) as caught:
+        self.set(state="suspended", reason="the run was cut off")
+        self.refused("no task in the scope is runnable")
+        self.assertEqual((self.branch(), self.record()["state"], self.record()["reason"]),
+                         ("main", "suspended", "the run was cut off"))
+        with self.assertRaises(TypeError):
             launch.continue_job(self.root, self.job, from_waiting=True)
-        self.assertEqual(str(caught.exception), "nothing is left to run: the job is now done, so Merge it")
-        self.popen.assert_not_called()
-        self.assertEqual((self.branch(), self.record()["state"]), ("main", "done"))
 
     def test_refuses_outside_a_git_repository(self):
         with tempfile.TemporaryDirectory() as other:
@@ -619,10 +613,13 @@ class ContinueJobTest(unittest.TestCase):
         self.assertEqual(out.returncode, 2)
 
     def test_cli_passes_only_the_given_limits_and_none(self):
-        with mock.patch.object(launch, "continue_job", return_value={"job": self.job, "pid": 1}) as cont:
+        out = io.StringIO()
+        with mock.patch.object(launch, "continue_job", return_value={"job": self.job, "pid": 1}) as cont, \
+                contextlib.redirect_stdout(out):
             code = launch.main([str(self.root), str(self.feature), "--continue", self.job,
                                 "--max-runs", "none", "--until", "1793450000"])
         self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue()), {"contract": "1.0", "job": self.job, "pid": 1})
         self.assertEqual(cont.call_args.args, (self.root, self.job, {"until": 1793450000, "max_runs": None}))
 
 

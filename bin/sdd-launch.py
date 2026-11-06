@@ -355,14 +355,14 @@ def _read_run_json(project: Path) -> dict | None:
     return data if isinstance(data, dict) else {}
 
 
-def continue_job(project: Path, job_id: str, new_limits: dict | None = None, *, from_waiting: bool = False) -> dict:
+def continue_job(project: Path, job_id: str, new_limits: dict | None = None) -> dict:
     """Continue a run (005 FR-009, data-model §3 and §8; 009): only from shown `suspended` (`sdd-job.py`
-    `shown_state`), set `working` and start `sdd-supervise.py --job <id>` detached. `from_waiting` (only
-    `sdd-job.py` `after_settle`'s 005 path) also accepts a 005 record whose stored state is `waiting`.
+    `shown_state`), set `working` and start `sdd-supervise.py --job <id>` detached.
 
     `new_limits` holds only the limits the person changes (`max_tasks`, `until`, `max_runs`; null = none);
     the others and every count (runs, ticked scope tasks) are kept. A Job stopped by a limit needs a new value
-    for that limit. Refuses, changing nothing, as `launch_job` does except the open-run refusals. When
+    for that limit. Refuses, changing nothing, as `launch_job` does except the open-run refusals, and when no
+    task in the scope is runnable (the record is kept as it is; it never becomes done here). When
     resuming (`.sdd/run.json` belongs to the Job's branch) the tree may have changes, but the checkout must
     already be on the Job's branch; otherwise the tree must be clean and the Job's branch is checked out."""
     project = Path(project).resolve()
@@ -370,7 +370,7 @@ def continue_job(project: Path, job_id: str, new_limits: dict | None = None, *, 
     if record is None:
         raise Refused(f"no such job: {job_id}")
     shown = sdd_job.shown_state(project, record)["state"]
-    if shown not in CONTINUABLE_STATES and not (from_waiting and record.get("state") == "waiting"):
+    if shown not in CONTINUABLE_STATES:
         raise Refused(f"this run cannot be continued: it is {shown}")
     new_limits = dict(new_limits or {})
     unknown = sorted(set(new_limits) - set(sdd_job.LIMIT_NAMES))
@@ -425,8 +425,6 @@ def continue_job(project: Path, job_id: str, new_limits: dict | None = None, *, 
                                   [str(p) for p in scope.get("phases") or []] or None, None,
                                   [str(t) for t in scope.get("tasks") or []] or None)
             if plan["runnable"] == 0:
-                if sdd_job.finish_if_complete(project, record):
-                    raise Refused("nothing is left to run: the job is now done, so Merge it")
                 raise Refused("no task in the scope is runnable")
     except Refused:
         if switched_from:
