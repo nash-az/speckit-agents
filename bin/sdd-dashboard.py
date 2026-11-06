@@ -54,9 +54,11 @@ Endpoints:
     POST /api/jobs/start          -- { "phases"?, "tasks"?, "max_tasks"?, "until"?, "max_runs"?, "title"? }
                                      start a run (sdd-launch.py launch_job)
     POST /api/jobs/<id>/continue  -- { "max_tasks"?, "until"?, "max_runs"? } (number or null) continue a suspended run
-    POST /api/jobs/<id>/merge     -- {} merge a 005 Job's branch into its base (sdd-job.py merge)
-    POST /api/jobs/<id>/land      -- {} land an ended run on its base (sdd-job.py land; Merge and Land in the page)
-    POST /api/jobs/<id>/drop      -- {} drop a suspended run (sdd-job.py drop_suspended), else a 005 Job (drop)
+    POST /api/jobs/<id>/land      -- {} land an ended run on its base (sdd-job.py land): {"ok": true, "landed",
+                                     "commit", "fast_forward", "landing"}
+    POST /api/jobs/<id>/merge     -- {} same as land (calls land; the 005 merge is gone)
+    POST /api/jobs/<id>/drop      -- {} drop a suspended run (sdd-job.py drop_suspended for any run; refused
+                                     unless suspended): {"ok": true, "tasks", "stash"}
 Every POST needs an allowed Origin and `Content-Type: application/json` (data-model.md §4.9).
 The control routes write one request to `control.json`, and the answer route one file per answer in
 `answers/` of the supervisor's state directory, both outside the project. Applying an answer calls
@@ -547,9 +549,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         """`POST /api/jobs/<id>/continue|merge|land|drop` (005 contracts/jobs-api.md, 009 plan "Engine changes"
         6), after the §4.9 checks: 404 for an id not in the run id form or unknown, 400 for a bad body, 409 when
         refused (the reason in `error`; nothing changed, except the `needs-merge` landing a conflict stores).
-        Continue answers `202 {"ok": true}`, Merge `200 {"ok": true, "commit"}`, Land `200 {"ok": true,
-        "landed", "commit", "fast_forward", "landing"}`, Drop `200 {"ok": true}` (plus `tasks` and `stash`
-        for a suspended run, which `drop_suspended` drops)."""
+        Continue answers `202 {"ok": true}`; Merge and Land both call `land` and answer `200 {"ok": true,
+        "landed", "commit", "fast_forward", "landing"}` (the 005 `merge` is gone); Drop always calls
+        `drop_suspended` and answers `200 {"ok": true, "tasks", "stash"}` (refused unless suspended)."""
         cors = {"Access-Control-Allow-Origin": self._origin(), "Vary": "Origin"}
         proj = DashboardHandler.project
         if not RUN_ID_RE.match(job_id) or sdd_job.load(proj, job_id) is None:
@@ -572,18 +574,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_json({"ok": True}, 202, cors)
             return
         try:
-            if action == "merge":
-                result = sdd_job.merge(proj, job_id)
-                answer = {"ok": True, "commit": result["commit"]}
-            elif action == "land":
+            if action in ("merge", "land"):
                 result = sdd_job.land(proj, job_id)
                 answer = {"ok": True, **{k: result.get(k) for k in ("landed", "commit", "fast_forward", "landing")}}
-            elif sdd_job.shown_state(proj, sdd_job.load(proj, job_id) or {})["state"] == "suspended":
+            else:
                 result = sdd_job.drop_suspended(proj, job_id)
                 answer = {"ok": True, "tasks": result.get("tasks"), "stash": result.get("stash")}
-            else:
-                sdd_job.drop(proj, job_id)
-                answer = {"ok": True}
         except sdd_job.Refused as e:
             self._send_json({"error": str(e)}, 409, cors)
             return

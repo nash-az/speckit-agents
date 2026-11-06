@@ -2324,6 +2324,7 @@ class JobsRouteTest(unittest.TestCase):
         self.assertEqual(self.spawned.call_count, 0)
 
     def test_merge_and_drop(self):
+        """009 T017: Merge calls `land` and answers as land does; Drop calls `drop_suspended` for any run."""
         self.init_git()
         self.git("switch", "-q", "-c", "auto/20261031-1012")
         (self.root / "work.txt").write_text("done\n")
@@ -2331,22 +2332,96 @@ class JobsRouteTest(unittest.TestCase):
         self.git("commit", "-q", "-m", "work")
         self.record("20261031-1012", "working")
         refused = request(self, "POST", "/api/jobs/20261031-1012/merge", {}, status=409)
-        self.assertEqual(refused, {"error": "this job cannot be merged in state working"})
+        self.assertEqual(refused, {"error": "this run has not ended: it is working"})
         refused = request(self, "POST", "/api/jobs/20261031-1012/drop", {}, status=409)
-        self.assertEqual(refused, {"error": "this job cannot be dropped in state working"})
-        self.record("20261031-1012", "done")
-        data = request(self, "POST", "/api/jobs/20261031-1012/merge", {}, status=200)
-        self.assertEqual(data, {"ok": True, "commit": self.git("rev-parse", "HEAD")})
+        # drop_suspended names the shown state: a stored `working` record with no live supervisor shows `ended`
+        self.assertEqual(refused, {"error": "this run cannot be dropped: it is ended"})
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "auto/20261031-1012")  # nothing changed
+        self.record("20261031-1012", "ended", outcome="done",
+                    landing={"state": "pending", "commit": None, "files": []})
+        with mock.patch.object(dash.sdd_job, "merge") as old_merge:
+            data = request(self, "POST", "/api/jobs/20261031-1012/merge", {}, status=200)
+        old_merge.assert_not_called()
+        sha = self.git("rev-parse", "HEAD")
+        self.assertEqual(data, {"ok": True, "landed": True, "commit": sha, "fast_forward": True,
+                                "landing": {"state": "landed", "commit": sha, "files": []}})
         self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")
-        self.assertEqual(dash.sdd_job.load(self.root, "20261031-1012")["state"], "merged")
+        record = dash.sdd_job.load(self.root, "20261031-1012")
+        self.assertEqual((record["state"], record["landing"]["state"]), ("ended", "landed"))  # not 005's merged
 
-        self.git("switch", "-q", "-c", "auto/20261031-1100")
-        self.record("20261031-1100", "stopped")
-        data = request(self, "POST", "/api/jobs/20261031-1100/drop", {}, status=200)
-        self.assertEqual(data, {"ok": True})
-        self.assertEqual(dash.sdd_job.load(self.root, "20261031-1100")["state"], "dropped")
+        # an ended run is not dropped (no 005 Drop any more); the route still calls drop_suspended
+        with mock.patch.object(dash.sdd_job, "drop") as old_drop:
+            refused = request(self, "POST", "/api/jobs/20261031-1012/drop", {}, status=409)
+        self.assertEqual(refused, {"error": "this run cannot be dropped: it is ended"})
+        old_drop.assert_not_called()
+        self.record("20261031-1100", "stopped")  # a 005 state: refused too, nothing changed
+        with mock.patch.object(dash.sdd_job, "drop_suspended",
+                               side_effect=dash.sdd_job.Refused("this run cannot be dropped: it is ended")) as dropped:
+            refused = request(self, "POST", "/api/jobs/20261031-1100/drop", {}, status=409)
+        self.assertEqual(dropped.call_args.args, (self.root, "20261031-1100"))
+        self.assertEqual(refused, {"error": "this run cannot be dropped: it is ended"})
+
+    def test_merge_route_lands_a_needs_merge_run_after_the_conflict_is_resolved(self):
+        """009 T017: a conflict stores `needs-merge`; after the person resolves it on the branch, POST .../merge
+        lands it with a merge commit (the 005 `merge` refused an ended record)."""
+        (self.root / "work.txt").write_text("start\n")
+        self.init_git()
+        self.run_branch("20261031-1012", "theirs\n")
+        self.git("switch", "-q", "main")
+        (self.root / "work.txt").write_text("mine\n")
+        self.git("commit", "-q", "-am", "base moved")
+        base = self.git("rev-parse", "HEAD")
+        self.git("switch", "-q", "auto/20261031-1012")
+        self.record("20261031-1012", "ended", outcome="done",
+                    landing={"state": "pending", "commit": None, "files": []})
+        refused = request(self, "POST", "/api/jobs/20261031-1012/merge", {}, status=409)
+        self.assertEqual(refused, {"error": "the merge conflicts in: work.txt"})
+        self.assertEqual(self.git("rev-parse", "main"), base)
+        job = request(self, "GET", "/api/jobs/20261031-1012")
+        self.assertEqual(job["shown"]["landing"], {"state": "needs-merge", "commit": None, "files": ["work.txt"]})
+        self.git("merge", "-q", "-X", "ours", "main", "-m", "resolve")
+        data = request(self, "POST", "/api/jobs/20261031-1012/merge", {}, status=200)
+        sha = self.git("rev-parse", "HEAD")
+        self.assertEqual(data, {"ok": True, "landed": True, "commit": sha, "fast_forward": True,
+                                "landing": {"state": "landed", "commit": sha, "files": []}})
         self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")
-        self.assertTrue(self.git("branch", "--list", "auto/20261031-1100"))  # the branch is kept
+        self.assertEqual((self.root / "work.txt").read_text(), "theirs\n")
+        self.assertEqual(dash.sdd_job.load(self.root, "20261031-1012")["landing"]["state"], "landed")
+
+    def cli(self, *args):
+        """`bin/sdd-job.py <args> <project>` as a subprocess: (exit code, its JSON answer)."""
+        done = subprocess.run([sys.executable, str(HERE.parent / "bin" / "sdd-job.py"), *args, str(self.root)],
+                              capture_output=True, text=True)
+        return done.returncode, json.loads(done.stdout)
+
+    def test_cli_and_route_refusals_match(self):
+        """009 FR-023: the command line and the route refuse with the same text (both call the same function)."""
+        self.init_git()
+        self.run_branch("20261031-1012")
+        self.record("20261031-1012", "working")
+        cases = [("20261031-1012", "land"), ("20261031-1012", "merge")]
+        self.record("20261030-0900", "ended", outcome="done",
+                    landing={"state": "landed", "commit": "e" * 40, "files": []}, branch="auto/20261031-1012")
+        cases += [("20261030-0900", "land"), ("20261030-0900", "merge"), ("20261030-0900", "drop")]
+        for job_id, action in cases:
+            with self.subTest(job=job_id, action=action):
+                code, answer = self.cli(action, job_id)
+                self.assertEqual(code, 1)
+                refused = request(self, "POST", f"/api/jobs/{job_id}/{action}", {}, status=409)
+                self.assertEqual(refused, {"error": answer["error"]})
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "auto/20261031-1012")  # nothing changed
+
+    def test_unknown_run_is_404_on_every_action(self):
+        """The route answers 404 before calling the engine (the CLI's "no such run" is not compared)."""
+        self.init_git()
+        with mock.patch.object(dash.sdd_job, "land") as land, \
+                mock.patch.object(dash.sdd_job, "drop_suspended") as dropped:
+            for action in ("land", "merge", "drop"):
+                with self.subTest(action=action):
+                    data = request(self, "POST", f"/api/jobs/20261031-0000/{action}", {}, status=404)
+                    self.assertEqual(data, {"error": "not found"})
+        land.assert_not_called()
+        dropped.assert_not_called()
 
     def run_branch(self, job_id, text="done\n"):
         """A run branch with one commit changing work.txt, checked out."""
