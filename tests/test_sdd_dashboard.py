@@ -1948,7 +1948,8 @@ class StartRunTest(unittest.TestCase):
         self.init_git()
         data = request(self, "GET", "/api/run/plan")
         self.assertTrue(data["can_start"])
-        self.assertEqual(data["phases"], [{"id": "1", "title": "A", "runnable": 1}])
+        self.assertEqual(data["phases"], [{"id": "1", "title": "A", "runnable": 1,
+                                         "task_list": [{"id": "T001", "text": "Do it"}]}])
         self.assertEqual((data["runnable"], data["held"]), (1, 1))
 
     def test_start_calls_the_launcher_and_answers_202(self):
@@ -2089,7 +2090,8 @@ class JobsRouteTest(unittest.TestCase):
         data = request(self, "GET", "/api/jobs/plan")
         self.assertEqual(set(data), {"phases", "runnable", "held", "can_start", "reason"})
         self.assertEqual((data["can_start"], data["reason"]), (True, None))
-        self.assertEqual(data["phases"], [{"id": "1", "title": "A", "runnable": 1}])
+        self.assertEqual(data["phases"], [{"id": "1", "title": "A", "runnable": 1,
+                                         "task_list": [{"id": "T001", "text": "Do it"}]}])
         self.assertEqual((data["runnable"], data["held"]), (1, 1))
         self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")  # the dry run changed nothing
         self.assertEqual(dash.sdd_job.list_jobs(self.root), [])
@@ -2293,16 +2295,17 @@ class JobsViewTest(unittest.TestCase):
         self.assertIn("No tasks worked on yet.", empty)
 
     def test_start_job_panel_and_body(self):
-        plan = "{phases: [{id: '1', title: 'Setup', runnable: 2}, {id: '2', title: 'Core', runnable: 1}], runnable: 3, held: 1, can_start: true, reason: null}"
+        plan = "{phases: [{id: '1', title: 'Setup', runnable: 2, task_list: [{id: 'T001', text: 'First <b>'}, {id: 'T002', text: 'Second'}]}, {id: '2', title: 'Core', runnable: 1, task_list: [{id: 'T003', text: 'Third'}]}], runnable: 3, held: 1, can_start: true, reason: null}"
         got = self.run_js("[startJobHtml(" + plan + "), startJobHtml({phases: [], runnable: 0, held: 0, can_start: false,"
                           " reason: 'another job is open: Phase 11'})]")
         panel, refused = got
-        for needle in ("3 runnable, 1 held.", 'name="start-scope" value="phases" checked', 'name="start-scope" value="tasks"',
-                       'id="start-tasks"', 'id="start-max-tasks"', 'id="start-until"', 'id="start-max-runs"', 'id="start-title"',
+        for needle in ("3 runnable, 1 held.", 'id="start-all-btn"', 'id="start-none-btn"', '<details class="start-phase" data-phase="1">',
+                       'class="start-task-box" value="T002" checked', "<b>T001</b> First &lt;b&gt;", 'id="start-max-tasks"', 'id="start-until"', 'id="start-max-runs"', 'id="start-title"',
                        'id="start-job-btn"', "Phase 1: Setup", "2 tasks", "1 task<"):
             self.assertIn(needle, panel)
         self.assertIn("Cannot start: another job is open: Phase 11", refused)
         self.assertNotIn("start-job-btn", refused)
+        self.assertNotIn('id="start-tasks"', panel)  # the typed task list is gone
         now = "new Date(2026, 9, 31, 17, 0, 0).getTime()"
         got = self.run_js("[startJobBody({scope: 'phases', phases: [{id: '3', runnable: 2}, {id: '4', runnable: 1}, {id: '5', runnable: 1}],"
                           " max_tasks: '4', until: '', max_runs: '', title: ''}, %s),"
@@ -2314,7 +2317,7 @@ class JobsViewTest(unittest.TestCase):
         self.assertEqual(got[1], {"body": {"tasks": ["T061", "T063"], "max_runs": None, "title": "Mine"}, "count": 2,
                                   "title": "Mine"})
         self.assertEqual(got[2], {"error": "not a task id: nope"})
-        self.assertEqual(got[3], {"error": "choose at least one phase"})
+        self.assertEqual(got[3], {"error": "tick at least one task"})
         self.assertIn("max tasks", got[4]["error"])
         self.assertEqual(got[5:], ["Phase 11", "All open tasks", "3–5, 7"])
 

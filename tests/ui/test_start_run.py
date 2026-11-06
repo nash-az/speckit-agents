@@ -168,7 +168,7 @@ class CanStartTest(StartJobTestCase):
             summary = ui.page.locator("#start-job-body .start-summary").inner_text()
             self.assertIn("%d runnable, %d held." % (sum(PHASES.values()), HELD), summary)
             self.assertEqual(ui.page.locator("#start-job-body .start-reason").count(), 0)
-            for field in ("#start-tasks", "#start-max-tasks", "#start-until", "#start-max-runs", "#start-title"):
+            for field in ("#start-max-tasks", "#start-until", "#start-max-runs", "#start-title"):
                 self.assertEqual(ui.page.locator(field).count(), 1, field)
             self.assertTrue(ui.page.locator("#start-job-btn").is_enabled())
         self.assertEqual(self.launcher.calls, [])  # opening the panel starts nothing
@@ -222,8 +222,11 @@ class CanStartTest(StartJobTestCase):
 
     def test_tasks_scope_and_title(self):
         with self.open_jobs("#start-job-btn") as ui:
-            ui.page.locator('#start-job-body input[name="start-scope"][value="tasks"]').check()
-            ui.page.locator("#start-tasks").fill("t001, T005")
+            ui.page.locator("#start-none-btn").click()
+            for phase in ("1", "2"):  # open each phase to reach its tasks
+                ui.page.locator('#start-job-body .start-phase[data-phase="%s"] summary .start-count' % phase).click()
+            for task in ("T001", "T005"):
+                ui.page.locator('#start-job-body .start-task-box[value="%s"]' % task).check()
             ui.page.locator("#start-title").fill("Two tasks")
             ui.page.once("dialog", lambda dialog: dialog.accept())
             with ui.page.expect_response(lambda r: r.url.endswith("/api/jobs/start"), timeout=TIMEOUT_MS) as res:
@@ -231,6 +234,26 @@ class CanStartTest(StartJobTestCase):
             self.assertEqual(res.value.status, 202, res.value.text())
             self.assertEqual(ui.start_posts, [{"tasks": ["T001", "T005"], "title": "Two tasks"}])
         self.assertEqual([c["scope"] for c in self.launcher.calls], [{"phases": [], "tasks": ["T001", "T005"]}])
+
+    def test_select_all_and_none_and_phase_expansion(self):
+        with self.open_jobs("#start-job-btn") as ui:
+            page = ui.page
+            phase = page.locator('#start-job-body .start-phase[data-phase="1"]')
+            self.assertFalse(phase.evaluate("d => d.open"))
+            phase.locator("summary .start-count").click()
+            self.assertTrue(phase.evaluate("d => d.open"))
+            tasks = phase.locator(".start-task-box")
+            self.assertEqual(tasks.count(), PHASES["1"])
+            page.locator("#start-none-btn").click()
+            self.assertEqual(page.locator("#start-job-body input:checked").count(), 0)
+            page.locator("#start-all-btn").click()
+            boxes = page.locator("#start-job-body .start-phase-box, #start-job-body .start-task-box")
+            self.assertTrue(all(boxes.nth(i).is_checked() for i in range(boxes.count())))
+            tasks.first.uncheck()  # one task off: its phase box shows mixed, not ticked
+            self.assertTrue(phase.locator(".start-phase-box").evaluate("b => b.indeterminate && !b.checked"))
+            phase.locator(".start-phase-box").check()  # the phase box ticks all its tasks again
+            self.assertTrue(all(tasks.nth(i).is_checked() for i in range(tasks.count())))
+            self.assertEqual(page.locator("#start-job-body #start-tasks").count(), 0)
 
 
 class CannotStartTest(StartJobTestCase):

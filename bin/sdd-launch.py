@@ -97,7 +97,9 @@ def preview(project: Path, feature: Path) -> dict:
     config = sdd_tasks.load_config(project / ".sdd" / "config.toml")
     plan = sdd_tasks.plan(parsed, blocked, config, None, None)
     phases = [{"id": p["id"], "title": p["title"],
-               "runnable": sum(len(g) for g in p["groups"])} for p in plan["phases"]]
+               "runnable": sum(len(g) for g in p["groups"]),
+               "task_list": [{"id": t["id"], "text": t.get("text", "")} for t in p["tasks"].values()]}
+              for p in plan["phases"]]
     result = {"phases": phases, "runnable": plan["runnable"], "held": len(plan["held"]),
               "can_start": True, "reason": None, "resumes": None}
 

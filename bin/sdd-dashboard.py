@@ -1668,7 +1668,10 @@ def build_html():
   .start-count { color: var(--text-muted); font-size: 0.8rem; margin-left: 0.4rem; }
   #start-job-btn { margin-top: 0.5rem; }
   .start-job-body input[type=number], .start-job-body input[type=text], .start-job-body input[type=time] { padding: 0.25rem 0.4rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg, var(--surface)); color: var(--text); font-family: inherit; max-width: 100%; }
-  .start-scope { margin: 0.25rem 0 0.5rem 1.4rem; }
+  .start-scope { margin: 0.25rem 0 0.5rem 0.4rem; }
+  .start-phase summary { cursor: pointer; margin: 0.35rem 0; font-size: 0.9rem; }
+  .start-tasks { margin: 0.1rem 0 0.4rem 2.6rem; }
+  .start-task { display: block; margin: 0.2rem 0; font-size: 0.85rem; }
   .start-limits { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
 
   /* Jobs view (005 FR-011) */
@@ -3371,14 +3374,21 @@ def build_html():
       var head = '<div class="start-summary">' + plan.runnable + ' runnable, ' + plan.held + ' held.</div>';
       if (!plan.can_start) return head + '<div class="start-reason">Cannot start: ' + escapeHtml(plan.reason) + '</div>';
       var phases = (plan.phases || []).map(function(p) {
-        return '<label class="start-phase"><input type="checkbox" class="start-phase-box" value="' + escapeHtml(p.id) + '" checked> ' +
-          'Phase ' + escapeHtml(p.id) + ': ' + escapeHtml(p.title) + ' <span class="start-count">' + p.runnable + ' task' + (p.runnable === 1 ? '' : 's') + '</span></label>';
+        var tasks = (p.task_list || []).map(function(t) {
+          var text = String(t.text || '');
+          if (text.length > 110) text = text.slice(0, 107) + '...';
+          return '<label class="start-task"><input type="checkbox" class="start-task-box" value="' + escapeHtml(t.id) + '" checked> ' +
+            '<b>' + escapeHtml(t.id) + '</b> ' + escapeHtml(text) + '</label>';
+        }).join('');
+        return '<details class="start-phase" data-phase="' + escapeHtml(p.id) + '"><summary>' +
+          '<input type="checkbox" class="start-phase-box" value="' + escapeHtml(p.id) + '" checked> ' +
+          'Phase ' + escapeHtml(p.id) + ': ' + escapeHtml(p.title) + ' <span class="start-count">' + p.runnable + ' task' + (p.runnable === 1 ? '' : 's') + '</span></summary>' +
+          '<div class="start-tasks">' + tasks + '</div></details>';
       }).join('');
       return head +
-        '<label class="start-option"><input type="radio" name="start-scope" value="phases" checked> Phases</label>' +
+        '<div class="start-option">Phases <button class="btn" type="button" id="start-all-btn">Select all</button> ' +
+        '<button class="btn" type="button" id="start-none-btn">Select none</button></div>' +
         '<div class="start-scope">' + (phases || '<div class="start-reason">No phase has a runnable task.</div>') + '</div>' +
-        '<label class="start-option"><input type="radio" name="start-scope" value="tasks"> Tasks ' +
-        '<input type="text" id="start-tasks" placeholder="T061, T063" style="width:12rem"></label>' +
         '<div class="start-limits">' +
         '<label class="start-option">Task cap <input type="number" id="start-max-tasks" min="1" max="500" placeholder="none" style="width:5rem"></label>' +
         '<label class="start-option">Stop by <input type="time" id="start-until"></label>' +
@@ -3394,11 +3404,11 @@ def build_html():
       if (v.scope === 'tasks') {
         var parsed = parseTaskIds(v.tasks);
         if (parsed.bad.length) return { error: 'not a task id: ' + parsed.bad.join(', ') };
-        if (!parsed.ids.length) return { error: 'name at least one task, such as T061' };
+        if (!parsed.ids.length) return { error: 'tick at least one task' };
         body.tasks = parsed.ids;
         count = parsed.ids.length;
       } else {
-        if (!(v.phases || []).length) return { error: 'choose at least one phase' };
+        if (!(v.phases || []).length) return { error: 'tick at least one task' };
         body.phases = v.phases.map(function(p) { return p.id; });
         v.phases.forEach(function(p) { count += p.runnable || 0; });
       }
@@ -3428,15 +3438,56 @@ def build_html():
       });
     }
 
+    // The Start job tick boxes: a phase box is ticked when all its tasks are, empty when none, mixed otherwise.
+    function syncStartBoxes() {
+      var el = document.getElementById('start-job-body');
+      if (!el) return;
+      [].slice.call(el.querySelectorAll('.start-phase')).forEach(function(d) {
+        var tasks = [].slice.call(d.querySelectorAll('.start-task-box'));
+        var on = tasks.filter(function(b) { return b.checked; }).length;
+        var box = d.querySelector('.start-phase-box');
+        box.checked = tasks.length > 0 && on === tasks.length;
+        box.indeterminate = on > 0 && on < tasks.length;
+      });
+    }
+    function setAllStartBoxes(on) {
+      var el = document.getElementById('start-job-body');
+      if (!el) return;
+      [].slice.call(el.querySelectorAll('.start-task-box, .start-phase-box')).forEach(function(b) { b.checked = on; });
+      syncStartBoxes();
+    }
+    document.addEventListener('change', function(ev) {
+      var t = ev.target;
+      if (!t || !t.classList) return;
+      if (t.classList.contains('start-phase-box')) {
+        [].slice.call(t.closest('.start-phase').querySelectorAll('.start-task-box')).forEach(function(b) { b.checked = t.checked; });
+      }
+      if (t.classList.contains('start-phase-box') || t.classList.contains('start-task-box')) syncStartBoxes();
+    });
+
+    // What the boxes name: whole phases when every task of each ticked phase is ticked, else the ticked task ids.
+    function startScopeFromBoxes(plan, el) {
+      var picked = [], whole = true, phases = [];
+      (plan.phases || []).forEach(function(p) {
+        var d = el.querySelector('.start-phase[data-phase="' + p.id + '"]');
+        if (!d) return;
+        var boxes = [].slice.call(d.querySelectorAll('.start-task-box'));
+        var ids = boxes.filter(function(b) { return b.checked; }).map(function(b) { return b.value; });
+        if (!ids.length) return;
+        if (ids.length < boxes.length) whole = false;
+        picked = picked.concat(ids);
+        phases.push(p);
+      });
+      return whole ? { scope: 'phases', phases: phases, tasks: '' } : { scope: 'tasks', phases: [], tasks: picked.join(' ') };
+    }
+
     function startJob() {
       var el = document.getElementById('start-job-body'), plan = el._plan || {};
-      var checked = [].slice.call(el.querySelectorAll('.start-phase-box')).filter(function(b) { return b.checked; })
-        .map(function(b) { return b.value; });
-      var scope = el.querySelector('input[name="start-scope"]:checked');
+      var chosen = startScopeFromBoxes(plan, el);
       var made = startJobBody({
-        scope: scope ? scope.value : 'phases',
-        phases: (plan.phases || []).filter(function(p) { return checked.indexOf(p.id) >= 0; }),
-        tasks: document.getElementById('start-tasks').value,
+        scope: chosen.scope,
+        phases: chosen.phases,
+        tasks: chosen.tasks,
         max_tasks: document.getElementById('start-max-tasks').value,
         until: document.getElementById('start-until').value,
         max_runs: document.getElementById('start-max-runs').value,
@@ -3545,6 +3596,8 @@ def build_html():
       if (t.classList.contains('manual-done')) settleManual(t.getAttribute('data-task'), 'done');
       if (t.classList.contains('manual-skip')) settleManual(t.getAttribute('data-task'), 'skip');
       if (t.id === 'start-job-btn') startJob();
+      if (t.id === 'start-all-btn') setAllStartBoxes(true);
+      if (t.id === 'start-none-btn') setAllStartBoxes(false);
       if (t.hasAttribute('data-job-action') && !t.disabled) { jobAction(t.getAttribute('data-job'), t.getAttribute('data-job-action')); return; }
       var head = t.closest ? t.closest('[data-job-toggle]') : null;
       if (head) {
