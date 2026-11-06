@@ -491,6 +491,14 @@ you" lists items of two features.
   model lacks tool use, or it is too large for the machine. A request larger than the model's context MUST fail with a clear error, never be cut
   silently. Local models are best effort; Anthropic does not support them.
 
+**Approving dependencies and downloads**
+- **FR-036**: A task held only because it adds a dependency (`[dep]`) or a large download (`[download]`) MUST show an
+  **Approve** button on its card in Waiting on you (and the Roadmap's Waiting on you list), with the tag's meaning in
+  words ("adds a new dependency", "downloads a large file"). Approving MUST add the per-task approval
+  (`[dep:ok]` / `[download:ok]`) to that task's line in `tasks.md` and commit it, and a waiting Job whose scope now
+  has a runnable task MUST continue by itself, as after a manual task is settled. A task held because a task it
+  depends on is held MUST NOT show the button. The same approval MUST be possible from the command line.
+
 **How the server is started**
 - **FR-024**: The person MUST be able to start the server with one command, from any folder. The server does not
   start at login; the person starts it after a reboot.

@@ -722,3 +722,35 @@ except for `write_answer` and `try_apply`, which call `sdd-decide.py` as today; 
   - `tests/server_ui/test_job_models.py`: choosing `sonnet` and "Other…" `claude-opus-5-5` starts a Job whose card
     shows both; Continue with the project default shows "(project)".
 
+## 18. Approving a dependency or download (FR-036)
+
+- **Engine** (`bin/sdd-manual.py`): a third action, `approve <project dir> <feature dir> <task id>`. It reads the
+  task's open line in `<feature>/tasks.md` (`TASK_LINE`). For each of `[dep]` and `[download]` on that line without
+  its `:ok` partner, it inserts the partner right after the tag (`[dep] [dep:ok]`, `[download] [download:ok]`); a
+  line with both gets both. Nothing else on the line changes.
+- **Refusals** (nothing changed, exit 1, the texts exactly): a run is active → "a run is active (.sdd/run.json
+  exists); approve the task after it finishes"; not a git repository → "the project is not a git repository";
+  no open line for the id → "<id> is not an open task"; neither tag → "<id> does not add a dependency or a
+  download"; every tag already has its `:ok` → "<id> is already approved"; `tasks.md` has uncommitted changes →
+  "these files have other changes; commit or stash them first: tasks.md".
+- **Commit**: only `tasks.md`, message `chore(approve): <id> dependency approved`, `… download approved`, or
+  `… dependency and download approved`. If the commit fails, `tasks.md` is put back.
+- **After**: calls `sdd_job.after_settle(project)` as `done` and `skip` do, and returns
+  `{"contract", "task", "approved": ["dep"] | ["download"] | ["dep", "download"], "commit", "job"}`.
+- **Route**: `POST /api/p/<id>/task/approve` with `{"task": "<id>"}` → 200 with the engine's result, 409 with the
+  refusal text. Through the request checks and the version lock (§10, §11).
+- **Read model** (`bin/sdd-views.py`): a Waiting on you item gains `"approvable": bool`, true when the task is open, its own tags
+  include `dep` or `download` without the `:ok` partner, and no other hold applies (`status_tag` is `dep` or
+  `download`, not `dependency`, `manual` or `decision`). `waiting_all` (§15) carries the field through unchanged.
+- **UI** (`views/Waiting.tsx`, and the Roadmap's Waiting on you list): an approvable item shows **Approve** next to
+  the tag line. It asks "Approve <id>? It may add packages or downloads to the project." and on yes posts the route;
+  a refusal shows its text under the card. The item leaves the list when the task is no longer held.
+- **Tests**:
+  - `tests/test_sdd_manual.py`: `[dep]` gets `[dep:ok]` and one commit with only `tasks.md`; a line with both tags
+    gets both; each refusal above with its exact text and `tasks.md` unchanged; a failing commit leaves `tasks.md`
+    as it was; a waiting Job whose only held task is approved continues (after_settle called).
+  - `tests/test_server_routes.py`: the route approves and commits; a refusal is 409 with the text.
+  - `tests/test_sdd_dashboard.py` (the read-model tests): `approvable` is true for a task held only by `[dep]`, false when it also has
+    `[manual]`, false for a task held through a held dependency, false once `[dep:ok]` is there.
+  - `tests/server_ui/test_approve_dep.py`: Approve on a `[dep]` task, confirm, the card leaves Waiting on you and
+    `tasks.md` has `[dep:ok]`; a dismissed confirmation changes nothing.

@@ -47,6 +47,7 @@ Changes and additions under the prefix:
 | GET `…/models` | | `{"default": {"implementer", "verifier"}, "aliases": [...], "local": [...] \| null, "local_reason"}` (data-model §17) |
 | POST `…/jobs/start`, `…/jobs/<id>/continue` | as before, plus `"models"?: {"implementer"?, "verifier"?}` (a name, or `null` for the project default) | as before; 400 with the refusal text for a bad name (data-model §17) |
 | POST `…/manual/done` | as before, plus `"images"?: [{"type", "data"}]` (base64; at most 5, 10 MB each) | as before; 400 with the refusal text for a bad picture (data-model §16) |
+| POST `…/task/approve` | `{"task"}` | 200 with the engine's result, or 409 `{"error"}` with the refusal text (data-model §18) |
 | any write route | as before | also 409 `{"error": "version mismatch: …"}` on a major mismatch (data-model §11) |
 
 ## Status codes used

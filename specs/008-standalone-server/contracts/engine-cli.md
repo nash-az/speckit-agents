@@ -18,6 +18,7 @@ copy's `current` folder for the server.
 | `sdd-setup.py detect\|check\|apply --project <dir> …` | data-model §12 | 0 / 1 |
 | `sdd-slots.py holders` | `{"max_parallel", "holders", "queued"}` | 0 |
 | `sdd-supervise.py … --adopt <run id> [--confirmed-closed]` | log lines (not JSON) | 0 closed or finished; 3 timed out; 4 cap reached on a person's start |
+| `sdd-manual.py approve <project dir> <feature dir> <task id>` | `{"contract", "task", "approved", "commit", "job"}` (data-model §18) | 0 / 1 |
 
 The existing commands (`parse`, `plan`, `tick`, `block`, `config`, `checkpoint`, `changed`, `events`, and the
 `sdd-decide`, `sdd-manual`, `sdd-unblock`, `sdd-edit`, `sdd-job`, `sdd-launch` commands) keep their arguments. Their
