@@ -2524,16 +2524,19 @@ class ReadOnlyTest(unittest.TestCase):
                 return range(node.body[0].lineno, node.end_lineno + 1)
         self.fail(f"no function {name}")
 
+    VIEWS = HERE.parent / "bin" / "sdd-views.py"
+
     def test_source_has_no_writes(self):
         source = self.SOURCE.read_text(encoding="utf-8")
         for pattern in self.FORBIDDEN:
             self.assertIsNone(re.search(pattern, source), pattern)
         lines = source.splitlines()
-        writer = [*self.function_lines(source, "write_control"), *self.function_lines(source, "write_answer")]
+        # write_answer() moved to sdd-views.py (008 data-model §14) and write_control() calls
+        # sdd-control.py, so the dashboard's own source writes nothing at all.
         for pattern in (r"write_text", r"os\.replace"):
-            hits = [n for n, line in enumerate(lines, 1) if re.search(pattern, line)]
-            self.assertTrue(hits, pattern)
-            self.assertEqual([n for n in hits if n not in writer], [], pattern)
+            self.assertEqual([n for n, line in enumerate(lines, 1) if re.search(pattern, line)], [], pattern)
+        self.assertIs(dash.write_answer, dash.sdd_views.write_answer)
+        self.assertIs(dash.try_apply, dash.sdd_views.try_apply)
         # The dashboard sends no signal; its liveness probe is sdd-tasks.py's supervisor_alive()
         # (008 data-model §3), whose only signal is `os.kill(pid, 0)` (§12.3).
         self.assertEqual([n for n, line in enumerate(lines, 1) if re.search(r"os\.kill", line)], [])
@@ -2545,6 +2548,28 @@ class ReadOnlyTest(unittest.TestCase):
         for n, line in kills:
             self.assertIn(n, probes, line)
             self.assertEqual(line, "os.kill(pid, 0)")
+
+    def test_views_source_has_no_writes(self):
+        """008 data-model §14: bin/sdd-views.py gets the same guard, except `write_answer()` (one answer
+        file in the state directory) and `try_apply()`, which calls sdd-decide.py as the dashboard did."""
+        source = self.VIEWS.read_text(encoding="utf-8")
+        for pattern in self.FORBIDDEN:
+            self.assertIsNone(re.search(pattern, source), pattern)
+        lines = source.splitlines()
+        writer = [*self.function_lines(source, "write_answer")]
+        for pattern in (r"write_text", r"os\.replace"):
+            hits = [n for n, line in enumerate(lines, 1) if re.search(pattern, line)]
+            self.assertTrue(hits, pattern)
+            self.assertEqual([n for n in hits if n not in writer], [], pattern)
+        # The named exception: sdd-decide.py is called only from try_apply().
+        applier = [*self.function_lines(source, "try_apply")]
+        calls = [n for n, line in enumerate(lines, 1) if re.search(r"sdd_decide\.(?!py)", line)
+                 and not line.startswith(("sdd_decide = ", "_spec"))]
+        self.assertTrue(calls)
+        self.assertEqual([n for n in calls if n not in applier], [])
+        self.assertEqual([n for n, line in enumerate(lines, 1) if re.search(r"os\.kill", line)], [])
+        # No engine module imports the dashboard.
+        self.assertNotIn('with_name("sdd-dashboard.py")', source)
 
     def test_write_control_leaves_the_project_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
