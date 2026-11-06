@@ -71,6 +71,68 @@ class HardStopTest(unittest.TestCase):
         self.assertEqual(set(stops.values()), {1.0})
 
 
+class TaskBoundaryTest(unittest.TestCase):
+    """task_boundary: where a stop after the current task may stop the run (spec 009)."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("sup_boundary", SCRIPT)
+        self.sup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.sup)
+
+    @staticmethod
+    def journal(*steps):
+        """Journal lines from the fake's `started(...)`/`finished(...)` steps."""
+        return [json.dumps(step["journal"]) for step in steps]
+
+    def test_stop_during_a_task_stops_at_its_commit_though_the_next_task_has_started(self):
+        lines = self.journal(started("a", "impl:T014"),                        # 0; the stop comes after it
+                             finished("a"), started("b", "verify:T014"), finished("b"),
+                             started("c", "commit:T014"), finished("c"),        # 5: the boundary
+                             started("d", "impl:T015"))
+        self.assertEqual(self.sup.task_boundary(lines, 1), 5)
+
+    def test_stop_during_a_retry_waits_for_the_commit_after_the_retry(self):
+        lines = self.journal(started("a", "impl:T013"), finished("a"), started("b", "commit:T013"), finished("b"),
+                             started("c", "impl:T014"), finished("c"), started("d", "verify:T014"),
+                             finished("d"),                                     # 7: rejected; the stop comes here
+                             started("e", "impl:T014#2"), finished("e"), started("f", "verify:T014"), finished("f"),
+                             started("g", "commit:T014"), finished("g"))        # 13: the boundary
+        self.assertEqual(self.sup.task_boundary(lines, 8), 13)
+        self.assertIsNone(self.sup.task_boundary(lines[:12], 8), "the retry is not committed yet")
+
+    def test_a_group_of_two_tasks_waits_for_the_groups_commit(self):
+        lines = self.journal(started("a", "impl:T020"), started("b", "impl:T021"),  # the stop comes after 1
+                             finished("a"), started("c", "verify:T020"), finished("c"), finished("b"),
+                             started("d", "verify:T021"), finished("d"),
+                             started("e", "commit:T020,T021"), finished("e"))   # 9: the boundary
+        self.assertEqual(self.sup.task_boundary(lines, 2), 9)
+        partial = self.journal(started("a", "impl:T020"), started("b", "impl:T021"), finished("a"),
+                               started("c", "commit:T020"), finished("c"))
+        self.assertIsNone(self.sup.task_boundary(partial, 2), "T021 is still open")
+
+    def test_no_commit_yet_is_none(self):
+        lines = self.journal(started("a", "impl:T014"), finished("a"), started("b", "verify:T014"), finished("b"))
+        self.assertIsNone(self.sup.task_boundary(lines, 1))
+        self.assertIsNone(self.sup.task_boundary([], 0))
+
+    def test_a_commit_before_the_stop_is_not_a_boundary(self):
+        lines = self.journal(started("a", "impl:T1"), finished("a"), started("b", "commit:T1"), finished("b"),
+                             started("c", "impl:T2"))
+        self.assertIsNone(self.sup.task_boundary(lines, 4))
+
+    def test_a_commit_that_is_repaired_and_committed_again_waits_for_the_last_commit(self):
+        lines = self.journal(started("a", "impl:T1"), finished("a"), started("b", "commit:T1"),
+                             finished("b"),                                     # 3: checks failed
+                             started("c", "repair:T1"), finished("c"), started("d", "commit:T1"),
+                             finished("d"))                                     # 7: the boundary
+        self.assertEqual(self.sup.task_boundary(lines, 1), 7)
+
+    def test_a_cut_off_line_is_skipped(self):
+        lines = self.journal(started("a", "impl:T1"), started("b", "commit:T1")) + ['{"type": "res',
+                                                                                   *self.journal(finished("b"))]
+        self.assertEqual(self.sup.task_boundary(lines, 1), 3)
+
+
 class SuperviseTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -425,22 +487,56 @@ class RunControlTest(unittest.TestCase):
         self.assertIn("ignoring operator request 'stop' while waiting", out)
         self.assertIn("ignoring operator request 'resume' while waiting", out)
 
-    def test_after_task_stop_waits_for_the_agent_then_resume_starts_a_second_cycle(self):
+    def test_after_task_stop_waits_for_the_task_boundary_then_resume_starts_a_second_cycle(self):
         cycle1 = [{"transcript": True}, started("a", "impl:T1"), {"control": {"command": "stop", "mode": "after-task"}},
-                  {"sleep": 1.5}, finished("a"), started("b", "verify:T1"), {"sleep": 30}, *DONE]
+                  {"sleep": 1.0}, finished("a"), started("b", "verify:T1"), {"sleep": 0.5}, finished("b"),
+                  started("c", "commit:T1"), {"sleep": 0.3}, finished("c"), {"sleep": 30}, *DONE]
         t0 = time.time()
         proc = self.start([cycle1, [{"transcript": True}, *DONE]])
         stopping = self.wait_for(lambda s: s.get("state") == "stopping", "stopping")
         self.assertEqual(stopping["mode"], "after-task")
         held = self.wait_for(lambda s: s.get("state") == "held", "held")
-        self.assertGreaterEqual(time.time() - t0, 1.5, "the running agent was allowed to finish")
+        self.assertGreaterEqual(time.time() - t0, 1.8, "the task was allowed to reach its commit")
         self.assertEqual(held["reason"], "stopped by operator")
         self.assertEqual(len((self.dir / "calls").read_text().splitlines()), 1)
         self.control("resume")
         out, calls = self.finish(proc)
         self.assertEqual(proc.returncode, 0, out)
         self.assertEqual(len(calls), 2)
-        self.assertIn("safe point", out)
+        self.assertIn("task boundary: stopping the run", out)
+        self.assertNotIn("safe point", out, "the agent-level safe point is not used for this request")
+
+    def test_after_task_stop_during_the_first_of_two_tasks_commits_it_and_does_not_finish_the_second(self):
+        self.write_feature(["- [ ] T1 First.", "- [ ] T2 Second."])
+        self.env["FAKE_TASKS"] = str(self.project / "specs" / "f" / "tasks.md")
+        cycle1 = [{"transcript": True}, started("a", "impl:T1"), {"control": {"command": "stop", "mode": "after-task"}},
+                  {"sleep": 0.5}, finished("a"), started("b", "verify:T1"), finished("b"), started("c", "commit:T1"),
+                  {"tick": "T1"}, finished("c"), started("d", "impl:T2"), {"sleep": 30}, finished("d"),
+                  {"tick": "T2"}, *DONE]
+        t0 = time.time()
+        proc = self.start([cycle1, [{"transcript": True}, *DONE]], "--run-args=--no-converge")
+        self.wait_for(lambda s: s.get("state") == "held", "held")
+        self.assertLess(time.time() - t0, 25, "the run stopped at T1's commit, not at its end")
+        tasks = (self.project / "specs" / "f" / "tasks.md").read_text()
+        self.assertIn("- [x] T1", tasks)
+        self.assertIn("- [ ] T2", tasks, "the second task was not finished")
+        self.control("resume")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertIn("task boundary: stopping the run", out)
+
+    def test_after_task_stop_before_any_agent_stops_at_once(self):
+        cycle1 = [{"transcript": True}, {"control": {"command": "stop", "mode": "after-task"}}, {"sleep": 30},
+                  started("a", "impl:T1"), *DONE]
+        t0 = time.time()
+        proc = self.start([cycle1, [{"transcript": True}, *DONE]])
+        self.wait_for(lambda s: s.get("state") == "held", "held")
+        self.assertLess(time.time() - t0, 25)
+        self.control("resume")
+        out, calls = self.finish(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("stop requested before any task: stopping the run", out)
 
     def test_stop_now_stops_at_once_and_a_stop_while_held_is_discarded(self):
         cycle1 = [{"transcript": True}, started("a", "impl:T1"), {"control": {"command": "stop", "mode": "now"}},
@@ -473,7 +569,8 @@ class RunControlTest(unittest.TestCase):
 
     def test_dashboard_settings_after_task_stop_then_resume_continues(self):
         cycle1 = [{"transcript": True}, started("a", "impl:T1"), {"control": {"command": "stop", "mode": "after-task"}},
-                  {"sleep": 0.5}, finished("a"), started("b", "verify:T1"), {"sleep": 30}, *DONE]
+                  {"sleep": 0.5}, finished("a"), started("b", "verify:T1"), finished("b"), started("c", "commit:T1"),
+                  finished("c"), {"sleep": 30}, *DONE]
         proc = self.start([cycle1, [{"transcript": True}, *DONE]], *self.DASHBOARD)
         held = self.wait_for(lambda s: s.get("state") == "held", "held")
         self.assertEqual(held["reason"], "stopped by operator")
@@ -703,14 +800,17 @@ class JobTest(unittest.TestCase):
         until = int(time.time()) + 2
         self.save_job(limits={"max_tasks": None, "until": until, "max_runs": 20})
         run = [{"transcript": True}, {"run": "r1"}, started("a", "impl:T001"), {"sleep": 3.5}, finished("a"),
-               started("b", "verify:T001"), {"sleep": 30}, {"tick": "T001"}, {"finish": True}, *DONE]
+               started("b", "verify:T001"), {"sleep": 0.3}, finished("b"), started("c", "commit:T001"),
+               {"tick": "T001"}, finished("c"), started("d", "impl:T002"), {"sleep": 30}, {"tick": "T002"},
+               {"finish": True}, *DONE]
         t0 = time.time()
         out, calls, took = self.supervise([run, job_run("r2", "T002")])
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertEqual(len(calls), 1)
-        self.assertGreaterEqual(time.time() - t0, 3.0, "the running agent was allowed to finish")
-        self.assertLess(took, 25, "the run was stopped at the safe point, not run to its end")
-        self.assertIn("safe point", out.stdout)
+        self.assertGreaterEqual(time.time() - t0, 3.0, "the running task was allowed to reach its commit")
+        self.assertLess(took, 25, "the run was stopped at the task boundary, not run to its end")
+        self.assertIn("task boundary: stopping the run", out.stdout)
+        self.assertIn("- [ ] T002", self.tasks.read_text(), "the task started after the boundary was not finished")
         record = self.job()
         self.assertEqual(record["state"], "stopped")
         self.assertEqual(record["reason"], f"until {time.strftime('%H:%M', time.localtime(until))} reached")

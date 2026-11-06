@@ -22,7 +22,9 @@ and the current state to <state dir>/status.json. Only the standard library is u
 
 The dashboard can stop and resume a supervised run (data-model §12): it writes one request to
 <state dir>/control.json, which this script reads and deletes. `stop` (after the current task, or
-now) ends the cycle and holds until `resume`; while waiting for a usage window, `hold` keeps the
+now) ends the cycle and holds until `resume`. After the current task means at the next task boundary
+(spec 009, `task_boundary`): a commit result at which every task started so far is committed; asked
+before any agent started, the run stops at once; while waiting for a usage window, `hold` keeps the
 run paused after the reset and `release` undoes that. Held longer than --max-wait-hours ends it.
 
 --job ID carries out the Job in .sdd/jobs/ID.json (spec 005, data-model §6) as a series of runs of
@@ -30,7 +32,7 @@ run paused after the reset and `release` undoes that. Held longer than --max-wai
 run it checks that the checkout is on the Job's branch and that no limit is reached; after each run it
 appends the run id, re-reads the scope and sets the Job `done`, `waiting` (only items that need the
 person), `failed` (no progress in two runs) or starts the next run. A stop-by time passing mid-run
-stops the run after the current task. --max-cycles then counts per run; status.json names the Job.
+stops the run at the next task boundary. --max-cycles then counts per run; status.json names the Job.
 A Job waits for any usage reset (--max-wait-hours does not apply to that wait); at the reset a kept
 pause (`hold`) sets the Job `held` and an operator stop (during a run or the wait) sets it `stopped`,
 and the supervisor exits 0 in both cases instead of holding for Resume.
@@ -116,6 +118,58 @@ class Usage:
         return (self.windows.get(name or "") or {}).get("resets_at")
 
 
+def task_boundary(lines: list[str], from_line: int) -> int | None:
+    """The first task boundary at or after `from_line` in a workflow journal (spec 009, plan "Changes" 3).
+
+    Reading the lines in order, a task is started at its first `impl:`/`eval:` started line and settled
+    when a `result` line of a `commit:` label names it. A boundary is a `commit:` result line at which
+    every task started before it is settled. A commit result is not a boundary while a later line starts
+    a `commit:` or `repair:` agent for the same tasks (failing checks: the group is repaired and committed
+    again). Returns the line's index, or None when no boundary has come yet."""
+    labels: dict[str, str] = {}
+    seen: set[str] = set()     # tasks started so far
+    open_tasks: set[str] = set()  # started and not settled
+    events: list[dict | None] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            event = None  # a line cut off when the process was killed
+        events.append(event if isinstance(event, dict) else None)
+    for index, event in enumerate(events):
+        if event is None or not event.get("key"):
+            continue
+        key, kind = event["key"], event.get("type")
+        if kind == "started":
+            labels[key] = event.get("label") or ""
+            match = sdd_tasks.LABEL_RE.match(labels[key])
+            if match and match["kind"] in ("impl", "eval") and match["ids"] not in seen:
+                seen.add(match["ids"])
+                open_tasks.add(match["ids"])
+            continue
+        if kind != "result":
+            continue
+        match = sdd_tasks.LABEL_RE.match(labels.get(key, ""))
+        if not match or match["kind"] != "commit":
+            continue
+        ids = set(match["ids"].split(","))
+        open_tasks -= ids
+        if index >= from_line and not open_tasks and not _redone_later(events[index + 1:], ids):
+            return index
+    return None
+
+
+def _redone_later(events: list[dict | None], ids: set[str]) -> bool:
+    """True when one of these journal events starts a `commit:` or `repair:` agent for any of `ids`."""
+    for event in events:
+        if event is None or event.get("type") != "started":
+            continue
+        match = sdd_tasks.LABEL_RE.match(event.get("label") or "")
+        if match and match["kind"] in ("commit", "repair") and ids & set(match["ids"].split(",")):
+            return True
+    return False
+
+
 class Cycle:
     """One headless /sdd-run, watched until it ends or is stopped."""
 
@@ -131,6 +185,9 @@ class Cycle:
         self.stop_reason: str | None = None
         self.pause_window: str | None = None  # the window that crossed the threshold
         self.operator = False  # an operator asked to stop after the current task (data-model §12.2)
+        # (workflow dir, journal line count) when that stop request (or the stop-by time) was first read:
+        # the run stops at the first task boundary from there (spec 009).
+        self.stop_from: tuple[Path | None, int] | None = None
         self.run_id: str | None = None  # the run's id, read from .sdd/run.json while it is live (005 R5)
         self.until_sent = False  # the Job's stop-by time passed and the stop request was sent (005 §6)
         self.lock = threading.Lock()
@@ -184,19 +241,23 @@ class Cycle:
                 self.workflow_dir = Path(match.group(1))
                 say(f"workflow {self.workflow_dir.name}")
 
-    def journal_counts(self) -> tuple[int, int]:
-        """(agents started, agents finished) in the workflow journal so far."""
+    def journal_lines(self) -> list[str]:
+        """The lines of the current workflow's journal so far (none before a workflow is seen)."""
         if not self.workflow_dir:
-            return 0, 0
-        started = finished = 0
+            return []
         try:
-            for line in (self.workflow_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines():
-                if '"type": "started"' in line or '"type":"started"' in line:
-                    started += 1
-                elif '"type": "result"' in line or '"type":"result"' in line or '"type": "failed"' in line:
-                    finished += 1
+            return (self.workflow_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()
         except OSError:
-            pass
+            return []
+
+    def journal_counts(self, lines: list[str] | None = None) -> tuple[int, int]:
+        """(agents started, agents finished) in the workflow journal so far."""
+        started = finished = 0
+        for line in self.journal_lines() if lines is None else lines:
+            if '"type": "started"' in line or '"type":"started"' in line:
+                started += 1
+            elif '"type": "result"' in line or '"type":"result"' in line or '"type": "failed"' in line:
+                finished += 1
         return started, finished
 
     def nothing_left(self) -> bool:
@@ -246,7 +307,8 @@ class Cycle:
                 over = self.usage.over(self.args.threshold)
                 hard = self.usage.over(self.args.hard_stops)
                 rejected = self.usage.status == "rejected"
-            started, finished = self.journal_counts()
+            lines = self.journal_lines()
+            started, finished = self.journal_counts(lines)
             self.run_id = read_run_id(self.args.project) or self.run_id
             # A Job's stop-by time (005 data-model §6): send ourselves the "stop after the current task"
             # request; the operator path below then stops the run at the next safe point.
@@ -278,9 +340,8 @@ class Cycle:
                     break
                 if not self.operator:
                     self.operator = True
-                    if pause_at is None:
-                        pause_at = finished
-                    say("stop requested by the operator: stopping after the current agent finishes")
+                    self.stop_from = (self.workflow_dir, len(lines))
+                    say("stop requested by the operator: stopping at the next task boundary")
                     if self.status:
                         with self.lock:
                             write_status(self.status, state="stopping", mode="after-task", cycle=self.cycle_no,
@@ -294,20 +355,36 @@ class Cycle:
                 say(f"test pause after {finished} agents: stopping the run")
                 stop(proc)
                 break
+            # A stop after the current task (the operator's, or the stop-by time's) waits for a task
+            # boundary (spec 009): every task started so far is committed. Tasks started after that line
+            # go back to the pool. Usage-limit pauses keep the agent-level safe point below.
+            if self.operator and self.stop_from is not None:
+                if started == 0:
+                    self.stop_reason = "operator"
+                    say("stop requested before any task: stopping the run")
+                    stop(proc)
+                    break
+                stop_dir, stop_line = self.stop_from
+                boundary = task_boundary(lines, stop_line if stop_dir == self.workflow_dir else 0)
+                if boundary is not None:
+                    if self.pause_window is None and not hard and self.nothing_left():
+                        # No task left: holding would leave a run that Resume can only close, so let
+                        # it finish and write its report instead.
+                        self.operator = False
+                        self.stop_from = None
+                        say("stop requested after the current task, but no task is left in this run: letting it finish")
+                        if self.status:
+                            with self.lock:
+                                write_status(self.status, state="running", cycle=self.cycle_no,
+                                             stream=str(self.log_path), usage=self.usage.windows,
+                                             threshold=self.args.threshold)
+                        continue
+                    self.stop_reason = "operator"
+                    say("task boundary: stopping the run")
+                    stop(proc)
+                    break
             if pause_at is not None:
                 idle = started == finished
-                if (self.operator and self.pause_window is None and not hard and started > 0
-                        and (finished > pause_at or idle) and self.nothing_left()):
-                    # "Stop after the current task" with no task left: holding would leave a run
-                    # that Resume can only close, so let it finish and write its report instead.
-                    self.operator = False
-                    pause_at = None
-                    say("stop requested after the current task, but no task is left in this run: letting it finish")
-                    if self.status:
-                        with self.lock:
-                            write_status(self.status, state="running", cycle=self.cycle_no, stream=str(self.log_path),
-                                         usage=self.usage.windows, threshold=self.args.threshold)
-                    continue
                 if finished > pause_at or idle or hard:
                     self.stop_reason = "operator" if self.operator else "paused"
                     if finished > pause_at or idle:
