@@ -174,6 +174,8 @@ STATUS_RE = re.compile(r"^- status:\s*(?P<status>\w+)", re.IGNORECASE)
 BLOCKED_FIELD_RE = re.compile(r"^- (?P<key>\w+):\s*(?P<value>.*)$")
 BLOCKED_FIELDS = {"status", "tag", "reason", "question", "answer"}
 TASK_REF_RE = re.compile(r"\b(T\d+[a-z]?)\b")
+# The plain-language summary right below a task line: exactly two spaces, then not a space or dash (data-model §7).
+SUMMARY_RE = re.compile(r"^  (?P<summary>[^\s-].*)$")
 
 # BLOCKED.md statuses that hold a task: open (waiting for an answer), wontfix
 # (dropped) and moved (became work outside this project). A resolved entry does
@@ -274,6 +276,7 @@ def parse_task(match: re.Match, line_no: int) -> dict:
         "deps": deps,
         "superseded_by": superseded_by,
         "text": rest.strip(),
+        "summary": None,
         "line": line_no,
     }
 
@@ -281,7 +284,12 @@ def parse_task(match: re.Match, line_no: int) -> dict:
 def parse_tasks(path: Path) -> dict:
     phases: list[dict] = []
     current = None
+    last_task: dict | None = None  # the task on the line just above, for its summary line
     for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        above, last_task = last_task, None
+        if above is not None and not TASK_RE.match(line) and (summary := SUMMARY_RE.match(line)) is not None:
+            above["summary"] = summary["summary"].strip()
+            continue
         if (head := PHASE_RE.match(line)) is not None:
             current = {"id": head["num"], "title": head["title"].strip(), "tasks": []}
             phases.append(current)
@@ -290,7 +298,8 @@ def parse_tasks(path: Path) -> dict:
             current = None  # Dependencies, Notes and other non-phase sections
             continue
         if current is not None and (task := TASK_RE.match(line)) is not None:
-            current["tasks"].append(parse_task(task, line_no))
+            last_task = parse_task(task, line_no)
+            current["tasks"].append(last_task)
     return {"tasks_file": str(path), "phases": phases}
 
 

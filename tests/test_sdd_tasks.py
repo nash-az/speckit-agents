@@ -73,6 +73,63 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(result["blocked"], {"T006": "open", "T003": "resolved"})
         self.assertEqual(result["phases"], json.loads(json.dumps(self.parsed["phases"])))
 
+    # 009 data-model §7: the summary line right below a task line.
+    SUMMARY_TASKS = ("## Phase 1: Setup\n\n"
+                     "- [ ] T001 Add the parser in `a.py`\n"
+                     "  Tasks can carry a plain-language summary.  \n"
+                     "- [ ] T002 Wire it in `b.py`\n"
+                     "- [ ] T003 Indented by four in `c.py`\n"
+                     "    not a summary\n"
+                     "- [ ] T004 Dashed in `d.py`\n"
+                     "  - not a summary either\n"
+                     "- [ ] T005 Do the work in `e.py`\n"
+                     "  Runs after T001 and touches `src/other.py` in passing.\n")
+
+    def parse_text(self, text):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        path = tmp / "tasks.md"
+        path.write_text(text, encoding="utf-8")
+        return path, tasks_by_id(sdd.parse_tasks(path))
+
+    def test_summary_is_read(self):
+        _, tasks = self.parse_text(self.SUMMARY_TASKS)
+        self.assertEqual(tasks["T001"]["summary"], "Tasks can carry a plain-language summary.")
+        self.assertEqual(tasks["T001"]["text"], "Add the parser in `a.py`")
+
+    def test_task_without_summary_has_none(self):
+        _, tasks = self.parse_text(self.SUMMARY_TASKS)
+        self.assertIsNone(tasks["T002"]["summary"])
+        self.assertIsNone(self.tasks["T009"]["summary"])
+
+    def test_four_spaces_or_dash_is_not_a_summary(self):
+        _, tasks = self.parse_text(self.SUMMARY_TASKS)
+        self.assertIsNone(tasks["T003"]["summary"])
+        self.assertIsNone(tasks["T004"]["summary"])
+
+    def test_summary_changes_neither_deps_nor_files(self):
+        _, tasks = self.parse_text(self.SUMMARY_TASKS)
+        t = tasks["T005"]
+        self.assertEqual(t["summary"], "Runs after T001 and touches `src/other.py` in passing.")
+        self.assertEqual(t["deps"], [])
+        self.assertEqual(t["files"], ["e.py"])
+        self.assertEqual(t["superseded_by"], [])
+
+    def test_tick_keeps_summary_below_task(self):
+        path, _ = self.parse_text(self.SUMMARY_TASKS)
+        sdd.tick(path, ["T001"])
+        self.assertIn("- [x] T001 Add the parser in `a.py`\n"
+                      "  Tasks can carry a plain-language summary.  \n", path.read_text(encoding="utf-8"))
+        self.assertEqual(tasks_by_id(sdd.parse_tasks(path))["T001"]["summary"],
+                         "Tasks can carry a plain-language summary.")
+
+    def test_009_tasks_have_a_summary_for_every_task(self):
+        tasks = tasks_by_id(sdd.parse_tasks(HERE.parent / "specs" / "009-runs" / "tasks.md"))
+        self.assertTrue(tasks)
+        for task_id, task in tasks.items():
+            self.assertIsInstance(task["summary"], str, task_id)
+            self.assertTrue(task["summary"].strip(), task_id)
+
 
 class BlockedEntriesTest(unittest.TestCase):
     def setUp(self):
@@ -526,6 +583,12 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(self.changed_after("## Phase 1: Setup\n\nSome intro.\n\n"
                                             "- [ ] T002 Wire it per T001 in `b.py`\n"
                                             "- [ ] T001 [P] Add the parser in `a.py`\n"), [])
+
+    def test_edited_summary_is_not_listed(self):
+        with_summary = self.BASE.replace("in `a.py`\n", "in `a.py`\n  A first summary.\n")
+        self.tasks.write_text(with_summary, encoding="utf-8")
+        self.old = sdd.snapshot(sdd.parse_tasks(self.tasks))
+        self.assertEqual(self.changed_after(with_summary.replace("A first summary.", "A new summary.")), [])
 
     def test_cli_snapshot_and_changed(self):
         out = subprocess.run([sys.executable, str(SCRIPT), "snapshot", str(self.tasks)],
