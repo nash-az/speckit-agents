@@ -79,6 +79,31 @@ class HarvestTest(HistoryTestCase):
         self.assertTrue(all(e["run"] == RUN and e["session"] == "20261106-1015" for e in entries))
         self.assertEqual(len({e["key"] for e in entries}), len(entries))
 
+    def test_transcript_gives_duration_and_tokens(self):
+        wf = self.workflow("20261106-1015", "wf_one", self.retry_journal())
+        (wf / "agent-a1.jsonl").write_text("\n".join(json.dumps(line) for line in [
+            {"type": "assistant", "timestamp": "2026-11-06T09:00:00Z",
+             "message": {"usage": {"input_tokens": 100, "output_tokens": 20}}},
+            {"type": "user", "timestamp": "2026-11-06T09:01:00Z", "message": {"usage": {"input_tokens": 999}}},
+            {"type": "assistant", "timestamp": "2026-11-06T09:02:05.500Z",
+             "message": {"usage": {"input_tokens": 300, "output_tokens": 45}}},
+        ]) + "\n", encoding="utf-8")
+        history.harvest(self.root, self.record)
+        entries = history.read(self.root, "008-standalone-server", "T012")
+        from_a1 = [e for e in entries if e["key"].split(":")[-2] == "a1"]
+        self.assertEqual([e["step"] for e in from_a1], ["started", "implemented"])
+        for entry in from_a1:
+            self.assertEqual(entry["duration_s"], 125)
+            self.assertEqual(entry["tokens"], 465)
+
+    def test_missing_transcript_gives_neither_field(self):
+        self.workflow("20261106-1015", "wf_one", self.retry_journal())
+        history.harvest(self.root, self.record)
+        for entry in history.read(self.root, "008-standalone-server", "T012"):
+            self.assertNotIn("transcript", entry)
+            self.assertNotIn("duration_s", entry)
+            self.assertNotIn("tokens", entry)
+
     def test_harvest_twice_adds_nothing(self):
         self.workflow("20261106-1015", "wf_one", self.retry_journal())
         history.harvest(self.root, self.record)

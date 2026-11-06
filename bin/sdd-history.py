@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -80,6 +81,49 @@ def _agent_meta(workflow_dir: Path, agent_id: str) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
+def _parse_ts(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError:
+        return None
+
+
+def _transcript_stats(transcript: Path) -> dict:
+    """duration_s and tokens of one agent's transcript (data-model §5); a field is left out when it is unknown."""
+    stats: dict = {}
+    first, last = _parse_ts(sdd_tasks._first_ts(transcript)), _parse_ts(sdd_tasks._last_ts(transcript))
+    if first is not None and last is not None:
+        try:
+            stats["duration_s"] = int((last - first).total_seconds())
+        except TypeError:  # one aware, one naive
+            pass
+    total, seen = 0, False
+    try:
+        with transcript.open("rb") as fh:
+            for raw in fh:
+                try:
+                    line = json.loads(raw)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if not isinstance(line, dict) or line.get("type") != "assistant":
+                    continue
+                message = line.get("message")
+                usage = message.get("usage") if isinstance(message, dict) else None
+                if not isinstance(usage, dict):
+                    continue
+                seen = True
+                for field in ("input_tokens", "output_tokens"):
+                    if isinstance(usage.get(field), int):
+                        total += usage[field]
+    except OSError:
+        return stats
+    if seen:
+        stats["tokens"] = total
+    return stats
+
+
 def _entries_from_event(run_id: str, session: str, event: dict, workflow_dir: Path | None) -> list[tuple[str, dict]]:
     """(task id, entry) pairs for one `run_events` event; [] for kinds a history does not keep."""
     kind, label, agent_id = event.get("kind"), event.get("label") or "", event.get("agent_id") or ""
@@ -94,6 +138,7 @@ def _entries_from_event(run_id: str, session: str, event: dict, workflow_dir: Pa
         transcript = workflow_dir / f"agent-{agent_id}.jsonl"
         if transcript.exists():
             base["transcript"] = str(transcript)
+            base.update(_transcript_stats(transcript))
     steps = {"task.started": "started", "task.implemented": "implemented", "task.verified": "verified",
              "task.blocked": "blocked", "task.failed": "failed"}
     pairs: list[tuple[str, dict]] = []
