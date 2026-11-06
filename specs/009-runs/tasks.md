@@ -36,4 +36,4 @@ removes what is then unused.
 ## Phase 6: Clean-up and docs
 
 - [x] T011 After T010, update `README.md` (the "Jobs" section becomes "Runs": Stop after this task ends and lands, a cut-off suspends with Continue and Drop, finished work lands by itself, task history) and the newest handoff in `CLAUDE.md`.
-- [ ] T012 After T009, remove from `bin/sdd-job.py` the 005 functions nothing calls any more (check with grep across `bin/`, `skills/`, `workflows/` and `tests/`), and their tests.
+- [x] T012 After T009, remove from `bin/sdd-job.py` the 005 functions nothing calls any more (check with grep across `bin/`, `skills/`, `workflows/` and `tests/`), and their tests.
