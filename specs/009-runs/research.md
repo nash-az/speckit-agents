@@ -5,7 +5,7 @@
 Decisions for the amendment after run `20261106-1204` and its analyze pass. Each one names the code it rests on
 (file:line on branch `auto/20261106-1204` at `f92915e`).
 
-## R1. Landing under constitution v1.2.0
+## R1. Landing under constitution v1.2.1
 
 - **Decision**: Only `bin/sdd-job.py` lands, never an agent: `land` (fast-forward, else `git merge --no-ff -m
   "merge: run <title>"`, a conflict aborts and stores `needs-merge`; `bin/sdd-job.py:540-582`) and `land_ready`
@@ -30,11 +30,11 @@ Decisions for the amendment after run `20261106-1204` and its analyze pass. Each
   `chore(run): <id> summary`. A run whose landing is `needs-merge` or `pending` gets its summary when Land or
   Merge succeeds. Today `finalize` writes the summary before landing (`bin/sdd-history.py:258-278`, called from
   `end`, `bin/sdd-job.py:629`), so the summary has no landing.
-- **Rationale**: FR-017 (amended) and FR-020 ("written once, after landing … how it ended and its landing").
-  After landing no run is active (`.sdd/run.json` archived, supervisor status `done`), so the summary commit is an
-  engine bookkeeping commit on the checked-out branch, the same rule as the dashboard's commits (FR-015); it is
-  not an agent touching a protected branch during a run (Principle II). A merge commit's sha cannot be known before
-  the merge, so the summary cannot be written on the run branch with its landing.
+- **Rationale**: FR-017 (amended: "the run's history and summary commits") and FR-020 ("written once, after
+  landing … how it ended and its landing"). Constitution v1.2.1 Principle II (commit `c1901d5`) allows it: "After
+  landing, the engine may also commit the ended run's summary and task-history files (only those files) on the
+  base." The summary commit holds only `.sdd/runs/<id>.json`. A merge commit's sha cannot be known before the
+  merge, so the summary cannot be written on the run branch with its landing.
 - **Alternatives**: (a) summary on the run branch before landing with a predicted landing (`git merge-tree`):
   cannot name a merge commit's sha, and a race would make it wrong; (b) histories in each task's own commit
   (the original FR-017): the bookkeeper commits only the task's files (Principle VI) and the history of a task

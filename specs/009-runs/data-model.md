@@ -71,8 +71,9 @@ on the normalized record:
 
 1. `working`, supervisor alive (`status.json` pid) and its state `waiting` → `paused`.
 2. `working`, supervisor alive, no task started yet in the current session → `preparing` (**New**, FR-002): no
-   run.json of its own yet, or its `workflow_dir` is missing, or that `journal.jsonl` has no `started` line whose
-   `label` starts with `impl:` or `eval:`.
+   run.json of its own yet, or its `workflow_dir` is missing, or that `journal.jsonl` has no `started` line at all.
+   Any `started` line counts, whatever its label: a resumed session's journal may start with `verify:` or
+   `commit:`, and that run is past preparing.
 3. `working`, supervisor alive → `working`.
 4. `working`, supervisor dead, its run.json → `suspended`, reason kept or "the run was cut off".
 5. `working`, supervisor dead, no run.json of its own → `ended`, outcome `stopped`, reason "the supervisor ended
@@ -158,6 +159,11 @@ base as `chore(run): <id> summary`. Never rewritten (`write_summary` returns Non
 
 New against T001: `landing`, `duration_s`, `reports`, `per_task`, `usage_peak` (null when the supervisor saw no
 usage event). Missing data is `null`, never left out.
+
+Counting rules: a task's `attempts` (and the run's `attempts`) = the number of its `started` entries in this run.
+`per_task.duration_s` and `per_task.tokens` sum each agent once: entries are grouped by `transcript` (else by the
+`key`'s agent id part), and of each group only the first entry carrying `duration_s` / `tokens` counts, since
+several entries (for example `started` and `implemented`) come from the same transcript.
 
 ## §7. Task summary line (`tasks.md`, FR-028)
 

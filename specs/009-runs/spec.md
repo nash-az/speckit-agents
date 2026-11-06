@@ -48,8 +48,8 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
   stays simple. Every run is started through the supervisor (launcher or Start run). `/sdd-run` stays the
   supervisor's single cycle and never starts a supervisor itself; typed into a session without one, it warns that the
   run has no usage-limit protection. Run 20261106-1204 was started that way and hit the 5-hour limit mid-task.
-- Q: Where does a task's history get committed? → A: With the session's report commit, or with the run's summary
-  commit when the run ends or is dropped (as the plan chose and the code does), not in the task's own commit.
+- Q: Where does a task's history get committed? → A: With the session's report commit, or with the run's history
+  and summary commits when the run ends or is dropped (as the plan chose and the code does), not in the task's own commit.
 - Q: The task text is written for the implementer (paths, function names, exact strings). What does the person
   read? → A: A plain-language summary on an indented line below each task (user), written by `/speckit-tasks`. The
   task card shows the summary, with the exact text behind an expander. Backfill 009's `tasks.md` only; 005 and 008
@@ -145,7 +145,7 @@ that run; the task's history still shows both attempts, the rejection reason, th
    suspended, resumed, dropped), **Then** an entry is added to that task's history with its time, run, session,
    attempt, agent role and model.
 2. **Given** a task is committed, **Then** its commit message carries the task id, the run id, the attempt count and
-   the implementer's model as trailers, and its history is committed with the session's report or the run's summary.
+   the implementer's model as trailers, and its history is committed with the session's report or the run's history and summary commits.
 3. **Given** Claude's transcript of an attempt still exists, **Then** the task's history links to it for the full
    output; when it has been deleted, the history still reads complete.
 4. **Given** a task worked on in several runs, **Then** its history shows all of them in one list.
@@ -264,8 +264,8 @@ merged), upgrade; check each shows as described and the two open ones can be con
   plugin's helpers. Each entry: time, run id, session, attempt, step (started, implemented, verdict with problems,
   retried, committed with hash, blocked with reason, suspended, resumed, dropped with diff), agent role, model,
   duration and tokens when known, and the transcript path when one exists.
-- **FR-017**: Task histories MUST be committed with the session's report commit, and with the run's summary commit
-  when the run ends or is dropped, so every history is in the repository once its run has ended. A task's own commit
+- **FR-017**: Task histories MUST be committed with the session's report commit, and with the run's history and
+  summary commits when the run ends or is dropped, so every history is in the repository once its run has ended. A task's own commit
   holds only the task's files (constitution VI).
 - **FR-018**: Task commits MUST carry trailers `Task: <id>`, `Run: <run id>`, `Attempts: <n>`, `Model: <implementer>`.
 - **FR-019**: The UI MUST show a task's history on the task (008 FR-033's step events read from it), newest last,

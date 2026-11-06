@@ -3,7 +3,7 @@
 **Branch**: `009-runs` (built on `auto/20261106-1204`) | **Date**: 2026-11-06 (amended the same day) | **Spec**: `spec.md`
 
 **Input**: `spec.md`, amended 2026-11-06 after run `20261106-1204` (report `.sdd/runs/20261106-1204.md`) and its
-analyze pass; constitution v1.2.0.
+analyze pass; constitution v1.2.1.
 
 ## Summary
 
@@ -33,16 +33,16 @@ routes), `node --test tests/workflow.test.mjs`, `claude plugin test .`; browser 
 **Target Platform**: macOS/Linux, local repository without a remote.
 **Project Type**: Claude Code plugin (CLI helpers, skills, workflow, local dashboard).
 **Performance Goals**: none beyond today (the dashboard polls every 3 s; history reads are per task).
-**Constraints**: constitution II (only the engine lands; never force, push or rewrite), VI (one task, one commit),
+**Constraints**: constitution v1.2.1 II (only the engine lands, and after landing may commit the run's summary and history files on the base; never force, push or rewrite), VI (one task, one commit),
 VII (no model in the engine); the suite stays green on every task commit.
 **Scale/Scope**: one run at a time per project; tens of tasks per feature; histories of a few hundred lines.
 
-## Constitution Check (v1.2.0)
+## Constitution Check (v1.2.1)
 
 | Principle | Check | Result |
 |---|---|---|
 | I. Spec Kit stays the source of truth | Summaries are an indented line plain Spec Kit still reads; `tasks.md` stays the task list | Pass |
-| II. Safe without a person watching | Only `bin/sdd-job.py` (plain code) lands, at the end or by fast-forward while suspended, ff or plain merge, abort on conflict (v1.2.0 exception). The summary commit on the base is made after landing, when no run is active (research R2). Leftover edits are stashed, never deleted (R4). Agents still cannot touch protected branches | Pass |
+| II. Safe without a person watching | Only `bin/sdd-job.py` (plain code) lands, at the end or by fast-forward while suspended, ff or plain merge, abort on conflict (v1.2.0 exception). After landing, the engine commits only the ended run's summary file on the base, which v1.2.1 allows ("After landing, the engine may also commit the ended run's summary and task-history files (only those files) on the base"; research R2). Leftover edits are stashed, never deleted (R4). Agents still cannot touch protected branches | Pass |
 | III. Never guess on a person's behalf | Drop, Continue, Merge stay the person's; a stale `waiting` run never restarts by itself (R6) | Pass |
 | IV. Verified, not reported | Landing only lands commits the verifier approved and the checks passed | Pass |
 | V. Deterministic where possible | Boundary detection, landing, summaries and parsing are plain code with tests | Pass |
@@ -63,6 +63,7 @@ specs/009-runs/
 ├── research.md      # R1–R14
 ├── data-model.md    # §1 run record, §2 normalize, §3 shown state, §4 lifecycle, §5 task history, §6 run summary, §7 task summary line
 ├── quickstart.md    # validation with the fake claude
+├── manual.md        # the person's steps for the [manual] validation task
 ├── contracts/
 │   ├── runs-cli.md          # sdd-launch / sdd-control / sdd-job / sdd-tasks parse / sdd-history
 │   └── dashboard-routes.md  # /api/jobs…, /api/project/task-history, run view, page texts
