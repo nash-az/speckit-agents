@@ -31,7 +31,26 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 - **`templates/`**: `sdd-config.toml`, `settings.json` (sandbox and allow/deny rules), `agent-tags.md`.
 
 ## Progress
-- **Handoff (2026-11-05) — start here.** Read `logs/2026-11-05-lessons.md` first. Build order: `.sdd/roadmap.toml`.
+- **Handoff (2026-11-06) — start here.** Read `logs/2026-11-05-lessons.md` first, then this run's learnings in
+  `.sdd/learnings.md` and plugin feedback in `.sdd/plugin-feedback.jsonl` (harvest with `bin/sdd-harvest.py`).
+  - **009 Runs (`specs/009-runs/`):** a Job is now a short-lived **run**; the task is the lasting record. Built with
+    `/sdd-run` from the operator session (the person's choice, to gather the plugin's learnings), on branch
+    `auto/20261106-1204`; T001 by hand, T002–T011 by the run, T012 (remove unused 005 functions) open. That branch is
+    a plain in-session run, so nothing lands by itself: merging it into `main` is the person's call (ask first).
+  - **What 009 changed:** Stop after current task waits for a task boundary, then ends the run (`stopped`) and lands
+    its commits on the base (fast-forward, else `merge: run <title>`; a conflict → `needs-merge`, Merge retries via
+    `sdd-job.py land`). A cut-off (Stop now, unwaited limit, dead supervisor, kept pause) → `suspended` with Continue
+    and Drop; Drop stashes and saves the patch in the task's history; finished work is fast-forwarded onto the base
+    while suspended. Task histories in `.sdd/tasks/<feature>/<id>.jsonl` and run summaries in `.sdd/runs/<id>.json`
+    are committed (`bin/sdd-history.py`); task commits carry `Task`/`Run`/`Attempts`/`Model` trailers. The dashboard
+    says "run" (`#runs`, Start run, banner per FR-022) and shows History on a task card. Internal names
+    (`sdd-job.py`, `.sdd/jobs/`, `/api/jobs`, `--job`) stay; 008 renames them. README "Runs" describes it.
+  - **Not in 009:** a plain `/sdd-run` gets trailers and histories but no auto-landing or boundary stop; histories for
+    work before 009 (FR-026) are not built. FR-017 (a task's history goes in the task's own commit) is not met as
+    written: histories go into the session's report commit or the run's summary commit instead, as plan.md item 5
+    chose. Do not assume the spec's rule holds.
+  - Tests: 726 Python passing on `auto/20261106-1204` after T010.
+- **Handoff (2026-11-05, superseded by the one above).** Read `logs/2026-11-05-lessons.md` first. Build order: `.sdd/roadmap.toml`.
   - **State:** checkout on `main` (`916a0da`), clean, nothing pushed (no remote). `.specify/feature.json` points at
     008. No run or Job is going. The dashboard runs from the checkout on port 8765 (started by the operator session;
     restart with `python3 bin/sdd-dashboard.py --project . --port 8765` if it is gone). The plugin loads in place from
