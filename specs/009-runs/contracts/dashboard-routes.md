@@ -45,3 +45,25 @@ Drop's confirm, and `summary` (ended runs: `.sdd/runs/<id>.json` when it exists,
 - Start run task list: `summary`, else the exact text cut to 110 characters, as today.
 - Past-run card line (FR-021, US4): "<duration> · <n> done, <d> dropped, <b> blocked · <a> attempts, <f> approved
   first time · <models> · peak usage <five_hour>% (5 h), <seven_day>% (7 d)"; parts with no data are left out.
+
+## Amendment 2026-11-07: Stop while preparing, sending state, Requests list
+
+FR-031 to FR-034; research R16–R21; exact shapes and texts in data-model §8.
+
+| Method | Path | Change |
+|---|---|---|
+| POST | `/api/run/stop`, `/api/run/resume`, `/api/run/hold`, `/api/run/release` | Same body and answers (`202 {"ok": true, "id"}`, `409 {"error"}`, `400`). `_control` calls `sdd_control.request(project, command, mode, "dashboard")`, so every 202 and 409 leaves a request line in the control log; a 400 does not. While the new run's status is `starting` (data-model §8.1) `stop` answers 202, not 409 |
+| GET | `/api/run/current` | Same shape. While the status is `starting`: `controls.stop` true, `controls.reason` null, `job.shown.state` `preparing` |
+| POST | `/api/jobs/start` | Same answer; the 202 is sent only after the `starting` status is written, so the next `/api/run/current` already offers Stop |
+| GET | `/api/jobs`, `/api/jobs/<id>` | Each run view also has `requests` (data-model §8.4): `[{"id", "ts", "command", "mode", "source", "outcome", "reason", "taken", "taken_reason", "taken_ts"}, …]`, oldest first, `[]` when none |
+
+Page behaviour:
+
+- **Run card** (`jobCardHtml`): after the summary line and before the buttons, `jobRequestsHtml(job)` (data-model
+  §8.5): nothing when `requests` is empty, else the `Requests` list, on live and past runs alike.
+- **Banner Stop while preparing**: both Stop buttons are enabled from the first poll after Start run (they follow
+  `controls.stop`, which the `starting` status makes true).
+- **Sending** (`postControl`, `controlButton`): while a banner request is out, the pressed button reads `sending…`
+  and every banner control button and the usage checkbox are disabled; after 10 s without an answer the request is
+  aborted and the banner shows `request failed: no answer after 10 s` beside the buttons and in a toast. No
+  automatic retry: pressing again is the retry.

@@ -88,3 +88,40 @@ one is ended with Land, and Land lands it in one call.
 Start a small run from the dashboard's Start run on a real feature, press Stop after this task during its first
 task, and check §1's expectations on the real repository: the finished task is on the base branch with no click,
 and the card shows the past run's summary.
+
+## 8. Stop while preparing (amendment 2026-11-07: FR-031, FR-032, SC-009)
+
+Automated in `tests/test_supervise.py` `StartWindowTest` (always runs) and `tests/ui/test_stop_preparing.py`
+(browser; strict with `SDD_UI_TESTS=1`); research R22. By hand, on the toy repository of the prerequisites, with
+`SDD_CLAUDE=<plugin>/tests/fake/claude`, `FAKE_DIR`, `FAKE_TASKS` and a scenario whose one session is
+`[{"transcript": true}, {"run": "s1"}, {"sleep": 30}]`:
+
+1. `python3 bin/sdd-launch.py <repo> specs/001-x --job --phases 1`, then at once
+   `python3 bin/sdd-job.py show <id> <repo>`: `shown.state` is `preparing`, and the state directory's
+   `status.json` says `"state": "starting"` (or already `running`) with the run's id as `job`.
+2. `python3 bin/sdd-control.py stop --project <repo>`: `{"contract": "1.0", "ok": true, "id": "<request id>"}`,
+   not a refusal.
+3. Within 15 s: `sdd-job.py show <id> <repo>` gives `shown.state` `ended`, outcome `stopped`, reason "stopped before
+   any task", landing `nothing`; T001 and T002 are still `- [ ]`; `.sdd/run.json` is gone.
+4. `<state dir>/control-log.jsonl` has the request line (`"source": "cli"`, `"outcome": "accepted"`, `"run": "<id>"`)
+   and a taken line with the same `id` and `"taken": "stopping before any task"` (data-model §8.2).
+5. Repeat with `stop --now`: the same ending (not suspended).
+6. Leftover request: write `control.json` by hand with `"job": "20200101-0000"`, then launch: the supervisor log
+   says "deleted a leftover control.json", the run goes on, and the control log has `"taken": "ignored"`, `"reason":
+   "for another run"`.
+
+In the dashboard: Start run, and while the banner says "Preparing <title>" press Stop after current task; the run
+ends as above, and its card in Runs shows a **Requests** list with one row: "<time> · Stop after current task ·
+dashboard · accepted · stopping before any task".
+
+## 9. Sending state and the trace of a refusal (FR-031, FR-033, FR-034)
+
+1. With no run going, `python3 bin/sdd-control.py stop --project <repo>` exits 1 with the refusal; the control log
+   gets a request line with `"outcome": "refused"`, the same reason and `"run": null` (no card shows it).
+2. In the browser test (`page.route` on `**/api/run/stop`, never answered): after the click the button reads
+   "sending…" and the banner's control buttons are disabled; after 10 s the banner and a toast say "request failed:
+   no answer after 10 s" and the buttons work again; the route saw exactly one request.
+3. A past run's card still lists its requests; a run without requests shows no Requests list.
+4. `[manual]`: run `SDD_UI_TESTS=1 python3 -m unittest tests.ui.test_stop_preparing tests.ui.test_banner
+   tests.ui.test_jobs` once outside a run and record the output (a run's agents may not be able to start a browser,
+   `.sdd/learnings.md`).

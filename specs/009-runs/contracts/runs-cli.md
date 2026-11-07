@@ -86,3 +86,61 @@ in `phases[].tasks`; `snapshot` leaves it out.
 sdd-history.py harvest <project> <run id>         → {"contract","added": {"T013": 4}}
 sdd-history.py show <project> <feature> <task id> → {"contract","entries": [entry, …]}   (data-model §5)
 ```
+
+## Amendment 2026-11-07: run control in the start window and the control log
+
+FR-031, FR-032; research R16–R19, R22; shapes and exact texts in data-model §8.
+
+### `sdd-control.py` (functions other modules call)
+
+```
+write_control(logs, command, mode=None, request_id=None, job=None) -> str | False
+    as today; `job` given → "job": <job> in control.json (data-model §8.2)
+send_control(logs, request) -> str | False
+    as today; passes request.get("job") on; after a successful write logs a request line with source "until"
+request(project, command, mode=None, source="cli") -> {"ok": True, "id"} | {"error"}
+    as today, plus: job = status.json "job" when the supervisor is alive and not done/stopped (else None) is
+    written into control.json; one request line is logged, accepted or refused, after the write or the refusal
+log_control(logs, entry) -> bool
+    appends json.dumps(entry) + "\n" to <logs>/control-log.jsonl with one os.write on an O_APPEND fd; no lock;
+    any OSError/ValueError → False; never raises
+read_control_log(logs) -> {run id: [request, …]}      (data-model §8.3; {} for a missing file)
+controls(project)
+    the "running" row also covers status "starting" (stop True, reason None)
+```
+
+The command line is unchanged (`stop [--now]`, `resume`, `hold`, `release`, `controls`; same output and exit
+codes). It now passes `source="cli"`, so each request leaves a request line. `sdd-control.py stop --project <dir>`
+during the start window (a `starting` status, data-model §8.1) is accepted: `{"contract", "ok": true, "id"}`.
+
+### `sdd-supervise.py`
+
+```
+write_starting_status(path, job_id, pid) -> bool
+    data-model §8.1; False (nothing written) when status.json already has "pid": pid
+startup_control(logs, job_id) -> dict | None
+    reads control.json once (read_control deletes it); returns a "stop" whose "job" == job_id (job_id not
+    empty); otherwise logs the ignored taken line, says "deleted a leftover control.json" and returns None;
+    returns None at once when there is no control.json
+taken(logs, control, text, reason=None) -> None
+    one taken line (data-model §8.2) through sdd_control.log_control
+--claude  hidden; default os.environ.get("SDD_CLAUDE") or "claude"   (tests only, research R22)
+```
+
+`main` calls `args.startup_stop = startup_control(logs, args.job)` where it deleted `control.json` before.
+`run_job` carries it out right after setting `JOB_ID` (research R17); the endings are the existing `end_run`
+("stopped", "stopped before any task") and `suspend_run` ("stopped by you"). A `stop` with `mode: now` read in
+`Cycle.run` while no agent has started ends like an after-task one (`before-task`, research R18), and `run_job`'s
+`before-task` branch suspends instead when the tree is not clean.
+
+Exit codes are unchanged: 0 for `stopped` and for a suspend from a stop.
+
+### `sdd-launch.py`
+
+```
+_start_supervisor(project, command, job_id=None) -> (pid, log)
+    after _spawn: write_starting_status(state_dir/status.json, job_id, proc.pid) when job_id is given
+```
+
+`launch_job` and `continue_job` pass their run id; their output is unchanged. When `launch_job` returns, the new
+run already reads as `preparing` (`sdd-job.py show <id>`) and Stop is accepted for it.
