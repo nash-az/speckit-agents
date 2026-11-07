@@ -1,0 +1,57 @@
+{
+  "contract": "1.0",
+  "id": "20261107-0159",
+  "title": "Phase 3",
+  "feature": "008-standalone-server",
+  "scope": {
+    "phases": [
+      "3"
+    ]
+  },
+  "created": 1794013157,
+  "ended": 1794014100,
+  "duration_s": 943,
+  "outcome": "stopped",
+  "reason": "stopped by you",
+  "landing": {
+    "state": "landed",
+    "commit": "51d03bddc33a3dfd9e4ba64fcc4040e798eea061",
+    "files": []
+  },
+  "sessions": [
+    "20261107-0204"
+  ],
+  "reports": [
+    ".sdd/runs/20261107-0204.md"
+  ],
+  "tasks": {
+    "done": [
+      "T015"
+    ],
+    "blocked": [],
+    "dropped": []
+  },
+  "attempts": 2,
+  "approved_first_time": 1,
+  "models": {
+    "implementer": "claude-opus-5-5",
+    "verifier": "claude-opus-5-5",
+    "bookkeeper": "claude-opus-5-5"
+  },
+  "per_task": {
+    "T015": {
+      "attempts": 1,
+      "duration_s": 623,
+      "tokens": 25368
+    },
+    "T016": {
+      "attempts": 1,
+      "duration_s": 0,
+      "tokens": null
+    }
+  },
+  "usage_peak": {
+    "five_hour": 0.32,
+    "seven_day": 0.9
+  }
+}
