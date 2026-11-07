@@ -1,5 +1,9 @@
 # Tasks: Standalone server
 
+> **Closed 2026-11-07 after T015** (user, option B). The open tasks are held as `wontfix` in BLOCKED.md, each
+> naming the feature it moved to: 010 server core, 007 parallelism, 012 setup, 013 new UI, 014 local models.
+> Those features are re-specified against the post-009 code; read this file as history only.
+
 **Input**: `specs/008-standalone-server/` (spec.md, plan.md, research.md, data-model.md, contracts/, quickstart.md)
 **Checks**: `python3 -m unittest discover -s tests`, `node --test tests/workflow.test.mjs`, `claude plugin test .`.
 
