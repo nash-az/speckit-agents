@@ -1,0 +1,41 @@
+{
+  "contract": "1.0",
+  "id": "20261106-1631",
+  "title": "009 amendment (T013–T032)",
+  "feature": "009-runs",
+  "scope": {
+    "phases": [
+      "7",
+      "8",
+      "9",
+      "10",
+      "11",
+      "12",
+      "13",
+      "14"
+    ]
+  },
+  "created": 1793979081,
+  "ended": 1794009796,
+  "outcome": "done",
+  "reason": null,
+  "sessions": [
+    "20261107-0022"
+  ],
+  "tasks": {
+    "done": [
+      "T030",
+      "T031",
+      "T032"
+    ],
+    "blocked": [],
+    "dropped": []
+  },
+  "attempts": 3,
+  "approved_first_time": 3,
+  "models": {
+    "implementer": "claude-opus-5-5",
+    "verifier": "claude-opus-5-5",
+    "bookkeeper": "claude-opus-5-5"
+  }
+}
