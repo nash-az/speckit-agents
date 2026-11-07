@@ -1,7 +1,7 @@
 """008 data-model §6 and §10: server/projects.py — `GET /api/projects`, `POST /api/projects/add`,
 `POST /api/projects/<id>/remove` and `POST /api/p/<id>/feature`, with §6's project tests (5 projects,
 the same one again and through a symlink, a moved folder shows as missing, the list survives a
-restart).
+restart), and §10's folder browser `GET /api/fs/list` (flags, 500 limit, home folder, Origin checks).
 
 Every server here runs with temporary HOME, XDG_STATE_HOME and XDG_DATA_HOME and without the Claude
 session's variables (the `TempHome` base of tests/test_server_core.py).
@@ -246,6 +246,75 @@ class FeatureTest(ProjectsServer):
         self.assertEqual(status, 400)
         self.assertEqual(data["features"], ["001-a", "002-b"])
         self.assertEqual(self.post("/api/p/0123456789ab/feature", {"feature": None})[0], 404)
+
+
+class FolderListTest(ProjectsServer):
+    """§10: `GET /api/fs/list`."""
+
+    def fs_list(self, query="", headers=None):
+        return request(self.port, "GET", "/api/fs/list" + query, headers)
+
+    def test_listing_works_with_the_flags(self):
+        work = self.home / "work"
+        added = make_project(work / "added")
+        make_project(work / "sdd-only")
+        make_project(work / "plain", sdd=False, git=False)
+        (work / ".hidden").mkdir()
+        (work / "a-file.txt").write_text("x", encoding="utf-8")
+        self.post("/api/projects/add", {"path": str(added)})
+        status, _, data = self.fs_list(f"?path={work}")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["path"], str(work.resolve()))
+        self.assertEqual(data["parent"], str(self.home.resolve()))
+        self.assertIs(data["truncated"], False)
+        self.assertEqual(data["entries"], [
+            {"name": "added", "path": str(work.resolve() / "added"), "sdd": True, "listed": True},
+            {"name": "plain", "path": str(work.resolve() / "plain"), "sdd": False, "listed": False},
+            {"name": "sdd-only", "path": str(work.resolve() / "sdd-only"), "sdd": True, "listed": False},
+        ])
+        names = [e["name"] for e in self.fs_list(f"?path={work}&hidden=1")[2]["entries"]]
+        self.assertEqual(names, [".hidden", "added", "plain", "sdd-only"])
+        self.assertEqual(self.fs_list(f"?path={work}&hidden=0")[2]["entries"][0]["name"], "added")
+
+    def test_the_path_defaults_to_home_and_home_has_no_parent(self):
+        (self.home / "work").mkdir()
+        status, _, data = self.fs_list()
+        self.assertEqual(status, 200)
+        self.assertEqual(data["path"], str(self.home.resolve()))
+        self.assertIsNone(data["parent"])
+        self.assertEqual([e["name"] for e in data["entries"]], ["work"])
+
+    def test_600_folders_give_500_and_truncated(self):
+        many = self.home / "many"
+        for i in range(600):
+            (many / f"d{i:03d}").mkdir(parents=True)
+        status, _, data = self.fs_list(f"?path={many}")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["entries"]), 500)
+        self.assertIs(data["truncated"], True)
+        self.assertEqual(data["entries"][0]["name"], "d000")
+        self.assertEqual(data["entries"][-1]["name"], "d499")
+
+    def test_outside_home_is_403(self):
+        status, _, data = self.fs_list("?path=/etc")
+        self.assertEqual((status, data), (403, {"error": "outside your home folder"}))
+        outside = self.base / "outside"
+        outside.mkdir()
+        link = self.home / "link-out"
+        link.symlink_to(outside)
+        self.assertEqual(self.fs_list(f"?path={link}")[0], 403)
+        self.assertEqual(self.fs_list(f"?path={self.home}/..")[0], 403)
+
+    def test_a_missing_folder_is_404(self):
+        self.assertEqual(self.fs_list(f"?path={self.home}/nowhere")[0], 404)
+
+    def test_origin_and_sec_fetch_site_checks(self):
+        self.assertEqual(self.fs_list("", {"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(self.fs_list("")[0], 200)
+        self.assertEqual(self.fs_list("", {"Origin": self.origin})[0], 200)
+        self.assertEqual(self.fs_list("", {"Sec-Fetch-Site": "cross-site"})[0], 403)
+        self.assertEqual(self.fs_list("", {"Sec-Fetch-Site": "same-origin"})[0], 200)
+        self.assertEqual(self.fs_list("", {"Sec-Fetch-Site": "none"})[0], 200)
 
 
 class StoreTest(core.TempHome):

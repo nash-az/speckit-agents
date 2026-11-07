@@ -14,6 +14,9 @@ Routes (`ROUTES`, added to app.py's route table by `app.load_server_modules()`):
 - `POST /api/projects/<id>/remove {}` → `{"ok": true}`; the project itself is never touched.
 - `POST /api/p/<id>/feature {"feature": name | null}` → `{"ok": true, "feature"}`; sets the feature
   the project's per-feature routes read, or null to follow its `active_feature()` (§6).
+- `GET /api/fs/list?path=<abs>&hidden=0|1` → `{"path", "parent", "entries": [{"name", "path", "sdd",
+  "listed"}], "truncated"}`: the folder browser (§10). Folders only, sorted, at most 500; `path`
+  defaults to the home folder and must resolve inside it (403); `parent` is null at the home folder.
 
 `project_for(handler, id)` is the lookup every `/api/p/<id>/…` route uses: unknown id → 404, missing
 project → 410 `{"error": "project folder is missing"}`.
@@ -37,6 +40,7 @@ NOT_GIT = "not a git repository"
 SETUP_SCRIPT = "sdd-setup.py"  # the engine's setup command (§12); lives next to the other engine files
 GIT_TIMEOUT = 30
 DETECT_TIMEOUT = 60
+FS_LIST_LIMIT = 500  # the folder browser lists at most this many folders (§10)
 
 
 # --- The list ------------------------------------------------------------------------------------
@@ -297,8 +301,67 @@ def set_feature(handler, match):
     handler.send_json({"ok": True, "feature": feature})
 
 
+def _query_value(handler, name: str) -> str | None:
+    values = (getattr(handler, "query", None) or {}).get(name)
+    return values[0] if values else None
+
+
+def folder_entries(folder: Path, hidden: bool, listed: set[str]) -> tuple[list[dict], bool]:
+    """The sub-folders of `folder`, sorted by name, at most FS_LIST_LIMIT (§10); also whether the
+    list was cut. Hidden folders (a leading `.`) only with `hidden`."""
+    names = []
+    try:
+        with os.scandir(folder) as it:
+            for item in it:
+                if not hidden and item.name.startswith("."):
+                    continue
+                try:
+                    if item.is_dir():  # follows symlinks, like the browser does
+                        names.append(item.name)
+                except OSError:
+                    continue
+    except OSError:
+        return [], False
+    names.sort()
+    truncated = len(names) > FS_LIST_LIMIT
+    entries = []
+    for name in names[:FS_LIST_LIMIT]:
+        child = folder / name
+        try:
+            resolved = str(child.resolve())
+        except (OSError, RuntimeError):
+            resolved = str(child)
+        entries.append({"name": name, "path": str(child), "sdd": not is_missing(child),
+                        "listed": resolved in listed})
+    return entries, truncated
+
+
+def list_folders(handler, match):  # noqa: ARG001
+    """`GET /api/fs/list?path=<abs>&hidden=0|1` (§10). The Origin and Sec-Fetch-Site checks are
+    app.py's (`GUARDED_GETS`)."""
+    home = Path.home().resolve()
+    raw = (_query_value(handler, "path") or "").strip()
+    hidden = _query_value(handler, "hidden") == "1"
+    try:
+        folder = Path(raw).expanduser().resolve() if raw else home
+    except (OSError, RuntimeError):
+        handler.send_json({"error": OUTSIDE_HOME}, 403)
+        return
+    if not inside_home(folder):
+        handler.send_json({"error": OUTSIDE_HOME}, 403)
+        return
+    if not folder.is_dir():
+        handler.send_json({"error": "not a folder"}, 404)
+        return
+    listed = {e["path"] for e in handler.projects.entries()}
+    entries, truncated = folder_entries(folder, hidden, listed)
+    parent = str(folder.parent) if folder != home else None
+    handler.send_json({"path": str(folder), "parent": parent, "entries": entries, "truncated": truncated})
+
+
 # (method, pattern, function(handler, match)), added to app.py's route table.
 ROUTES = (
+    ("GET", r"/api/fs/list", list_folders),
     ("GET", r"/api/projects", list_projects),
     ("POST", r"/api/projects/add", add_project),
     ("POST", rf"/api/projects/({PROJECT_ID})/remove", remove_project),
