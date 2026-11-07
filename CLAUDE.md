@@ -31,7 +31,23 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 - **`templates/`**: `sdd-config.toml`, `settings.json` (sandbox and allow/deny rules), `agent-tags.md`.
 
 ## Progress
-- **Handoff (2026-11-07) — start here.** Read `logs/2026-11-05-lessons.md` first, then the runs' learnings in
+- **Handoff (2026-11-07, afternoon) — start here.** Build order: `.sdd/roadmap.toml`.
+  - **State:** checkout on `main` (009-runs is at the same commit), clean, no remote. All `auto/*` run branches were
+    merged and are deleted. The old background worktree's uncommitted v0.1 eval-lane edits are kept under the tag
+    `archive/eval-lane-2026-10-14`; the worktree and its branch are gone.
+  - **008 closed after T015** (`f1686fc`, user's option B): each open 008 task is held `wontfix` in its BLOCKED.md,
+    naming its new home. The rest is re-specified against the post-009 code as small features: **010 server core**
+    (008 US1, US2, US3, US5), **007 parallelism** (now also 008 US4, hand-over and slots), **012 setup and plugin
+    install** (US7), **013 new UI** (US6, US8, FR-032 pictures, FR-036 Approve, and the 009 UI follow-ups: Stop on the
+    run card, activity while preparing), **014 local models** (FR-034, FR-035). 005 is superseded by 009 (T022
+    closed); the 001/002 leftovers are closed. 004 and 006 are checked against 009 when their turn comes.
+  - **Constitution v1.3.0:** VIII (every spec through the Spec Kit flow, clean analyze before a run) and IX (tests
+    for every change). Making both the plugin's default for every project is its own feature, not written yet.
+  - **Next:** the 009 Stop-while-preparing bug (Stop pressed during preflight never reaches the supervisor: no
+    `control.json`, no log line) as a 009 amendment through the full flow; then `/speckit-specify` 010. 009 T033
+    `[manual]` is still the person's.
+  - Plugin feedback up to 2026-11-06 is harvested into `logs/2026-11-07-speckit-agents-feedback.md`.
+- **Handoff (2026-11-07, night; superseded by the one above).** Read `logs/2026-11-05-lessons.md` first, then the runs' learnings in
   `.sdd/learnings.md` and plugin feedback in `.sdd/plugin-feedback.jsonl` (harvest with `bin/sdd-harvest.py`).
   - **009 Runs (`specs/009-runs/`):** a Job is now a short-lived **run**; the task is the lasting record. T001–T032
     are done: T001 by hand, T002–T012 by an in-session `/sdd-run` (`auto/20261106-1204`), T013–T032 (the amendment
