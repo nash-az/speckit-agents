@@ -1,6 +1,6 @@
 # Feature Specification: Runs: short-lived groupings of tasks, with the task as the record
 
-**Feature Branch**: `009-runs` | **Created**: 2026-11-06 | **Status**: Amended 2026-11-06 after run 20261106-1204 and its analyze pass (T001–T012 built; amendment open)
+**Feature Branch**: `009-runs` | **Created**: 2026-11-06 | **Status**: Amended 2026-11-06 after run 20261106-1204 and its analyze pass (T001–T032 built); amended again 2026-11-07 (Stop while preparing and the run-control trace: FR-031 to FR-034, SC-009; clarified, plan and tasks to follow)
 
 **Input**: On 2026-11-06 the person stopped a Phase 3 Job of 008 with "Stop after current task" and pressed Merge. Merge
 refused with "a run is active": the stop had kept `.sdd/run.json` so the run could resume, and Merge refuses while that
@@ -54,6 +54,19 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
   read? → A: A plain-language summary on an indented line below each task (user), written by `/speckit-tasks`. The
   task card shows the summary, with the exact text behind an expander. Backfill 009's `tasks.md` only; 005 and 008
   stay as they are.
+
+### Session 2026-11-07 (amendment: Stop while preparing and the run-control trace)
+- Q: Stop after this task pressed after Start run but before the new supervisor has written its state: refuse it,
+  keep it, or hide the buttons? → A: Keep it (user). The request is accepted, tagged with the run id the launcher
+  created; the supervisor carries it out at startup ("stopped before any task") and deletes only a request for a
+  different run.
+- Q: What does the banner show when a run-control request gets no answer (network failure, timeout, server error)?
+  → A: An error beside the buttons, and pressing again is the retry; no automatic retry (user). Already built: a
+  refused or failed request shows `request failed: <error>` on the banner and in a toast. New: the pressed button
+  reads "sending…" with the banner's control buttons disabled until the answer, and a request unanswered after 10
+  seconds counts as failed (FR-033).
+- Q: Where can the person read the control log? → A: The file in the state directory, plus a Requests list on the
+  run's card in the Runs view, live and past runs (user); not copied into the committed run summary (FR-034).
 
 ## Terms
 
@@ -204,6 +217,10 @@ merged), upgrade; check each shows as described and the two open ones can be con
   stop at task boundaries or land by itself.
 - Stop after this task when a task that started after the boundary has left edits: they are saved as a patch in that
   task's history and stashed, and the run ends cleanly (FR-005).
+- Stop pressed in the second or two after Start run, before the new supervisor has written its state: the request is
+  accepted and tagged with the new run's id; the supervisor carries it out as soon as it starts, so the run ends
+  `stopped` with "stopped before any task" (FR-005, FR-032). A request left from an earlier run (another run id, or
+  none) is still deleted unread at startup and logged as ignored (FR-031).
 
 ## Requirements *(mandatory)*
 
@@ -315,6 +332,27 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - **FR-030**: 009's `tasks.md` MUST have a summary for every task, done ones included. 005's and 008's MUST NOT be
   changed for this.
 
+**Run-control trace**
+- **FR-031**: Every run-control request (stop after this task, stop now, resume, hold, release), from the dashboard
+  or the command line, MUST leave one line in a control log in the supervisor's state directory: the time, the run id
+  (when there is a run), the command, the stop mode, where it came from, and the outcome: accepted (with the request's id) or refused (with the
+  reason the person was shown). When the supervisor takes a request it MUST add a line with the same id saying what it
+  did (stopping after the current task, stopping now, stopping before any task, or ignored, with why). Nothing in the
+  project tree changes, and a failing log write MUST NOT stop the request itself.
+- **FR-032**: From Start run until the new supervisor has written its state, Stop after this task and Stop now MUST
+  be accepted, not refused: the request carries the run id the launcher created. At startup the supervisor MUST carry
+  out a request with its own run id (a stop ends the run `stopped`, "stopped before any task", nothing landed) and
+  MUST delete unread any request with another run id or none.
+- **FR-033**: While a run-control request from the banner is unanswered, the pressed button MUST read "sending…" and
+  the banner's control buttons MUST be disabled. A request with no answer after 10 seconds MUST be abandoned and
+  shown like a failed one (the existing `request failed: <error>` on the banner and in a toast, here with "no answer
+  after 10 s"), and the buttons work again; the browser MUST NOT retry by itself. A request the server never received
+  is not in the control log (FR-031), so this banner error is its only trace.
+- **FR-034**: A run's card in the Runs view, live or past, MUST show a **Requests** list read from the control log:
+  one line per request of that run, oldest first, with its time, command (and stop mode), where it came from,
+  accepted or refused (with the reason), and what the supervisor did with it, or "not taken yet". A run with no
+  requests shows no list. The control log file stays the only store; nothing is added to the committed run summary.
+
 ### Key Entities
 
 - **Run**: id, title, feature, scope, limits, branch, base (branch and commit), state, sessions, how it ended,
@@ -342,6 +380,11 @@ merged), upgrade; check each shows as described and the two open ones can be con
   work (US5 scenarios pass on a copy of this repository's `.sdd/`).
 - **SC-007**: Every task card of 009 reads as a plain sentence, with the exact task text one click away.
 - **SC-008**: A `/sdd-run` typed into a session warns that it has no usage-limit protection before any agent starts.
+- **SC-009**: Pressing Stop after this task on the banner while a run shows Preparing ends that run as `stopped` with
+  "stopped before any task", nothing landed and no task ticked, within 15 seconds, and the control log holds the
+  accepted request and the supervisor's line for it; the same holds when it is pressed right after Start run, before
+  the supervisor has written its state (FR-032); covered by a browser test with a real dashboard, launcher and
+  supervisor and the fake `claude`.
 
 ## Out of Scope
 
