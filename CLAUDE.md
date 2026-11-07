@@ -31,12 +31,15 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 - **`templates/`**: `sdd-config.toml`, `settings.json` (sandbox and allow/deny rules), `agent-tags.md`.
 
 ## Progress
-- **Handoff (2026-11-06) — start here.** Read `logs/2026-11-05-lessons.md` first, then this run's learnings in
+- **Handoff (2026-11-07) — start here.** Read `logs/2026-11-05-lessons.md` first, then the runs' learnings in
   `.sdd/learnings.md` and plugin feedback in `.sdd/plugin-feedback.jsonl` (harvest with `bin/sdd-harvest.py`).
-  - **009 Runs (`specs/009-runs/`):** a Job is now a short-lived **run**; the task is the lasting record. Built with
-    `/sdd-run` from the operator session (the person's choice, to gather the plugin's learnings), on branch
-    `auto/20261106-1204`; T001 by hand, T002–T011 by the run, T012 (remove unused 005 functions) open. That branch is
-    a plain in-session run, so nothing lands by itself: merging it into `main` is the person's call (ask first).
+  - **009 Runs (`specs/009-runs/`):** a Job is now a short-lived **run**; the task is the lasting record. T001–T032
+    are done: T001 by hand, T002–T012 by an in-session `/sdd-run` (`auto/20261106-1204`), T013–T032 (the amendment
+    after that run's analyze pass) by the supervised run `20261106-1631` on `auto/20261106-1631`, which builds on
+    `auto/20261106-1204`. Neither branch is merged into `main` yet; merging is the person's call (ask first).
+  - **Open: T033 `[manual]`, waiting on the person:** the unit suite once, then quickstart §6 (task summaries,
+    Details, the warning without the supervisor) and §7 (one real run from Start run, stopped after its first task)
+    by hand, per the "T033" section of `specs/009-runs/manual.md`; results go in the note box.
   - **What 009 changed:** Stop after current task waits for a task boundary, then ends the run (`stopped`) and lands
     its commits on the base (fast-forward, else `merge: run <title>`; a conflict → `needs-merge`, Merge retries via
     `sdd-job.py land`). A cut-off (Stop now, unwaited limit, dead supervisor, kept pause) → `suspended` with Continue
@@ -45,11 +48,24 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
     are committed (`bin/sdd-history.py`); task commits carry `Task`/`Run`/`Attempts`/`Model` trailers. The dashboard
     says "run" (`#runs`, Start run, banner per FR-022) and shows History on a task card. Internal names
     (`sdd-job.py`, `.sdd/jobs/`, `/api/jobs`, `--job`) stay; 008 renames them. README "Runs" describes it.
+  - **The amendment (T013–T032):** a boundary stop with a later task's edits stashes them (history step `dropped`)
+    and still ends and lands; a stop before any task ends `stopped` with "stopped before any task"; a live run with
+    no task started shows **preparing**; Drop's confirm names the tasks and changed files; histories are committed
+    before landing (`chore(run): <id> history`) and the run summary after landing (`chore(run): <id> summary`, with
+    duration, per-task attempts/durations/tokens and the supervisor's peak usage), shown as one line on a past run's
+    card; on the command line `merge` = `land`, and the dashboard's Merge/Drop refuse with the CLI's words; only the
+    newest run restarts after a settle; task histories record suspended/resumed; tasks carry a plain-language
+    summary line (template, parser, cards with Details); a carry-over test covers 005 records
+    (`tests/test_carry_over.py`).
+  - **FR-017 is met as amended:** histories go in the session's report commit and the run's history and summary
+    commits; a task's own commit holds only its files.
+  - **005 functions removed** from `bin/sdd-job.py` (`open_job`, `display_state`, `merge`, `drop`, `_closable`,
+    `finish_if_complete`, `COMPLETE_REASON`, `CLOSED_STATES`); only the run rules remain.
+  - **Runs start only through the supervisor** (FR-027): Start run in the dashboard or `bin/sdd-launch.py … --job`.
+    `/sdd-run` typed alone warns that it has no usage-limit protection and goes on; it never starts a supervisor.
   - **Not in 009:** a plain `/sdd-run` gets trailers and histories but no auto-landing or boundary stop; histories for
-    work before 009 (FR-026) are not built. FR-017 (a task's history goes in the task's own commit) is not met as
-    written: histories go into the session's report commit or the run's summary commit instead, as plan.md item 5
-    chose. Do not assume the spec's rule holds.
-  - Tests: 726 Python passing on `auto/20261106-1204` after T010.
+    work before 009 (FR-026, a MAY) are not built.
+  - Tests (fresh run after T032): 759 Python passing (1 skipped), 27 node workflow tests passing.
 - **Handoff (2026-11-05, superseded by the one above).** Read `logs/2026-11-05-lessons.md` first. Build order: `.sdd/roadmap.toml`.
   - **State:** checkout on `main` (`916a0da`), clean, nothing pushed (no remote). `.specify/feature.json` points at
     008. No run or Job is going. The dashboard runs from the checkout on port 8765 (started by the operator session;
