@@ -38,3 +38,21 @@ the quickstart are also in the test suite, so here you run that suite once and t
     - **I did it** refuses while a run is going. Wait until the run from step 8 has ended.
 
 Record: research.md ## Validation
+
+## T044 Run the browser tests for Stop while preparing
+
+What it proves: the browser tests for Stop while preparing, the sending state and the Requests list pass with a
+real browser. A run's agents may not be able to start a browser, so these tests may have skipped during the run.
+
+1. Open a terminal in `~/private/speckit-agents`. Check that no run is going: `ls .sdd/run.json` must say "No such
+   file or directory". If the file exists, wait until the run has ended.
+2. Run `SDD_UI_TESTS=1 python3 -m unittest tests.ui.test_stop_preparing tests.ui.test_banner tests.ui.test_jobs`.
+   It takes a minute or two; some tests wait 10 to 15 seconds on purpose.
+3. Copy the last lines of the output exactly: the "Ran … tests" line and the line after it ("OK", or "FAILED" with
+   its counts). If any test failed or was skipped, copy its name and the lines under it too.
+4. Paste what you copied into this card's note box, then press **I did it**. It ticks T044 and saves your note
+   under `## Validation (amendment 2026-11-07)` in `research.md`, in one commit. Claude reads the note to check
+   the result.
+   - **I did it** refuses while a run is going.
+
+Record: research.md ## Validation (amendment 2026-11-07)
