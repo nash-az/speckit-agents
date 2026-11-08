@@ -336,6 +336,18 @@ commands and routes in `contracts/`.
   writes no `starting` status, so its `waiting` status survives. Alternative rejected: keep `sleep_until` with the
   `starting` status in place (the run would read `preparing` for hours, and a Stop sent then would wait unread
   until the reset).
+- **The order of the startup checks (2026-11-08, third analyze pass A4).** A plain supervisor (no `--job`) that
+  meets a request carrying a `job` matched both "for another run" and "left from before this supervisor started".
+  `startup_control(logs, job_id)` checks in this order, first match wins: (1) no `control.json` → None, nothing
+  logged; (2) `read_control` gave None and the file still exists → unlink, ignored "unreadable request"; (3)
+  `job_id` empty (no `--job`) → ignored "left from before this supervisor started", whatever the request
+  carries; (4) the request has no `job` key (or an empty one) → the same reason; (5) its `job` differs from
+  `job_id` → ignored "for another run"; (6) its command is not `stop` → ignored "only stop is taken at startup";
+  (7) otherwise the request is returned (kept). Every ignored case says "deleted a leftover control.json". Reason
+  for (3) before (5): a plain supervisor has no run of its own, so no request can be "another" run's from its
+  point of view; the line's `request_run` still says which run it was meant for. Test (`JobTest` or
+  `RunControlTest`): a supervisor without `--job` and `control.json` with `"job": "20200101-0000"` → taken
+  `ignored` "left from before this supervisor started", `request_run` `20200101-0000`.
 
 ## R18. Stop now before any task ends the run, as Stop after this task does
 
@@ -394,6 +406,18 @@ commands and routes in `contracts/`.
 - **Lines without a run (2026-11-08, second analyze pass A4).** A taken line whose `run` is null (a plain
   supervisor without `--job` taking a request) is skipped by the reader, like a request line without a run id; it
   stays in the file for anyone reading it by hand.
+- **A request refused while the run is suspended (2026-11-08, third analyze pass I2; accepted).** `request()` takes
+  the run id only from a live supervisor's status (R17), so a request refused while a run is suspended (no live
+  supervisor) is logged with `run` null and shows on no card, although the person may have meant that run.
+  Accepted and not changed: (a) the page draws no Stop, Resume or Keep paused button for a suspended run (its
+  banner offers Continue and Drop through `data-job-action`, `tests/ui/test_banner.py:482-489`, and `controls()`
+  allows no stop without a live supervisor: a supervisor-started run that is gone gets only a reason,
+  `bin/sdd-control.py:87-111`), so only the command line can send it;
+  (b) the refusal is answered at once where it was asked (the CLI exits 1 and prints it), so nothing is lost;
+  (c) falling back to the open run's id would make `sdd-control.py` load `sdd-job.py` and decide which run is
+  "open" for a request no run will read, and would put a row on the card for a run that was never asked to do
+  anything. The line stays in the file with `run` null, as quickstart §9 step 1 already says for a refusal with no
+  run going. No test change.
 - **Rationale**: FR-031 (one line per request, the outcome, the supervisor's line with the same id, nothing in the
   project tree, a failing write never stops the request) and FR-034 (the file is the only store). JSON lines
   because the dashboard reads it back (R20) and `launch.log` mixes every supervisor message.
@@ -476,9 +500,15 @@ commands and routes in `contracts/`.
      repository built as `JobTest.setUp` builds it (`tests/test_supervise.py:678-695`, but on `main`, since
      `launch_job` creates the run branch itself), with `XDG_STATE_HOME`, `FAKE_DIR`, `FAKE_TASKS`, `FAKE_CONTROL`
      and `SDD_CLAUDE` set through `unittest.mock.patch.dict(os.environ, …)`. It calls `sdd-launch.py` `launch_job`
-     with `_spawn` patched (`bin/sdd-launch.py:85-86`) to start `[sys.executable, "-c", DELAY, *command[1:]]`,
-     where `DELAY = "import os,sys,time; time.sleep(3); os.execv(sys.executable, [sys.executable] +
-     sys.argv[1:])"`; the pid survives `execv`, so the `starting` status stays right. During the 3-second delay the
+     with `_spawn` patched (`bin/sdd-launch.py:85-86`) to start `[sys.executable, "-c", delay(seconds),
+     *command[1:]]`, where `delay(seconds)` returns `"import os,sys,time; time.sleep(<seconds>);
+     os.execv(sys.executable, [sys.executable] + sys.argv[1:])"`; the pid survives `execv`, so the `starting`
+     status stays right. The delay is a parameter (2026-11-08, third analyze pass A3): 3 s here, where the test
+     itself sends the request; about 10 s in the browser test (item 2), where the page must load, draw the
+     "Preparing" banner and take the click before the supervisor starts. The wait for the supervisor's exit is
+     `proc.wait(timeout=seconds + 15)`, so the 15 s budget counts from the end of the delay. Each of the two test
+     files defines the one-line helper at module level (no import between `tests/` and `tests/ui/`).
+     During the 3-second delay the
      test calls `sdd_control.request(project, "stop", "after-task", "dashboard")` (what the route calls), asserts
      it answers `ok`, waits for the supervisor to exit with `proc.wait(timeout=15)` on the `Popen` the patched
      `_spawn` kept (2026-11-08, analyze H3: polling `os.kill(pid, 0)` never ends, because a child the test process
@@ -501,9 +531,9 @@ commands and routes in `contracts/`.
      and the test reads the state directory. The harness gets no `env` argument (2026-11-08, analyze L9: one way,
      the existing one). Start run in the page, wait for the banner text "Preparing" and for `.sdd/run.json` (as
      item 1, M4), click Stop after current task, and within 15 s read the record as ended `stopped` with "stopped
-     before any task" and the control log lines. A second test uses `launch_job` with the delayed spawn of item 1
-     and clicks Stop before the supervisor runs. A third uses Playwright's `page.route` on `**/api/run/stop` for
-     FR-033 (data-model §8.5).
+     before any task" and the control log lines. A second test uses `launch_job` with the delayed spawn of item 1, at
+     `delay(10)` (A3), and clicks Stop before the supervisor runs. A third uses Playwright's `page.route` on
+     `**/api/run/stop` for FR-033 (data-model §8.5).
   3. **`[manual]` record**: `.sdd/learnings.md` line 20 says a run's agents cannot always launch a browser, so
      `tests/ui/` may skip during a run. One `[manual]` task runs `SDD_UI_TESTS=1 python3 -m unittest
      tests.ui.test_stop_preparing tests.ui.test_banner tests.ui.test_jobs` and records the result.
@@ -570,3 +600,35 @@ findings are settled in these documents; test-design and wording findings go str
 | C2 "no task ticked" not asserted | tasks: every task still `- [ ]` | T042, T043 |
 | C3 checkbox-flip tests not named | tasks: `tests/ui/test_banner.py:438-480` must still pass | T041 |
 | K1 "what done looks like" in manual.md T045 | manual.md: "Done: the last line is `OK`, with no skipped tests." | manual.md |
+
+## R25. The third analyze pass of the amendment (2026-11-08)
+
+`/speckit-analyze` on `5c1c3d0` (report `.sdd/scratch/analyze-009-3.md`) found 0 CRITICAL, 2 HIGH, 3 MEDIUM and 4
+LOW. Line numbers re-checked on `56c8ffb` (`bin/`, `tests/` and `README.md` unchanged since `735714b`).
+
+- **B1, decided by the person (answer B, spec Clarifications 2026-11-08, FR-017, `56c8ffb`).** A session with no
+  task entries gets no short report, so a run stopped before any task commits nothing on its branch and lands
+  `nothing`, whether or not its session wrote `.sdd/run.json`. The alternative (a): keep the report and reword
+  "nothing landed" to "no task commit landed" in the spec, the tests and the page text. The person chose (b).
+  It also fits the data: such a report says only "Committed (0)" and "Not committed: None.", which the run summary
+  (its `sessions`, outcome and reason) already keeps, and without the change the landing depended on whether the
+  session had got as far as writing `.sdd/run.json`.
+  Evidence: with the one-line change applied to a copy of `56c8ffb`, the whole unit suite passes (765 tests, 1
+  skipped), so no existing test expects a report for such a session; a new `JobTest` case (a `run` step, then an
+  after-task stop before any agent) fails on `56c8ffb` with "'landed' != 'nothing'" and passes with the change.
+  Design and tests: plan 15i, data-model §4.
+- **Rationale for doing it in the engine, not in the tests:** FR-017 now says it, and every test and text written
+  for the amendment (T036, T038, T042, quickstart §8 steps 3 and 7, data-model §8.5, the README) already assumed
+  it.
+
+| Finding | Settled in | Where |
+|---|---|---|
+| B1 a stop before any task landed the session's short report | engine: `write_session_reports` skips a session with no task entries | spec FR-017 (`56c8ffb`), plan 15i, data-model §4, quickstart §8 steps 3 and 10 |
+| B2 `WorkingJobBannerTest` fails on `main` since T028 (`c09d2d0`) | move the test into a class whose `RUN_JSON` has a `started` line; add a preparing test where it was | plan 15g, the note after 15h (T041) |
+| A1 T038's clean stop-now test did not say "no `run` step" | task wording | the note after 15h (T038) |
+| A2 T037's in-process `main` setup and its stdout | task wording: the `JobTest` project, no record, `contextlib.redirect_stdout` | the note after 15h (T037) |
+| A3 a 3 s start delay is too short for the browser | `delay(seconds)`: 3 s in the process test, 10 s in the browser; `proc.wait(timeout=seconds + 15)` | R22 item 1 and 2, plan 15h |
+| A4 two startup reasons matched a plain supervisor with a `job` request | the order of the startup checks: no `--job` → "left from before…" first | R17, plan 15c, data-model §8.2 |
+| A5 `FAKE_CONTROL` in T043 is not needed | task wording: drop it | the note after 15h (T043) |
+| I1 FR-032 had no clean-tree clause | spec (`56c8ffb`) | spec FR-032 |
+| I2 a request refused while suspended has `run` null | accepted, not changed | R19, plan 15f |

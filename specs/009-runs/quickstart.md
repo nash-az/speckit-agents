@@ -102,7 +102,9 @@ Automated in `tests/test_supervise.py` `StartWindowTest` (always runs) and `test
 2. `python3 bin/sdd-control.py stop --project <repo>`: `{"contract": "1.0", "ok": true, "id": "<request id>"}`,
    not a refusal.
 3. Within 15 s: `sdd-job.py show <id> <repo>` gives `shown.state` `ended`, outcome `stopped`, reason "stopped before
-   any task", landing `nothing`; T001 and T002 are still `- [ ]`; `.sdd/run.json` is gone.
+   any task", landing `nothing`; T001 and T002 are still `- [ ]`; `.sdd/run.json` is gone. (2026-11-08, B1,
+   FR-017) `git log main` gains only `chore(run): <id> summary`; there is no `chore(run): <id> history` commit and
+   no `.sdd/runs/<session>.md`, also in step 7, where the session wrote `.sdd/run.json`.
 4. `<state dir>/control-log.jsonl` has the request line (`"source": "cli"`, `"outcome": "accepted"`, `"run": "<id>"`)
    and a taken line with the same `id` and `"taken": "stopping before any task"` (data-model §8.2).
 5. Repeat with `stop --now`: the same ending (not suspended).
@@ -125,7 +127,10 @@ Automated in `tests/test_supervise.py` `StartWindowTest` (always runs) and `test
     "stop"` and `"job": "<its id>"`, then Continue it (`sdd-launch.py … --continue <id>` or the card's Continue):
     no `claude` starts, the run ends `stopped` "stopped before any task", `.sdd/run.json` is archived under
     `.sdd/runs/<session>/`, and the landing is not refused for an active run. With an uncommitted file in the tree
-    instead, the same steps leave it `suspended` "stopped by you".
+    instead, the same steps leave it `suspended` "stopped by you". (2026-11-08, B1) The earlier session did tasks,
+    so it has task entries and still gets its short report and histories committed (`chore(run): <id> history`,
+    FR-017) when they are not committed yet, and the landing is then `landed`; only a run whose sessions have no
+    task entries lands nothing.
 
 In the dashboard: Start run, and while the banner says "Preparing <title>" press Stop after current task; the run
 ends as above, and its card in Runs shows a **Requests** list with one row: "<time> · Stop after current task ·

@@ -106,6 +106,11 @@ ended(needs-merge|pending) ──Merge/Land──> land ──> summary
 `end(project, id, outcome, reason)` (**changed**, R2): store `ended`; `sdd-history.py` `finalize` commits the
 task histories and missing session reports on the run branch (`chore(run): <id> history`); then `land`; when the
 landing is `landed` or `nothing`, `land` writes and commits the summary (§6). Never raises.
+(2026-11-08, third analyze pass B1, FR-017) A missing session report is written only for a session that has at
+least one task-history entry in this run (`write_session_reports`, `bin/sdd-history.py:313-341`); a session with
+none (a run stopped before any task, whether or not it wrote `.sdd/run.json`) gets no report, so `finalize` makes
+no commit for it and the landing is `nothing`. The session id stays in the record's `runs` and in the summary's
+`sessions`; the summary's `reports` lists only reports that exist (`:281`).
 
 ## §5. Task history entry (`.sdd/tasks/<feature folder>/<task id>.jsonl`, committed)
 
@@ -254,15 +259,17 @@ after a successful write):
 | `taken` | string | one of the texts below |
 | `reason` | string \| null | why, for `ignored` only |
 
-`taken` texts (exact) and where each is written:
+`taken` texts (exact) and where each is written. The ignored `startup_control` rows are checked in the order
+shown, before the kept one, first match wins (2026-11-08, third analyze pass A4, research R17): a supervisor
+without `--job` logs "left from before this supervisor started" even for a request that carries a `job`.
 
 | Where (`bin/sdd-supervise.py`) | Request | `taken` | `reason` |
 |---|---|---|---|
 | `startup_control` | `stop` with this supervisor's `--job` | (kept; `run_job` writes the line) | |
-| `startup_control` | anything with another `job` | `ignored` | `for another run` |
-| `startup_control` | anything without `job`, or a supervisor without `--job` | `ignored` | `left from before this supervisor started` |
-| `startup_control` | not `stop`, with this `--job` | `ignored` | `only stop is taken at startup` |
 | `startup_control` | (2026-11-08) a `control.json` that does not parse or is not an object; the file is unlinked | `ignored` | `unreadable request` |
+| `startup_control` | anything, from a supervisor without `--job`; or anything without `job` | `ignored` | `left from before this supervisor started` |
+| `startup_control` | anything with another `job` | `ignored` | `for another run` |
+| `startup_control` | not `stop`, with this `--job` | `ignored` | `only stop is taken at startup` |
 | `abandon_start` (2026-11-08; `main`'s early exits) | kept stop, the supervisor could not start | `ignored` | `the supervisor could not start` |
 | `run_job` (kept stop) | clean tree (2026-11-08, I1: whether or not a Continue left `.sdd/run.json`; `close_session`, then ends the run) | `stopping before any task` | null |
 | `run_job` (kept stop) | dirty tree: suspends again | `stopping now` | null |

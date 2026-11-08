@@ -8,7 +8,9 @@ analyze pass; constitution v1.2.1. Amendment 2026-11-07 (Stop while preparing an
 Clarifications "Session 2026-11-07", FR-031 to FR-034, SC-009, the last edge case): `main` at `fc63f0d`,
 constitution v1.3.0; Engine changes item 15, research R15–R22, data-model §8. Updated 2026-11-08 for the analyze
 pass `.sdd/scratch/analyze-009-1.md` and the spec's Clarifications "Session 2026-11-08" (FR-006 exception, FR-007,
-FR-032 wording): research R23 lists every finding and where it is resolved.
+FR-032 wording): research R23 lists every finding and where it is resolved. Updated again 2026-11-08 for the
+third analyze pass `.sdd/scratch/analyze-009-3.md` and the spec's clarification on B1 (FR-017: no session report
+for a session with no task entries, `56c8ffb`): research R25, Engine changes 15i.
 
 ## Summary
 
@@ -106,6 +108,15 @@ U2 behaviours name their tests in 15c, 15e and 15f. II: a kept stop with a clean
 with the existing `close_session` (it moves the file under `.sdd/runs/<session>/`, nothing is deleted) before
 `end_run`; with uncommitted work it suspends, as before. Pass.
 
+Re-checked 2026-11-08 after the third analyze pass (`.sdd/scratch/analyze-009-3.md`, research R25). VIII: it
+found 0 CRITICAL and 2 HIGH. B1 went back through `/speckit-clarify` (spec `56c8ffb`, FR-017) and is designed here
+as 15i; B2 is a fix to an existing browser test, folded into 15g. The gate stays closed until `/speckit-tasks` and
+a fresh `/speckit-analyze` report no CRITICAL or HIGH. IX: 15i changes `write_session_reports` and names its new
+tests and the existing tests it changes in the same sub-item; B2's moved test keeps its assertions. II: 15i writes
+less, never more: a session with no task entries gets no report file and no commit, so a run stopped before any
+task leaves its branch and the base as they were, apart from the run summary that `land` already commits on the
+base after a landing of `nothing` (`bin/sdd-job.py:494-498`, `_with_summary`, `:520-531`). VI: unchanged. Pass.
+
 ## Project Structure
 
 ### Documentation (this feature)
@@ -114,7 +125,7 @@ with the existing `close_session` (it moves the file under `.sdd/runs/<session>/
 specs/009-runs/
 ├── spec.md          # amended 2026-11-06
 ├── plan.md          # this file
-├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23, R24 (analyze findings)
+├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23–R25 (analyze findings)
 ├── data-model.md    # §1 run record, §2 normalize, §3 shown state, §4 lifecycle, §5 task history, §6 run summary, §7 task summary line,
 │                    # §8 run control: starting status, control.json job, control log, Requests, page texts (2026-11-07)
 ├── quickstart.md    # validation with the fake claude
@@ -129,7 +140,8 @@ specs/009-runs/
 
 ```text
 bin/sdd-job.py        # run record, normalize, shown_state, land, end, suspend, drop_suspended, stash_and_end, after_settle, CLI
-bin/sdd-history.py    # harvest, record_step, finalize (histories), write_summary (after landing)
+bin/sdd-history.py    # harvest, record_step, finalize (histories), write_summary (after landing);
+                      # (2026-11-08, 15i) write_session_reports skips a session with no task entries
 bin/sdd-supervise.py  # task boundary, endings, usage_peak, "stopped before any task"
 bin/sdd-launch.py     # refusals, continue_job (resumed step), preview task_list summary
 bin/sdd-tasks.py      # parse: task summary
@@ -151,9 +163,10 @@ bin/sdd-views.py      # job_view / list_job_views: requests
 bin/sdd-dashboard.py  # _control source "dashboard", Requests list on the card, banner sending state and timeout,
                       # the Stop-now confirmation while preparing
 tests/ (test_sdd_control.py, test_supervise.py (StartWindowTest new), test_sdd_launch.py, test_run_state.py,
-        test_sdd_job.py, test_sdd_dashboard.py, ui/test_banner.py, ui/test_jobs.py,
-        ui/test_stop_preparing.py (new))
-README.md             # "Runs": the control log, Requests, and Stop now before any task (:163)
+        test_sdd_job.py, test_sdd_dashboard.py, test_sdd_history.py (15i), ui/test_banner.py (B2: the working
+        test gets its own class), ui/test_jobs.py, ui/test_stop_preparing.py (new))
+README.md             # "Runs": the control log, Requests, and Stop now before any task (:163); the short-report
+                      # sentence of "Run summary" (:172, 15i)
 ```
 
 **Structure Decision**: the existing plugin layout; no new module. One new test file and one fixture folder; the
@@ -196,8 +209,11 @@ Amendment (T013 onward; each cites research and data-model):
 Amendment 2026-11-07 (FR-031 to FR-034, SC-009; research R15–R23; data-model §8; contracts "Amendment
 2026-11-07" sections). Line numbers are on `main` at `fc63f0d`; `bin/`, `tests/` and `README.md` are unchanged
 through `f1ea4ae` (checked again 2026-11-08 after the second analyze pass: `git diff 735714b f1ea4ae -- bin tests
-README.md` is empty). Each sub-item is one task's worth, in this order; its tests go in the same
-task (Principle IX). The 2026-11-08 additions (research R23) are marked "(2026-11-08)".
+README.md` is empty), and through `56c8ffb` (checked again after the third pass: `git diff 735714b 56c8ffb -- bin
+tests README.md` is empty). Each sub-item is one task's worth, in this order, except 15i (added after the third
+pass), which comes first because the tests of 15c, 15d and 15h assert landing `nothing` for a session that has
+written `.sdd/run.json`; its tests go in the same task (Principle IX). The 2026-11-08 additions (research R23, R24,
+R25) are marked "(2026-11-08)".
 
 15. Stop while preparing and the run-control trace.
     - **15a. Start window** (FR-032; R16; data-model §8.1). `bin/sdd-supervise.py`: new
@@ -268,6 +284,12 @@ task (Principle IX). The 2026-11-08 additions (research R23) are marked "(2026-1
       `request_run` (the `job` it carried, null when none; data-model §8.2), so an ignored leftover keeps what it
       asked for. Test: the "for another run" and "left from before" lines hold `command` `stop`, the mode, and
       `request_run` `20200101-0000` and null.
+      (2026-11-08, third analyze pass A4) `startup_control` checks in the order of research R17 "The order of the
+      startup checks", first match wins: no file; unreadable; no `--job` → "left from before this supervisor
+      started" whatever the request carries; no `job` key → the same; another `job` → "for another run"; not
+      `stop` → "only stop is taken at startup"; else kept. Test: a supervisor without `--job` (`RunControlTest`)
+      and `control.json` with `"job": "20200101-0000"` → taken `ignored` "left from before this supervisor
+      started", `request_run` `20200101-0000`, and the run goes on.
       (2026-11-08, M3) `startup_control`: when `read_control` returns None but `control.json` still exists
       (malformed JSON or not an object, `bin/sdd-control.py:161-166`), it unlinks the file, says "deleted a leftover
       control.json" and logs taken `ignored` "unreadable request" (`id`, `command`, `mode` null). Test: `control.json`
@@ -359,6 +381,10 @@ task (Principle IX). The 2026-11-08 additions (research R23) are marked "(2026-1
       (2026-11-08, analyze A4) A taken line whose `run` is null (a plain supervisor without `--job` taking a
       request) is skipped by the reader, like a request line without a run: no card could show it. Test: such a
       line adds no key to the result.
+      (2026-11-08, third analyze pass I2; decided, research R19) A request refused while a run is suspended is
+      logged with `run` null, as any request without a live supervisor, and shows on no card. Accepted, not
+      changed: the page has no control button for a suspended run, only the command line can send one, and it
+      answers the refusal at once. `request()` keeps taking the run id from a live supervisor only. No test change.
     - **15g. Sending state on the banner** (FR-033; R21; data-model §8.5). `bin/sdd-dashboard.py`: `controlSending`
       and `lastRun` page variables; `loadRunState` (`:3679-3692`) keeps `lastRun`; `controlButton` (`:3717-3723`)
       disables while sending and labels the matching button "sending…"; the usage checkbox in `renderJobBanner`
@@ -391,6 +417,20 @@ task (Principle IX). The 2026-11-08 additions (research R23) are marked "(2026-1
       "request failed: no answer after 10 s" when `timedOut` is true, else today's `'request failed: ' + e`. Not
       `e.name === 'AbortError'`: the flag says that this page's own timer aborted it. Test (`JobBannerTest`
       page-source test of 15g): the page holds `timedOut = true` before `controller.abort()`.
+      (2026-11-08, third analyze pass B2) Fix a browser test that fails on `main` since T028 (`c09d2d0`):
+      `WorkingJobBannerTest.test_working_job_names_the_job_and_offers_both_stops` (`tests/ui/test_banner.py:
+      390-397`) writes a `running` status, but its class has `RUN_JSON = None` (`JobBannerTestCase`, `:364`), so
+      `shown_state` finds no started agent and shows `preparing` (`bin/sdd-job.py:292-297`): "Preparing Toy run" !=
+      "Working on Toy run". Move that test, its assertions unchanged, into a new class
+      `WorkingJobWithAgentBannerTest(JobBannerTestCase)` placed right after `WorkingJobBannerTest`, whose `RUN_JSON`
+      is `[{"type": "launched"}, {"type": "started", "key": "v2:01", "agentId": "a01", "label": "impl:T012",
+      "phase": "Build"}]`, as `SuspendedJobBannerTest` has (`:479-480`); `JobBannerTestCase.setUpClass` then
+      writes this run's own `.sdd/run.json` (`:377-380`). `WorkingJobBannerTest` keeps
+      `test_working_without_a_supervisor_or_run_json_offers_land` (`:400-406`) with `RUN_JSON = None`, which that
+      test needs (no run.json, so the run reads ended with landing pending), and gains
+      `test_preparing_job_names_the_job_and_offers_both_stops`: a `running` status, banner text "Preparing " +
+      `JOB_TITLE`, enabled labels "Stop after current task" and "Stop now" (FR-005, FR-032 in the browser), and no
+      run id shown. The flip tests of `PausedJobBannerTest` (`:438-470`) are not touched.
     - **15h. Stop while preparing end to end** (SC-009; R22). `bin/sdd-supervise.py` `parse_args` (`:591`):
       `--claude` default `os.environ.get("SDD_CLAUDE") or "claude"`. No harness change (2026-11-08, L9): the
       browser test passes its environment the way `tests/ui/test_banner.py:85-86` already does, with
@@ -402,16 +442,57 @@ task (Principle IX). The 2026-11-08 additions (research R23) are marked "(2026-1
       any task" within 15 s with the two control log lines). Test design (2026-11-08): **H3** the patched `_spawn`
       keeps the `Popen` it returns, and the test waits with `proc.wait(timeout=15)`, never by polling `os.kill(pid,
       0)` (an unwaited child stays a zombie and reads as alive; 15a's reaper thread waiting too is harmless,
-      `Popen.wait` is safe from two threads). **M4** the preparing case sends the stop only after the session has
-      started (`<project>/.sdd/run.json` exists, written by the fake's `{"run": "s1"}` step) while `shown_state` is
-      still `preparing`, and asserts the `Cycle.run` say line "stop requested before any task: stopping the run",
-      not the startup one, so it tests the in-session path every time. README "Runs" (`## Runs` is `README.md:154`,
-      not :138; 2026-11-08, L6): the control log file and the Requests list in one sentence each; and (M5) the
-      cut-off bullet at `:163` says Stop now before any task has started, with a clean tree, ends the run
-      **stopped** "stopped before any task" instead of suspending it. "### Stop and resume" (`README.md:131`; its
-      "Stopping" bullet with Stop now is `:134`; plain supervised runs without a run record, which hold on Stop
-      now) stays true and is not changed. A `[manual]` task
-      runs the browser tests with `SDD_UI_TESTS=1` outside a run and records the result (R22 item 3).
+      `Popen.wait` is safe from two threads). **A3** (third analyze pass) the delayed spawn's delay is a parameter,
+      `delay(seconds)` (research R22 item 1): 3 s in `StartWindowTest`, 10 s in the browser test, where the page must
+      load and take the click inside the window; the wait is `proc.wait(timeout=seconds + 15)`. **M4** the preparing
+      case sends the stop only after the session has started (`<project>/.sdd/run.json` exists, written by the fake's
+      `{"run": "s1"}` step) while `shown_state` is still `preparing`, and asserts the `Cycle.run` say line "stop
+      requested before any task: stopping the run", not the startup one, so it tests the in-session path every time.
+      README "Runs" (`## Runs` is `README.md:154`, not :138; 2026-11-08, L6): the control log file and the Requests
+      list in one sentence each; and (M5) the cut-off bullet at `:163` says Stop now before any task has started, with
+      a clean tree, ends the run **stopped** "stopped before any task" instead of suspending it. "### Stop and resume"
+      (`README.md:131`; its "Stopping" bullet with Stop now is `:134`; plain supervised runs without a run record,
+      which hold on Stop now) stays true and is not changed. A `[manual]` task runs the browser tests with
+      `SDD_UI_TESTS=1` outside a run and records the result (R22 item 3).
+
+    - **15i. No short report for a session without task entries** (2026-11-08, third analyze pass B1; spec
+      Clarifications 2026-11-08 last answer, FR-017, `56c8ffb`; research R25). Today a session that wrote
+      `.sdd/run.json` joins the record's `runs` (`run_job`, `bin/sdd-supervise.py:906-912`; `close_session`,
+      `:804-809`); `end` (`bin/sdd-job.py:562-594`) calls `finalize` (`bin/sdd-history.py:356-370`), whose
+      `write_session_reports` (`:313-341`) writes `.sdd/runs/<session>.md` for every session without a report, even
+      one with no task entries. That file is not ignored (only `.sdd/runs/*/`), so it is committed as
+      `chore(run): <id> history` and `land` lands it: a run stopped before any task lands `landed`, not `nothing`.
+      Change: in `write_session_reports`, right after `mine` is filtered to the session's non-empty task lists
+      (`:323`), `continue` when `mine` is empty. Update its docstring (`:314-315`): a short report is written only
+      for a session with at least one task entry in this run. Nothing else changes: `finalize` already makes no
+      commit when no file changed (`:368-369`), `land` already gives `nothing` for a branch with no commit the base
+      lacks and still commits the run summary on the base (`:494-498`, `_with_summary` `:520-531`), and `summary`
+      lists only reports that exist (`:281`) while `sessions` keeps the session id. A session with task entries
+      still gets its report, as FR-017's first sentence requires (quickstart §8 step 10).
+      Existing tests: none expects a short report for a session with no task entries. Checked 2026-11-08 by
+      applying this change to a copy of `56c8ffb` and running `python3 -m unittest discover -s tests`: 765 tests,
+      OK (1 skipped), as without it. The tests around it that must keep passing:
+      `tests/test_sdd_history.py` `SummaryAndFinalizeTest.test_finalize_commits_histories_and_reports_only` (`:218`;
+      its session has T012 and T013 entries, so its report is still written), `test_finalize_with_nothing_new_makes_
+      no_commit` (`:236`), `test_existing_report_and_summary_are_kept` (`:243`); `tests/test_sdd_job.py`
+      `test_nothing_to_land` (`:694`), `test_end_commits_histories_before_landing_and_the_summary_after` (`:776`);
+      `tests/test_supervise.py` `JobTest.test_a_stop_before_any_agent_starts_ends_the_run_stopped_before_any_task`
+      (`:1051`; its session never wrote run.json, `runs` is `[]`, so it never met the bug).
+      New tests: `tests/test_sdd_history.py` `SummaryAndFinalizeTest`: a record whose `runs` holds a session with no
+      task entries (no workflow listing for it) → `write_session_reports` returns `[]`, no `.sdd/runs/<session>.md`
+      exists, and `finalize` returns `{"commit": None, "files": []}` with HEAD unchanged; a record with two sessions,
+      one with entries (`self.workflow(…, self.retry_journal())`) and one without → exactly one report, the first's.
+      `tests/test_supervise.py` `JobTest`, beside `:1051`: the same scenario with the fake's `{"run": "r1"}` step
+      before the `{"control": {"command": "stop", "mode": "after-task"}}` step → the say line "stop requested before
+      any task: stopping the run", ended `stopped` "stopped before any task", landing `nothing`, `record["runs"] ==
+      ["r1"]`, no `.sdd/runs/r1.md`, and no subject containing `history` in `git log main`. Checked the same day on
+      that copy: this test fails on `56c8ffb` ("'landed' != 'nothing'") and passes with the change.
+      With 15i, the landing `nothing` that 15c (the clean Continue, whose fixture run.json must name a session with
+      no task entries), 15d and 15h (the preparing case with `{"run": "s1"}`) assert holds, and the spec's "nothing
+      landed" (FR-005, FR-006, FR-032, SC-009), the README sentence and the preparing Stop now text (data-model §8.5)
+      are true as written. README "Run summary" (`README.md:172`): "A session that ended without its own report (a
+      stop at a boundary, a Drop) gets a short one written from its journal" gains ", unless no task was started in
+      it" (in T044, with the other README edits).
 
     Note for `/speckit-tasks` (rewritten 2026-11-08 after the second analyze pass, D1; task numbers are those of
     `tasks.md` since `2e205ce`). Split by file so each change ships with its test (Principle IX):
@@ -433,6 +514,16 @@ task (Principle IX). The 2026-11-08 additions (research R23) are marked "(2026-1
     - **T044** 15h README: "Runs" (`:154`) and its cut-off bullet (`:163`, M5); "### Stop and resume" (`:131`)
       unchanged.
     - **T045** the `[manual]` browser run.
+    (2026-11-08, after the third analyze pass) **15i becomes a new task placed before T036** (renumbering is
+    `/speckit-tasks`' call), in `bin/sdd-history.py` with its tests, since T036, T038 and T042 assert landing
+    `nothing` for a session that wrote `.sdd/run.json`. **T041** also takes B2 (the `WorkingJobBannerTest` move and
+    the new preparing test, 15g); **T036** takes A4's check order (15c); **T038** takes A1 (its clean
+    stop-now-before-any-task case has no `run` step); **T037** takes A2 (the project with `.sdd/config.toml` of
+    `JobTest`, no record for `--job`, so `run_job` returns 2 through `abandon_start`; every in-process `main`,
+    `run_job` and `restart_wait` call inside `contextlib.redirect_stdout`, so the suite output stays clean, R13);
+    **T042** and **T043** take A3 (`delay(seconds)`, 3 s and 10 s, `proc.wait(timeout=seconds + 15)`); **T043** drops
+    `FAKE_CONTROL` (A5: its scenario has no control step); **T044** takes the README "Run summary" sentence of 15i. I1
+    is in the spec (`56c8ffb`); I2 needs no task (15f, R19).
     The second pass's test-design and wording findings that change no design (T1, T2, A2, A3, A6, C1–C3, K1) go
     straight into those tasks; research R24 lists where.
 
