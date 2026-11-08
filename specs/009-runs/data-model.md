@@ -96,7 +96,11 @@ working ──usage wait──> paused (shown only) ──reset──> working
 working ──Stop after this task / limit / done / waiting / no progress──> [boundary]
    [boundary], tree clean ─────────────> close session, end(outcome) ──> land ──> summary
    [boundary], tree dirty (later task) ─> stash_and_end: patch to history, stash, close session, end, land, summary
-   Stop pressed before any agent ───────> close session, end("stopped", "stopped before any task")
+   Stop pressed before any agent (either mode), tree clean ─> close session, end("stopped", "stopped before any task")
+   Stop pressed before any agent (either mode), tree dirty ─> suspend("stopped by you", or the stop-by reason)
+start/Continue ──stop kept at startup (control.json names this run; §8.2)──> before any session:
+   tree clean ─> close session (archives a Continue's run.json), end("stopped", "stopped before any task")
+   tree dirty ─> suspend("stopped by you")
 working ──Stop now / cut-off / kept paused / crash──> suspend: history `suspended`, land_ready
 suspended ──Continue──> history `resumed`, working (same id, branch)
 suspended ──Drop──> drop_suspended: patch to history `dropped`, stash, archive run.json, end("dropped"), land, summary
@@ -186,7 +190,8 @@ several entries (for example `started` and `implemented`) come from the same tra
 ## §8. Run control: the start window, the request, the control log (amendment 2026-11-07)
 
 FR-031 to FR-034, research R15–R22; updated 2026-11-08 for the analyze findings and the spec's Clarifications
-"Session 2026-11-08" (research R23), and again for the second analyze pass (research R24). Every file here is in the supervisor's state directory (`sdd-tasks.py`
+"Session 2026-11-08" (research R23), and again for the second analyze pass (research R24) and the fourth
+(research R26: §4's diagram, §8.1's temporary file). Every file here is in the supervisor's state directory (`sdd-tasks.py`
 `state_dir(project)`, outside the project); nothing in the project tree changes.
 
 ### §8.1 `status.json` state `starting` (R16)
@@ -200,9 +205,14 @@ pid)` right after the supervisor process is spawned for a run (`launch_job`, `co
  "contract": "1.0", "engine_version": "repo", "updated": 1794070800}
 ```
 
-- `pid` is the spawned supervisor's (`proc.pid`), never the launcher's. Written to `status.json.tmp`, then
+- `pid` is the spawned supervisor's (`proc.pid`), never the launcher's. Written to its own temporary file,
+  `status.json.<os.getpid()>.tmp` (the launcher's pid; never `status.json.tmp`, which the supervisor's
+  `write_status` uses, `bin/sdd-supervise.py:471-473`; 2026-11-08, fourth analyze pass C1, R16), then
   `os.replace`. Not written when the current `status.json` already has `"pid": <that pid>` (read it first; a
   missing or unreadable file counts as "not yet").
+- Never raises (C1): an `OSError` from the write or the replace removes its temporary file if it is there and
+  returns False; `status.json` stays as it was, and the run reads as the supervisor's own first status says.
+  Returns True only when the `starting` status was written.
 - (2026-11-08, R16) When the status it replaces has `"state": "waiting"` (whatever its pid), its `window` and
   `resets_at` are copied in, so a restarted supervisor still waits for that reset:
   `{"state": "starting", "job": …, "pid": …, "window": "five_hour", "resets_at": 1794088800, …}`.

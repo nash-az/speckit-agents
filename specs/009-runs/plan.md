@@ -10,7 +10,9 @@ constitution v1.3.0; Engine changes item 15, research R15–R22, data-model §8.
 pass `.sdd/scratch/analyze-009-1.md` and the spec's Clarifications "Session 2026-11-08" (FR-006 exception, FR-007,
 FR-032 wording): research R23 lists every finding and where it is resolved. Updated again 2026-11-08 for the
 third analyze pass `.sdd/scratch/analyze-009-3.md` and the spec's clarification on B1 (FR-017: no session report
-for a session with no task entries, `56c8ffb`): research R25, Engine changes 15i.
+for a session with no task entries, `56c8ffb`): research R25, Engine changes 15i. Updated again 2026-11-08 for
+the fourth analyze pass `.sdd/scratch/analyze-009-4.md` (C1, I1, I3, I4, I5, A6, I6): research R26, Engine changes
+15a.
 
 ## Summary
 
@@ -86,7 +88,7 @@ before research and again after the design (data-model §8, contracts).
 | VI. One task, one commit | No commit is added or changed by the amendment | Pass |
 | VII. AI-free at the core | `sdd-control.py`, `sdd-supervise.py`, `sdd-launch.py` and `sdd-views.py` stay stdlib Python with no model in the path; the Requests list is read from a file | Pass |
 | VIII. Every spec through the Spec Kit flow | The amendment went through `/speckit-specify` (as an amendment of 009) and `/speckit-clarify` (3 questions, the person's answers, `fc63f0d`); this `/speckit-plan` adds research, data model, contracts and quickstart; `/speckit-tasks` and `/speckit-analyze` follow. No run starts on 009 until analyze reports no CRITICAL or HIGH finding | Pass (gate for the run: analyze) |
-| IX. Tests for every change | Every behaviour in Engine changes item 15 names its tests in the same item (15a–15h); SC-009 has a process test that always runs, a browser test, and a `[manual]` task to run the browser tests outside a run, because a run's agents may not start a browser (`.sdd/learnings.md` line 20; R22) | Pass |
+| IX. Tests for every change | Every behaviour in Engine changes item 15 names its tests in the same item (15a–15i); SC-009 has a process test that always runs, a browser test, and a `[manual]` task to run the browser tests outside a run, because a run's agents may not start a browser (`.sdd/learnings.md` line 20; R22) | Pass |
 | Development: runs start through the supervisor | Unchanged; the amendment makes the supervisor's own start window controllable | Pass |
 
 Re-checked after the design: no violation, no complexity to justify. One test hook is added (`SDD_CLAUDE` as the
@@ -117,6 +119,16 @@ less, never more: a session with no task entries gets no report file and no comm
 task leaves its branch and the base as they were, apart from the run summary that `land` already commits on the
 base after a landing of `nothing` (`bin/sdd-job.py:494-498`, `_with_summary`, `:520-531`). VI: unchanged. Pass.
 
+Re-checked 2026-11-08 after the fourth analyze pass (`.sdd/scratch/analyze-009-4.md`, research R26). VIII: it
+found 0 CRITICAL and 2 HIGH (P1, U1), both wording in `tasks.md` T043, so the gate stays closed until
+`/speckit-tasks` and a fresh `/speckit-analyze` report no CRITICAL or HIGH. C1 is a design fix here (15a:
+`write_starting_status` writes its own temporary file and never raises), with its test in the same sub-item (IX).
+II: the launcher no longer shares `status.json.tmp` with the supervisor (`bin/sdd-supervise.py:471-473`), so a
+write at the same moment can no longer make the supervisor's `os.replace` raise and end the run; a failed
+`starting` write leaves the status as it was, which every reader already handles (a supervisor that has not
+written yet). III, V: A6 is accepted (R26): a plain supervisor's taken line is only in the state directory's log,
+with `run` null. Pass.
+
 ## Project Structure
 
 ### Documentation (this feature)
@@ -125,7 +137,7 @@ base after a landing of `nothing` (`bin/sdd-job.py:494-498`, `_with_summary`, `:
 specs/009-runs/
 ├── spec.md          # amended 2026-11-06
 ├── plan.md          # this file
-├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23–R25 (analyze findings)
+├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23–R26 (analyze findings)
 ├── data-model.md    # §1 run record, §2 normalize, §3 shown state, §4 lifecycle, §5 task history, §6 run summary, §7 task summary line,
 │                    # §8 run control: starting status, control.json job, control log, Requests, page texts (2026-11-07)
 ├── quickstart.md    # validation with the fake claude
@@ -238,6 +250,19 @@ R25) are marked "(2026-11-08)".
       <dead>}` gives a `starting` status with the same `window` and `resets_at`; any other previous state gives
       neither key; `_start_supervisor` with `_spawn` left real on `[sys.executable, "-c", "pass"]` and a run id →
       within 5 s `sdd_tasks.supervisor_alive(status)` is False (reaped).
+      (2026-11-08, fourth analyze pass C1) `write_starting_status` writes its own temporary file,
+      `status.json.<os.getpid()>.tmp` (the launcher's pid), never `status.json.tmp`, which the supervisor's
+      `write_status` uses (`bin/sdd-supervise.py:471-473`): with one shared name, the second `os.replace` of two
+      writes at the same moment finds no file and raises `FileNotFoundError`, which ends the supervisor (nothing
+      catches it there) or makes `launch_job` raise after the supervisor has started. It never raises: the read
+      already treats a missing or unreadable file as "not yet"; an `OSError` from writing or replacing removes its
+      temporary file if it is there (ignoring a second `OSError`) and returns False, leaving `status.json` as it
+      was (the run then reads as the supervisor's own first status says, as before 15a). `_start_supervisor`
+      ignores the result. `write_status` is unchanged. Tests (`tests/test_sdd_launch.py`): with `os.replace`
+      patched to raise `OSError`, `write_starting_status` returns False, `status.json`
+      is byte for byte what it was, and no `status.json.*.tmp` is left in the folder; `launch_job` with the same
+      patch and the `_spawn` Mock still returns its result (no exception); a successful write leaves no temporary
+      file.
     - **15b. Requests carry the run id and leave a request line** (FR-031, FR-032; R17, R19; data-model §8.2).
       `bin/sdd-control.py`: `write_control(…, job=None)`; new `log_control(logs, entry)`; `request(project,
       command, mode=None, source="cli")` reads `job` from a live, not `done`/`stopped` status, passes it to
@@ -496,7 +521,8 @@ R25) are marked "(2026-11-08)".
 
     Note for `/speckit-tasks` (rewritten 2026-11-08 after the second analyze pass, D1; task numbers are those of
     `tasks.md` since `2e205ce`). Split by file so each change ships with its test (Principle IX):
-    - **T034** 15a, with M1's reaper thread and M2's carried `window`/`resets_at`.
+    - **T034** 15a, with M1's reaper thread and M2's carried `window`/`resets_at`; (fourth pass) C1's own
+      temporary file, the never-raises rule and its test.
     - **T035** 15b in `bin/sdd-control.py` and the dashboard's `_control`: `send_control` passes `job` on and
       logs the `until` line, tested by calling it directly (C1); L2's `mode or "after-task"`.
     - **T036** 15c, first half: `taken`, `startup_control`, the kept stop in `run_job` deciding on the tree alone
@@ -526,6 +552,15 @@ R25) are marked "(2026-11-08)".
     is in the spec (`56c8ffb`); I2 needs no task (15f, R19).
     The second pass's test-design and wording findings that change no design (T1, T2, A2, A3, A6, C1–C3, K1) go
     straight into those tasks; research R24 lists where.
+    (2026-11-08, after the fourth analyze pass) **T034** takes C1 (15a). The findings that are only task wording go
+    straight into `tasks.md` with `/speckit-tasks`, as the report recommends: P1 and P2 (paths a task only cites
+    lose their backticks, so the planner lists only the files a task changes: T043, T046, T040), U1 (T043's two
+    test methods named, and `FAKE_DIR/calls` and `FAKE_DIR/count` deleted in `setUp`), A1 (T042 case 3: the same
+    patched `_spawn` that keeps the `Popen`, with no delay prefix), A2 (T041: "none today"), A3 (T043 test (1): the
+    Runs view and start-form steps of `tests/ui/test_start_run.py`, around lines 225-236, the scope and
+    `#start-job-btn`), A4 (T036/T037: `mock.patch.object` on `JOB_ID` around in-process supervisor calls), A5 (T037:
+    right after T036's kept-stop block, before `while True`), T1 (T037: a `stop-wait` case) and I2 (T038 also
+    updates the module docstring at `bin/sdd-supervise.py:41-44`). Research R26 lists every finding.
 
 ## Not in this pass
 

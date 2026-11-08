@@ -120,7 +120,9 @@ during the start window (a `starting` status, data-model §8.1) is accepted: `{"
 ```
 write_starting_status(path, job_id, pid) -> bool
     data-model §8.1; False (nothing written) when status.json already has "pid": pid; copies "window" and
-    "resets_at" from a previous "waiting" status (2026-11-08)
+    "resets_at" from a previous "waiting" status (2026-11-08); writes through its own status.json.<own pid>.tmp,
+    never status.json.tmp; never raises: an OSError from the write or the replace → False, status.json
+    unchanged, no temporary file left (2026-11-08, fourth analyze pass C1)
 startup_control(logs, job_id) -> dict | None
     reads control.json once (read_control deletes it); returns a "stop" whose "job" == job_id (job_id not
     empty); otherwise logs the ignored taken line, says "deleted a leftover control.json" and returns None;
@@ -159,7 +161,8 @@ Exit codes are unchanged: 0 for `stopped` and for a suspend from a stop.
 ```
 _start_supervisor(project, command, job_id=None) -> (pid, log)
     after _spawn: write_starting_status(state_dir/status.json, job_id, proc.pid) when job_id is given;
-    (2026-11-08) a daemon thread calls proc.wait(), so the child is reaped when it exits
+    (2026-11-08) a daemon thread calls proc.wait(), so the child is reaped when it exits;
+    the result of write_starting_status is ignored (it never raises, C1)
 ```
 
 `launch_job` and `continue_job` pass their run id; their output is unchanged. When `launch_job` returns, the new

@@ -78,4 +78,5 @@ Page behaviour:
 - A run whose supervisor exited before its first session (2026-11-08) is no longer shown `preparing`: the launcher
   reaps it and its status is `stopped`, so `/api/run/current` offers no Stop. Its card shows it as today's dead
   supervisor rules give (`shown_state`: `ended`, `stopped`, landing `pending` without a run.json; `suspended`
-  with one), with Merge or Continue/Drop, never "another run is going".
+  with one), with Land or Continue/Drop (`bin/sdd-dashboard.py:2967`: landing `pending` offers Land; fourth analyze pass
+  I3), never "another run is going".

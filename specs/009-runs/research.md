@@ -228,7 +228,9 @@ commands and routes in `contracts/`.
 ## R16. The launcher writes a `starting` status before it returns
 
 - **Decision**: new `bin/sdd-supervise.py` function `write_starting_status(path, job_id, pid)` writes
-  `status.json` atomically (as `write_status`, `bin/sdd-supervise.py:461-473`) with `{"state": "starting", "job":
+  `status.json` atomically (a temporary file, then `os.replace`, as `write_status` does,
+  `bin/sdd-supervise.py:461-473`, but through its own temporary name, `status.json.<os.getpid()>.tmp`; see "Its
+  own temporary file" below) with `{"state": "starting", "job":
   <job_id>, "pid": <pid>, "contract", "engine_version", "updated"}`, but only when the current `status.json` does
   not already carry that `pid` (the supervisor got there first; never overwrite it). `bin/sdd-launch.py`
   `_start_supervisor(project, command, job_id=None)` (`:190-203`) calls it right after `_spawn` returns, when
@@ -259,7 +261,7 @@ commands and routes in `contracts/`.
   `preparing` whatever the status says, and (2) cannot run for a supervisor killed before its first line of
   Python; (1) alone leaves a `starting` status with a dead pid, which every reader treats as dead, but no reason
   and no line for a kept request. With both, the run shows `ended`, `stopped`, landing `pending` (`shown_state` `:300-302`, no live
-  supervisor, no run.json; Merge closes it) or `suspended` when its run.json is there (a Continue), and the launch
+  supervisor, no run.json; Land closes it, `bin/sdd-dashboard.py:2967`, analyze I3 of the fourth pass) or `suspended` when its run.json is there (a Continue), and the launch
   log says why. Alternative rejected: `signal(SIGCHLD, SIG_IGN)` in the dashboard (process-wide; it would
   break every `subprocess.run` return code there).
 - **The usage wait survives the starting status (2026-11-08, analyze M2).** `main` keeps a dead supervisor's usage
@@ -274,6 +276,21 @@ commands and routes in `contracts/`.
   its modules, reads its config and runs git before its first `write_status`. Should it happen, the `starting`
   status still names the same live pid and run, so every reader still sees a live run, until the supervisor's
   next `write_status`. No lock is added.
+- **Its own temporary file, and it never raises (2026-11-08, fourth analyze pass C1).** The race above only
+  replaces one whole status with another. Sharing `status.json.tmp` with the supervisor's `write_status`
+  (`bin/sdd-supervise.py:471-473`) is a different and worse race: if both write at once, the first `os.replace`
+  moves the shared file away and the second raises `FileNotFoundError`. In the supervisor nothing catches it, so
+  the run dies; in the launcher `launch_job` would raise after the supervisor has already started, and the page
+  would report a failed start for a run that is going. So `write_starting_status` writes
+  `status.json.<os.getpid()>.tmp` (the launcher's pid, so no other writer uses that name) and never raises: the
+  read already counts a missing or unreadable file as "not yet", and an `OSError` from the write or the replace
+  removes its own temporary file if it is there (ignoring a second `OSError`) and returns False. A missed
+  `starting` status is the state before R16 (the run reads as the supervisor's first own status says), not a
+  failure. `write_status` keeps its name: only the supervisor process calls it, and the launcher no longer
+  touches that name. Test: `os.replace` raising `OSError` → False, `status.json` unchanged, no temporary file
+  left, and `launch_job` still returns. Alternatives: a lock file shared with `write_status` (a second change to
+  the supervisor for a write that can simply be skipped); `tempfile.mkstemp` in the same folder (also unique, but
+  the pid name is enough and easier to find in a test).
 - **Alternatives**: a `supervisor_pid` key on the run record plus a new rule in `controls()` and `shown_state`
   (two readers to change, and the record is the engine's, not the launcher's); refusing or hiding Stop until the
   supervisor writes (rejected by the person in clarify).
@@ -510,16 +527,19 @@ commands and routes in `contracts/`.
      files defines the one-line helper at module level (no import between `tests/` and `tests/ui/`).
      During the 3-second delay the
      test calls `sdd_control.request(project, "stop", "after-task", "dashboard")` (what the route calls), asserts
-     it answers `ok`, waits for the supervisor to exit with `proc.wait(timeout=15)` on the `Popen` the patched
+     it answers `ok`, waits for the supervisor to exit with `proc.wait(timeout=seconds + 15)` (18 s; 2026-11-08,
+     fourth analyze pass I4: one timeout per case, as task T042 has it) on the `Popen` the patched
      `_spawn` kept (2026-11-08, analyze H3: polling `os.kill(pid, 0)` never ends, because a child the test process
      never waits on stays a zombie and signal 0 still succeeds; R16's reaper thread also waits on it, and
      `Popen.wait` from two threads is safe), and asserts: the record is ended `stopped`, "stopped before any task",
      landing `nothing`; `$FAKE_DIR/calls` does not exist (no `claude` started); the control log has the accepted
      request and a taken line "stopping before any task" with the same id. The same with `mode: now`. A third case
-     spawns without the delay, with a fake session `[{"transcript": true}, {"run": "s1"}, {"sleep": 30}]`, waits
+     spawns without the delay (the same patched `_spawn` that keeps the `Popen`, with no delay prefix; fourth
+     analyze pass A1), with a fake session `[{"transcript": true}, {"run": "s1"}, {"sleep": 30}]`, waits
      until the session has started, that is `<project>/.sdd/run.json` exists (the fake writes it on the `run`
      step, `tests/fake/claude:56-57`) while `shown_state` is still `preparing`, then sends the request and asserts
-     the same ending within 15 s (here `$FAKE_DIR/calls` exists) plus the `Cycle.run` say line "stop requested
+     the same ending within 15 s (`proc.wait(timeout=15)`: no delay here; here `$FAKE_DIR/calls` exists, and there
+     is no `.sdd/runs/s1.md`, research R25) plus the `Cycle.run` say line "stop requested
      before any task: stopping the run" in `launch.log`. (2026-11-08, analyze M4: waiting only for `preparing` is
      true as soon as the `starting` status exists, so the stop could be taken at startup instead and the
      in-session path would be tested only by luck.)
@@ -529,11 +549,16 @@ commands and routes in `contracts/`.
      `harness.start_dashboard`, whose `Popen` inherits it (`tests/ui/harness.py:88-90`). Here the patcher is
      started in `setUpClass` and stopped in `tearDownClass`, because test (2) also calls `launch_job` in-process
      and the test reads the state directory. The harness gets no `env` argument (2026-11-08, analyze L9: one way,
-     the existing one). Start run in the page, wait for the banner text "Preparing" and for `.sdd/run.json` (as
-     item 1, M4), click Stop after current task, and within 15 s read the record as ended `stopped` with "stopped
-     before any task" and the control log lines. A second test uses `launch_job` with the delayed spawn of item 1, at
-     `delay(10)` (A3), and clicks Stop before the supervisor runs. A third uses Playwright's `page.route` on
-     `**/api/run/stop` for FR-033 (data-model §8.5).
+     the existing one). Two tests (2026-11-08, fourth analyze pass I4: as task T043 has them). Test (1): Start
+     run in the page, wait for the banner text "Preparing" and for `.sdd/run.json` (as item 1, M4), click Stop
+     after current task, and within 15 s read the record as ended `stopped` with "stopped before any task", the
+     control log lines and the run card's Requests row. Test (2) uses `launch_job` with the delayed spawn of item
+     1, at `delay(10)` (A3), waits with `proc.wait(timeout=25)`, clicks Stop before the supervisor runs, and proves
+     the startup path: the say line "stop requested before the run started: stopping before any task" in
+     `launch.log` and no `$FAKE_DIR/calls`. FR-033's "sending…" and 10 s give-up (Playwright's `page.route` on the
+     stop route) are tested in `tests/ui/test_banner.py` with the other banner tests (task T041, data-model §8.5),
+     not in this file. Both tests share one `FAKE_DIR`, so each starts without `calls` and `count` (fourth pass
+     U1; the exact wording is the task's).
   3. **`[manual]` record**: `.sdd/learnings.md` line 20 says a run's agents cannot always launch a browser, so
      `tests/ui/` may skip during a run. One `[manual]` task runs `SDD_UI_TESTS=1 python3 -m unittest
      tests.ui.test_stop_preparing tests.ui.test_banner tests.ui.test_jobs` and records the result.
@@ -632,3 +657,41 @@ LOW. Line numbers re-checked on `56c8ffb` (`bin/`, `tests/` and `README.md` unch
 | A5 `FAKE_CONTROL` in T043 is not needed | task wording: drop it | the note after 15h (T043) |
 | I1 FR-032 had no clean-tree clause | spec (`56c8ffb`) | spec FR-032 |
 | I2 a request refused while suspended has `run` null | accepted, not changed | R19, plan 15f |
+
+## R26. The fourth analyze pass of the amendment (2026-11-08)
+
+`/speckit-analyze` on `76f4601` (report `.sdd/scratch/analyze-009-4.md`) found 0 CRITICAL, 2 HIGH, 4 MEDIUM and 11
+LOW. Line numbers re-checked on `76f4601` (`git diff 735714b 76f4601 -- bin tests README.md` is empty). Design
+findings are settled in these documents; task-wording findings go into `tasks.md` with `/speckit-tasks`.
+
+- **A6, decided: accepted.** A supervisor without `--job` that takes an after-task stop before any agent writes
+  the taken line "stopping before any task" (task T039) and then holds for Resume (`run_cycles`,
+  `bin/sdd-supervise.py:675-686`), so the text says more than happens. Not changed, because: the line has `run`
+  null, so no card shows it (data-model §8.3: the reader skips it) and only someone reading the state directory's
+  `control-log.jsonl` sees it; the supervisor's own say line at that moment already says "stop requested before
+  any task: stopping the run" (`:380`) and is unchanged; a plain supervisor has no run record and is outside this
+  amendment ("Not in this pass": the plain `launch` gets no `starting` status); and a third text would add a
+  branch on `args.job` in `Cycle.run` and a test for a line nobody reads. The alternative was "stopping after the
+  current task" without `--job`, which is no more exact (no task has started).
+- **I6, accepted as is** (the person's call): FR-031 names the taken texts a person meets most; the full list is
+  data-model §8.2.
+
+| Finding | Settled in | Where |
+|---|---|---|
+| P1 T043's cited paths become its planner files | task wording: no backticks on paths it only cites | `tasks.md` T043; the note after plan 15i |
+| U1 T043's two tests share `FAKE_DIR` | task wording: name both methods; delete `calls` and `count` in `setUp` | `tasks.md` T043; R22 item 2 |
+| P2 T046 and T040 list files they only cite | task wording, as P1 | `tasks.md` T046, T040 |
+| C1 `write_starting_status` shares `status.json.tmp` and can raise | its own `status.json.<pid>.tmp`; `OSError` → False; a test where `os.replace` raises | R16, plan 15a, data-model §8.1, runs-cli contract |
+| A1 T042 case 3 "without the delay" | task wording: the same patched `_spawn`, no delay prefix | `tasks.md` T042; R22 item 1 |
+| A3 T043 test (1) lacks the start-form steps | task wording: the flow of `tests/ui/test_start_run.py:225-236`, the scope, `#start-job-btn` | `tasks.md` T043 |
+| I1 data-model §4 diagram lacks the dirty-tree suspend and the stop kept at startup | both branches added | data-model §4 |
+| I2 the module docstring `bin/sdd-supervise.py:41-44` goes stale after T038 | task wording: T038 updates it too | `tasks.md` T038 |
+| I3 "Merge or Continue/Drop" for a dead supervisor's run | "Land or Continue/Drop" (`bin/sdd-dashboard.py:2967`: `pending` → `land`) | dashboard-routes contract; R16 |
+| I4 R22 gave two timeouts and a `page.route` test the tasks put elsewhere | aligned with T042 and T043 (`seconds + 15` for the delayed cases, 15 s for case 3; `page.route` in `test_banner`, T041) | R22 items 1 and 2 |
+| I5 plan's IX row said "15a–15h" | "15a–15i" | plan Constitution Check |
+| I6 FR-031's four texts vs §8.2's list | accepted as is | above |
+| A2 T041's "where a test reads a label at once" | task wording: "none today" | `tasks.md` T041 |
+| A4 module globals `JOB_ID`, `SDD_JOB` carry over between in-process tests | task wording: `mock.patch.object(supervise, "JOB_ID", None)` | `tasks.md` T036, T037 |
+| A5 where T037's `startup_outcome` suspend goes | task wording: right after T036's kept-stop block, before `while True` | `tasks.md` T037 |
+| T1 `run_job` with `startup_outcome` `stop-wait` untested | task wording: one more case | `tasks.md` T037 |
+| A6 a plain supervisor's "stopping before any task" | accepted | above |
