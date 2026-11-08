@@ -55,4 +55,6 @@ and Stop pressed before the supervisor is ready), the sending state and the Requ
    the result.
    - **I did it** refuses while a run is going.
 
+Done: the last line is `OK`, with no skipped tests.
+
 Record: research.md ## Validation (amendment 2026-11-07)
