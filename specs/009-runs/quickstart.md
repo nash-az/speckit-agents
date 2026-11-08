@@ -108,11 +108,23 @@ Automated in `tests/test_supervise.py` `StartWindowTest` (always runs) and `test
 5. Repeat with `stop --now`: the same ending (not suspended).
 6. Leftover request: write `control.json` by hand with `"job": "20200101-0000"`, then launch: the supervisor log
    says "deleted a leftover control.json", the run goes on, and the control log has `"taken": "ignored"`, `"reason":
-   "for another run"`.
+   "for another run"`, with the request's `"command": "stop"` and `"request_run": "20200101-0000"` (2026-11-08).
+7. (2026-11-08) In the session: wait until `<repo>/.sdd/run.json` exists (the fake's `run` step) while `show`
+   still says `preparing`, then `stop`: the same ending, and `launch.log` has "stop requested before any task:
+   stopping the run" (the in-session path, not the startup one).
+8. (2026-11-08) Unreadable request: write `not json` into the state directory's `control.json`, then launch: the
+   file is gone, the control log has `"taken": "ignored"`, `"reason": "unreadable request"`, and a `stop` after
+   that answers `ok`, not "a request is already pending".
+9. (2026-11-08) A supervisor that cannot start: append `[agents]` and `nosuch = "x"` to `<repo>/.sdd/config.toml`
+   and commit it (the launcher needs a clean tree; the supervisor then stops on "config error: agents.nosuch:
+   unknown role"), and launch: within a few seconds `status.json` says `"state": "stopped"`, `"reason": "the
+   supervisor could not start"`, `controls` offers no stop, and `show` no longer says `preparing`. In the
+   dashboard the same, started with Start run (the dashboard is the parent that must reap it). Revert the commit.
 
 In the dashboard: Start run, and while the banner says "Preparing <title>" press Stop after current task; the run
 ends as above, and its card in Runs shows a **Requests** list with one row: "<time> · Stop after current task ·
-dashboard · accepted · stopping before any task".
+dashboard · accepted · stopping before any task". Pressing Stop now while preparing asks "Stop the run now? No task
+has started yet, so the run ends with nothing to land. …" (data-model §8.5) and also ends the run `stopped`.
 
 ## 9. Sending state and the trace of a refusal (FR-031, FR-033, FR-034)
 

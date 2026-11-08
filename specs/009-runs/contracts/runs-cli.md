@@ -100,7 +100,8 @@ send_control(logs, request) -> str | False
     as today; passes request.get("job") on; after a successful write logs a request line with source "until"
 request(project, command, mode=None, source="cli") -> {"ok": True, "id"} | {"error"}
     as today, plus: job = status.json "job" when the supervisor is alive and not done/stopped (else None) is
-    written into control.json; one request line is logged, accepted or refused, after the write or the refusal
+    written into control.json; one request line is logged, accepted or refused, after the write or the refusal;
+    a stop's line has mode `mode or "after-task"` (2026-11-08)
 log_control(logs, entry) -> bool
     appends json.dumps(entry) + "\n" to <logs>/control-log.jsonl with one os.write on an O_APPEND fd; no lock;
     any OSError/ValueError → False; never raises
@@ -117,21 +118,34 @@ during the start window (a `starting` status, data-model §8.1) is accepted: `{"
 
 ```
 write_starting_status(path, job_id, pid) -> bool
-    data-model §8.1; False (nothing written) when status.json already has "pid": pid
+    data-model §8.1; False (nothing written) when status.json already has "pid": pid; copies "window" and
+    "resets_at" from a previous "waiting" status (2026-11-08)
 startup_control(logs, job_id) -> dict | None
     reads control.json once (read_control deletes it); returns a "stop" whose "job" == job_id (job_id not
     empty); otherwise logs the ignored taken line, says "deleted a leftover control.json" and returns None;
-    returns None at once when there is no control.json
+    returns None at once when there is no control.json; (2026-11-08) a control.json that read_control could
+    not use (still there after it returned None) is unlinked and logged ignored "unreadable request"
+abandon_start(logs, status, args, reason) -> None                         (2026-11-08)
+    status.json "starting" with pid == os.getpid() → write_status(state="stopped", reason=reason); a kept
+    args.startup_stop → taken "ignored" with reason; called on every exit before the first session
+restart_wait(args, logs, status, last) -> "go" | "held" | "stop-wait"   (2026-11-08, --job only)
+    writes a "waiting" status (window, resets_at), then wait_for_reset(…); the result is args.startup_outcome
 taken(logs, control, text, reason=None) -> None
-    one taken line (data-model §8.2) through sdd_control.log_control
+    one taken line (data-model §8.2: id, run, request_run, command, mode, taken, reason) through
+    sdd_control.log_control
 --claude  hidden; default os.environ.get("SDD_CLAUDE") or "claude"   (tests only, research R22)
 ```
 
-`main` calls `args.startup_stop = startup_control(logs, args.job)` where it deleted `control.json` before.
+`main` calls `args.startup_stop = startup_control(logs, args.job)` before its config checks (2026-11-08; it
+deleted `control.json` after them before), and keeps a dead supervisor's usage wait from a `waiting` or a
+`starting` status with `resets_at`, unless a stop was kept (with `--job` through `restart_wait`). Exit codes of the
+early exits are unchanged (2).
 `run_job` carries it out right after setting `JOB_ID` (research R17); the endings are the existing `end_run`
 ("stopped", "stopped before any task") and `suspend_run` ("stopped by you"). A `stop` with `mode: now` read in
 `Cycle.run` while no agent has started ends like an after-task one (`before-task`, research R18), and `run_job`'s
-`before-task` branch suspends instead when the tree is not clean.
+`before-task` branch suspends instead when the tree is not clean (reason the stop-by time's when that stop came
+from it, else "stopped by you"; 2026-11-08). A `startup_outcome` of `held` or `stop-wait` suspends the run before
+its first session with the existing reasons.
 
 Exit codes are unchanged: 0 for `stopped` and for a suspend from a stop.
 
@@ -139,7 +153,8 @@ Exit codes are unchanged: 0 for `stopped` and for a suspend from a stop.
 
 ```
 _start_supervisor(project, command, job_id=None) -> (pid, log)
-    after _spawn: write_starting_status(state_dir/status.json, job_id, proc.pid) when job_id is given
+    after _spawn: write_starting_status(state_dir/status.json, job_id, proc.pid) when job_id is given;
+    (2026-11-08) a daemon thread calls proc.wait(), so the child is reaped when it exits
 ```
 
 `launch_job` and `continue_job` pass their run id; their output is unchanged. When `launch_job` returns, the new

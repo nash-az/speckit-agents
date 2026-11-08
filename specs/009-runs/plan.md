@@ -6,7 +6,9 @@
 **Input**: `spec.md`, amended 2026-11-06 after run `20261106-1204` (report `.sdd/runs/20261106-1204.md`) and its
 analyze pass; constitution v1.2.1. Amendment 2026-11-07 (Stop while preparing and the run-control trace: spec
 Clarifications "Session 2026-11-07", FR-031 to FR-034, SC-009, the last edge case): `main` at `fc63f0d`,
-constitution v1.3.0; Engine changes item 15, research R15–R22, data-model §8.
+constitution v1.3.0; Engine changes item 15, research R15–R22, data-model §8. Updated 2026-11-08 for the analyze
+pass `.sdd/scratch/analyze-009-1.md` and the spec's Clarifications "Session 2026-11-08" (FR-006 exception, FR-007,
+FR-032 wording): research R23 lists every finding and where it is resolved.
 
 ## Summary
 
@@ -88,6 +90,15 @@ before research and again after the design (data-model §8, contracts).
 Re-checked after the design: no violation, no complexity to justify. One test hook is added (`SDD_CLAUDE` as the
 default of the hidden `--claude`, R22 item 4); it changes nothing when unset.
 
+Re-checked 2026-11-08 after the first analyze pass (research R23). VIII: the analyze found 1 CRITICAL and 3 HIGH;
+H1 went back through `/speckit-clarify` (spec `49b0d90`), H2, H3 and the MEDIUM/LOW findings are resolved here,
+C1 is a task split for `/speckit-tasks`; the gate stays closed until `/speckit-tasks` and a fresh
+`/speckit-analyze` report no CRITICAL or HIGH. IX: each 2026-11-08 behaviour (M1–M3, L1, L2, L5, M5) names its test
+in the same sub-item. II: `abandon_start` only replaces the supervisor's own `starting` status (its own pid), and
+the reaper thread only waits on the launcher's own child; nothing in the tree changes. III: a malformed or
+leftover request is deleted and logged, never applied; a restarted wait honours Keep paused instead of starting a
+session the person asked to hold. Pass.
+
 ## Project Structure
 
 ### Documentation (this feature)
@@ -96,7 +107,7 @@ default of the hidden `--claude`, R22 item 4); it changes nothing when unset.
 specs/009-runs/
 ├── spec.md          # amended 2026-11-06
 ├── plan.md          # this file
-├── research.md      # R1–R14; amendment 2026-11-07: R15–R22
+├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23 (analyze findings)
 ├── data-model.md    # §1 run record, §2 normalize, §3 shown state, §4 lifecycle, §5 task history, §6 run summary, §7 task summary line,
 │                    # §8 run control: starting status, control.json job, control log, Requests, page texts (2026-11-07)
 ├── quickstart.md    # validation with the fake claude
@@ -126,14 +137,16 @@ README.md, CLAUDE.md
 bin/sdd-control.py    # write_control(job), request(source), log_control, read_control_log, controls ("starting")
 bin/sdd-supervise.py  # write_starting_status, startup_control, taken, run_job start-window stop, Cycle.run Stop now
                       # before any task, taken lines in Cycle.run/hold/wait_for_reset, --claude from SDD_CLAUDE
-bin/sdd-launch.py     # _start_supervisor(job_id) writes the starting status
+                      # (2026-11-08) abandon_start on every early exit, restart_wait from a starting status
+bin/sdd-launch.py     # _start_supervisor(job_id) writes the starting status and reaps its child
 bin/sdd-tasks.py      # current_state: "starting" reads as running
 bin/sdd-views.py      # job_view / list_job_views: requests
-bin/sdd-dashboard.py  # _control source "dashboard", Requests list on the card, banner sending state and timeout
+bin/sdd-dashboard.py  # _control source "dashboard", Requests list on the card, banner sending state and timeout,
+                      # the Stop-now confirmation while preparing
 tests/ (test_sdd_control.py, test_supervise.py (StartWindowTest new), test_sdd_launch.py, test_run_state.py,
-        test_sdd_job.py, test_sdd_dashboard.py, ui/harness.py, ui/test_banner.py, ui/test_jobs.py,
+        test_sdd_job.py, test_sdd_dashboard.py, ui/test_banner.py, ui/test_jobs.py,
         ui/test_stop_preparing.py (new))
-README.md
+README.md             # "Runs": the control log, Requests, and Stop now before any task (:163)
 ```
 
 **Structure Decision**: the existing plugin layout; no new module. One new test file and one fixture folder; the
@@ -173,9 +186,10 @@ Amendment (T013 onward; each cites research and data-model):
 14. Carry-over test on a fixture copy of this repository's `.sdd/jobs` and `.sdd/runs` (SC-006, R12); the stdout
     leak in `tests/test_sdd_launch.py` (R13).
 
-Amendment 2026-11-07 (FR-031 to FR-034, SC-009; research R15–R22; data-model §8; contracts "Amendment
-2026-11-07" sections). Line numbers are on `main` at `fc63f0d`. Each sub-item is one task's worth, in this order;
-its tests go in the same task (Principle IX).
+Amendment 2026-11-07 (FR-031 to FR-034, SC-009; research R15–R23; data-model §8; contracts "Amendment
+2026-11-07" sections). Line numbers are on `main` at `fc63f0d`; `bin/`, `tests/` and `README.md` are unchanged
+through `49b0d90` (checked 2026-11-08). Each sub-item is one task's worth, in this order; its tests go in the same
+task (Principle IX). The 2026-11-08 additions (research R23) are marked "(2026-11-08)".
 
 15. Stop while preparing and the run-control trace.
     - **15a. Start window** (FR-032; R16; data-model §8.1). `bin/sdd-supervise.py`: new
@@ -191,6 +205,15 @@ its tests go in the same task (Principle IX).
       and `request(…, "stop", "after-task")` is `ok`. `tests/test_run_state.py`: `starting` with a live pid and a
       run.json → `running`. `tests/test_sdd_job.py`: a `working` record with a `starting` status (live pid) and no
       run.json is shown `preparing`.
+      (2026-11-08, M2) `write_starting_status` copies `window` and `resets_at` from the status it replaces when that
+      status's state is `waiting` (whatever its pid), so a Continue after a crash during the usage wait still knows
+      the reset. (2026-11-08, M1) `_start_supervisor` reaps its child: right after `_spawn`, a daemon
+      `threading.Thread(target=proc.wait)`, so a supervisor that exits while the dashboard (its parent) lives on is
+      not left as a zombie that `supervisor_alive` (`bin/sdd-tasks.py:81-95`, signal 0) reads as alive. More tests
+      (`tests/test_sdd_launch.py`): a previous `{"state": "waiting", "window": "five_hour", "resets_at": T, "pid":
+      <dead>}` gives a `starting` status with the same `window` and `resets_at`; any other previous state gives
+      neither key; `_start_supervisor` with `_spawn` left real on `[sys.executable, "-c", "pass"]` and a run id →
+      within 5 s `sdd_tasks.supervisor_alive(status)` is False (reaped).
     - **15b. Requests carry the run id and leave a request line** (FR-031, FR-032; R17, R19; data-model §8.2).
       `bin/sdd-control.py`: `write_control(…, job=None)`; new `log_control(logs, entry)`; `request(project,
       command, mode=None, source="cli")` reads `job` from a live, not `done`/`stopped` status, passes it to
@@ -203,6 +226,12 @@ its tests go in the same task (Principle IX).
       directory, `request` still answers `ok` and `log_control` returns False; two processes logging at once
       give two whole lines. `tests/test_sdd_dashboard.py` `RunControlTest`: a 202 and a 409 from `POST
       /api/run/stop` each leave a `dashboard` line; a 400 (unknown mode) leaves none.
+      (2026-11-08, L2) A stop's request line has `mode` `mode or "after-task"` (what `write_control`,
+      `bin/sdd-control.py:140-141`, writes), so `request(project, "stop")` logs `after-task`, never null; test.
+      (2026-11-08, C1) T035 changes `send_control` (`:151-154`) only: it passes `request.get("job")` on and logs the
+      `until` request line; its test calls `send_control` directly with `"job"` and reads both files. The call site
+      in `Cycle.run` that adds `"job": JOB_ID` (`bin/sdd-supervise.py:331-333`) is the supervisor's file and moves to
+      15e with its test (note for `/speckit-tasks`, below).
     - **15c. Startup keeps a stop for its own run** (FR-031, FR-032, the last edge case; R17; data-model §8.2).
       `bin/sdd-supervise.py`: new `taken(logs, control, text, reason=None)` and `startup_control(logs, job_id)`;
       `main` (`:627-632`) sets `args.startup_stop = startup_control(logs, args.job)` instead of the unlink;
@@ -218,6 +247,38 @@ its tests go in the same task (Principle IX).
       supervisor started"; with `.sdd/run.json` and an uncommitted file (a Continue) → suspended "stopped by you",
       taken "stopping now", the file still there; `RunControlTest.test_a_stale_control_file_is_deleted_at_startup`
       (`:648`) still passes.
+      (2026-11-08, Clarifications FR-032) Every taken line also carries the request's `command`, `mode` and
+      `request_run` (the `job` it carried, null when none; data-model §8.2), so an ignored leftover keeps what it
+      asked for. Test: the "for another run" and "left from before" lines hold `command` `stop`, the mode, and
+      `request_run` `20200101-0000` and null.
+      (2026-11-08, M3) `startup_control`: when `read_control` returns None but `control.json` still exists
+      (malformed JSON or not an object, `bin/sdd-control.py:161-166`), it unlinks the file, says "deleted a leftover
+      control.json" and logs taken `ignored` "unreadable request" (`id`, `command`, `mode` null). Test: `control.json`
+      holding `not json` and one holding `[]` → the file is gone after startup, the run goes on, and a later
+      `request(…, "stop")` answers `ok`, not "a request is already pending".
+      (2026-11-08, M1) `main` moves `logs`, `status` and `args.startup_stop = startup_control(logs, args.job)` above
+      the config checks (`:606-622`), so every exit has them. New `abandon_start(logs, status, args, reason)`:
+      writes `write_status(status, state="stopped", reason=reason)` only when `status.json` is `starting` with
+      `pid == os.getpid()` (its own start window; never another supervisor's status), and logs taken `ignored`
+      `reason` for a kept `args.startup_stop`. Called by `main`'s three early returns (no config, config errors,
+      unknown profile; reason "the supervisor could not start") and `run_job`'s two (`:877-882`; reason "the run is
+      not working"; this replaces the separate ignored line above). Tests (`JobTest`): a `starting` status with
+      this process's pid and no `.sdd/config.toml` → `main` returns 2 and `status.json` is `stopped` "the supervisor
+      could not start", and a kept stop has its ignored line; the same with a `starting` status of another pid →
+      `status.json` unchanged; `run_job` with no record → `stopped` "the run is not working".
+      (2026-11-08, M2) `main`'s restart check (`:633-643`) reads `state in ("waiting", "starting")` with a
+      `resets_at` (R16 carries it), and is skipped when a stop was kept at startup. With `--job` the wait goes
+      through new `restart_wait(args, logs, status, last) -> str`: it writes a `waiting` status of its own
+      (`window`, `resets_at`, so the run shows `paused` with its reset time and Keep paused works) and calls
+      `wait_for_reset` (`:535-555`; taken lines as 15e); it returns `go`, `held` or `stop-wait`, kept as
+      `args.startup_outcome`. `run_job`, after the kept stop and before the first session, returns
+      `suspend_run(…, SUSPEND_REASONS[args.startup_outcome], 0)` for `held` or `stop-wait`. Without `--job`, today's
+      `sleep_until` stays (the plain `launch` writes no `starting` status). `--no-sleep` still skips the wait.
+      Tests: `restart_wait` with `resets_at` 1 s ahead, `RESET_MARGIN_S` patched to 0, `--poll 0.05`: nothing
+      pending → `go` and a `waiting` status with the window was written; a `hold` in `control.json` → `held`; and
+      `run_job` with `startup_outcome` `held` → suspended "kept paused at the usage reset" with no `claude` call;
+      `main` with a `starting` status carrying `window`/`resets_at` and `--no-sleep` says "an earlier supervisor was
+      waiting for the five_hour window".
     - **15d. Stop now before any task ends the run** (FR-007, FR-032; R18). `Cycle.run` (`:350-354`): with
       `started == 0`, set `self.boundary` and `self.before_any_task`, and say "stop now requested before any task:
       stopping the run". `run_job`'s `before-task` branch (`:913-921`): when `tree_clean(project)` is False,
@@ -225,7 +286,10 @@ its tests go in the same task (Principle IX).
       `{"control": {"command": "stop", "mode": "now"}}` step before any `started` line → ended `stopped` "stopped
       before any task", not suspended; an after-task stop before any agent in a session that leaves the tree dirty
       → suspended "stopped by you", `.sdd/run.json` kept. The existing Stop-now tests with an agent started keep
-      passing.
+      passing. (Spec Clarifications 2026-11-08: FR-006's exception and FR-007 now say exactly this; no change here.)
+      (2026-11-08, L1) In that dirty-tree suspend, the reason is `limit_reason("until", record["limits"])` when
+      `by_time` (the stop came from the stop-by time), else `SUSPEND_REASONS["stop-now"]`. Test: a stop-by time
+      already past with a dirty tree before any agent → suspended with the stop-by reason.
     - **15e. Taken lines wherever a request is read** (FR-031; R19; data-model §8.2 table). `Cycle.run`
       (`:348-365`; `logs = self.log_path.parent`), `hold` (`:525-531`), `wait_for_reset` (`:542-555`): one
       `taken(…)` call per request read, with the texts of the table. Tests (`tests/test_supervise.py`
@@ -234,6 +298,12 @@ its tests go in the same task (Principle IX).
       stop now mid-task → "stopping now"; Resume while held → "resuming"; hold during the usage wait → "staying
       paused after the reset", the same hold again → `ignored` "already so"; a stop-by time → a request line with
       `source` `until` and its taken line.
+      (2026-11-08, C1) This item also adds `"job": JOB_ID` to the stop-by request in `Cycle.run`
+      (`bin/sdd-supervise.py:331-333`), tested by the stop-by case just above: its request line has `run` = the run
+      id. (2026-11-08, L5) When a stop under way meets the "no task is left in this run" branch (`:386-397`), a
+      second taken line for the same request says `letting the run finish: no task left`; the reader keeps the last
+      one (data-model §8.3). Test: `RunControlTest` without `--job`, an after-task stop on the last task → two taken
+      lines, the second "letting the run finish: no task left".
     - **15f. Requests on the run's card** (FR-034; R20; data-model §8.3–§8.5). `bin/sdd-control.py` new
       `read_control_log(logs)`. `bin/sdd-views.py`: load `sdd-control.py` as the other modules are loaded
       (`:25-32`); `job_view(project, record, requests=None)` adds `requests` (reads the log for its run when None);
@@ -255,15 +325,45 @@ its tests go in the same task (Principle IX).
       after 10 s "request failed: no answer after 10 s" in `.run-banner-error` and the toast, the buttons enabled
       again, and the route saw one request; `route.abort()` → "request failed: …" and enabled; a 409 still shows
       its error.
+      (2026-11-08, H2) Placement: declare `var controlSending = null;` and `var lastRun = null;` right after `var
+      runBannerError = '';` (`:3696`), inside the slice `JobBannerTest` runs in node (`tests/test_sdd_dashboard.py:
+      2834-2835`: from "// Run banner (data-model.md §12.4" at `:3694` to "// POST /api/run/<command>" at `:3927`).
+      Declared anywhere else (beside `postControl`, say), `controlButton` and `renderJobBanner` throw a
+      ReferenceError in that slice and every `JobBannerTest` case fails; `JobBannerTest` must keep passing.
+      `loadRunState` (`:3679`) is outside the slice and only assigns `lastRun`. (2026-11-08, L3) The usage checkbox
+      is drawn only by `renderJobBanner` (`renderRunBanner`, `:3842`, draws none).
+      (2026-11-08, M5) In `renderJobBanner` (`stopQuestion`, `:3784`): while shown `preparing` and not `stopping`,
+      the Stop now confirmation is the preparing text of data-model §8.5, not "its task is resumed from the journal
+      on the next start", which FR-006's exception makes wrong before any task. Test (`JobBannerTest`): a preparing
+      banner's Stop now confirmation is the new text; a working one keeps today's.
     - **15h. Stop while preparing end to end** (SC-009; R22). `bin/sdd-supervise.py` `parse_args` (`:591`):
-      `--claude` default `os.environ.get("SDD_CLAUDE") or "claude"`. `tests/ui/harness.py` `Dashboard(project=None,
-      env=None)`: `env` merged into `os.environ` for the `Popen` (`:88-92`). New `tests/test_supervise.py`
-      `StartWindowTest` (research R22 item 1: delayed spawn, after-task and now, and the preparing moment). New
-      `tests/ui/test_stop_preparing.py` (R22 item 2: Start run in the page then Stop while "Preparing"; the delayed
-      spawn then Stop; each ended `stopped` "stopped before any task" within 15 s with the two control log lines).
-      README "Runs" (`README.md:138`): the control log file and the Requests list in one sentence each. A
-      `[manual]` task runs the browser tests with `SDD_UI_TESTS=1` outside a run and records the result (R22
-      item 3).
+      `--claude` default `os.environ.get("SDD_CLAUDE") or "claude"`. No harness change (2026-11-08, L9): the
+      browser test passes its environment the way `tests/ui/test_banner.py:85-86` already does, with
+      `mock.patch.dict(os.environ, …)` around `harness.start_dashboard` (here started in `setUpClass` and stopped in
+      `tearDownClass`, because the test also calls `launch_job` in-process and reads the state directory). New
+      `tests/test_supervise.py` `StartWindowTest` (research R22 item 1: delayed spawn, after-task and now, and the
+      preparing moment). New `tests/ui/test_stop_preparing.py` (R22 item 2: Start run in the page then Stop while
+      "Preparing" once the session has started; the delayed spawn then Stop; each ended `stopped` "stopped before
+      any task" within 15 s with the two control log lines). Test design (2026-11-08): **H3** the patched `_spawn`
+      keeps the `Popen` it returns, and the test waits with `proc.wait(timeout=15)`, never by polling `os.kill(pid,
+      0)` (an unwaited child stays a zombie and reads as alive; 15a's reaper thread waiting too is harmless,
+      `Popen.wait` is safe from two threads). **M4** the preparing case sends the stop only after the session has
+      started (`<project>/.sdd/run.json` exists, written by the fake's `{"run": "s1"}` step) while `shown_state` is
+      still `preparing`, and asserts the `Cycle.run` say line "stop requested before any task: stopping the run",
+      not the startup one, so it tests the in-session path every time. README "Runs" (`## Runs` is `README.md:154`,
+      not :138; 2026-11-08, L6): the control log file and the Requests list in one sentence each; and (M5) the
+      cut-off bullet at `:163` says Stop now before any task has started, with a clean tree, ends the run
+      **stopped** "stopped before any task" instead of suspending it. `README.md:134` ("Stop and resume", plain
+      supervised runs without a run record, which hold on Stop now) stays true and is not changed. A `[manual]` task
+      runs the browser tests with `SDD_UI_TESTS=1` outside a run and records the result (R22 item 3).
+
+    Note for `/speckit-tasks` (2026-11-08, analyze C1): split by file so each change ships with its test
+    (Principle IX). The `"job": JOB_ID` on the supervisor's own stop-by request (`bin/sdd-supervise.py:331-333`)
+    and its test go in the supervisor task of 15e (T038), not in T035; T035 keeps `send_control` and its direct
+    test. Also: 15a's reaper and the `starting` status's `window`/`resets_at` go in T034; 15c's `abandon_start`,
+    `restart_wait`, the malformed-file deletion and the taken-line keys in T036; L1 in T037; the M5 confirmation
+    and H2's placement in T040; the README's `:163` in T043; T041/T042 take H3, M4 and L9 as written above; T038's
+    "no test reads the control log yet" (analyze L4) is reworded so the implementer leaves T036's assertions alone.
 
 ## Not in this pass
 
@@ -274,7 +374,9 @@ its tests go in the same task (Principle IX).
 - Deleting a landed run branch (FR-014 "MAY").
 - Amendment 2026-11-07: rotating or trimming `control-log.jsonl` (a line is about 200 bytes); logging a malformed
   control POST (400); a Stop button on the run card and activity while preparing (moved to 013); the plain
-  `launch` (no run record) gets no `starting` status.
+  `launch` (no run record) gets no `starting` status. (2026-11-08) A malformed `control.json` met in the middle of a
+  run (`Cycle.run`, `hold`, `wait_for_reset`) is still left in place as today; only startup deletes it (M3). A
+  plain supervisor (no `--job`) restarted during a usage wait keeps today's `sleep_until`, reading no requests.
 
 ## Complexity Tracking
 

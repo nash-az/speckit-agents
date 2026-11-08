@@ -180,7 +180,8 @@ several entries (for example `started` and `implemented`) come from the same tra
 
 ## §8. Run control: the start window, the request, the control log (amendment 2026-11-07)
 
-FR-031 to FR-034, research R15–R22. Every file here is in the supervisor's state directory (`sdd-tasks.py`
+FR-031 to FR-034, research R15–R22; updated 2026-11-08 for the analyze findings and the spec's Clarifications
+"Session 2026-11-08" (research R23). Every file here is in the supervisor's state directory (`sdd-tasks.py`
 `state_dir(project)`, outside the project); nothing in the project tree changes.
 
 ### §8.1 `status.json` state `starting` (R16)
@@ -197,8 +198,16 @@ pid)` right after the supervisor process is spawned for a run (`launch_job`, `co
 - `pid` is the spawned supervisor's (`proc.pid`), never the launcher's. Written to `status.json.tmp`, then
   `os.replace`. Not written when the current `status.json` already has `"pid": <that pid>` (read it first; a
   missing or unreadable file counts as "not yet").
-- The supervisor overwrites it with its own first `write_status` (`running` at the cycle start, or `done`/`stopped`
-  when it ends or suspends at once).
+- (2026-11-08, R16) When the status it replaces has `"state": "waiting"` (whatever its pid), its `window` and
+  `resets_at` are copied in, so a restarted supervisor still waits for that reset:
+  `{"state": "starting", "job": …, "pid": …, "window": "five_hour", "resets_at": 1794088800, …}`.
+- The supervisor overwrites it with its own first `write_status` (`running` at the cycle start, `waiting` from
+  `restart_wait`, or `done`/`stopped` when it ends or suspends at once).
+- (2026-11-08, R16, R17) A supervisor that exits before its first session (no config, config errors, unknown
+  profile, no record, record not `working`) replaces its own `starting` status (same `pid` as `os.getpid()`, only
+  then) with `{"state": "stopped", "reason": "the supervisor could not start" | "the run is not working", …}`
+  (`abandon_start`). The launcher reaps the process it spawned (a daemon thread on `proc.wait()`), so a dead
+  supervisor never reads as alive.
 - Readers: `controls()` treats `starting` as `running` (`stop` True, `reason` None); `current_state` maps it to
   `running`; `shown_state` gives `preparing` (live pid, no started agent; §3 rule 2 unchanged).
 
@@ -227,7 +236,7 @@ after a successful write):
 | `id` | string \| null | the request id (`control.json` `id`); null for a refused request |
 | `run` | string \| null | the run id (as `control.json` `job`); null when no run supervisor is live |
 | `command` | `stop` \| `resume` \| `hold` \| `release` | |
-| `mode` | `after-task` \| `now` \| null | `stop` only |
+| `mode` | `after-task` \| `now` \| null | `stop` only, and always set for a stop: `mode or "after-task"`, as `control.json` has it (R19, L2) |
 | `source` | `dashboard` \| `cli` \| `until` | `POST /api/run/<command>`, `sdd-control.py` on the command line, the stop-by time |
 | `outcome` | `accepted` \| `refused` | |
 | `reason` | string \| null | refused only: the exact error the person was shown (`controls()` reason, "not available now", or "a request is already pending") |
@@ -239,6 +248,9 @@ after a successful write):
 | `ts` | int | epoch seconds |
 | `id` | string \| null | the `control.json` `id` it read |
 | `run` | string \| null | `control.json` `job`, else the supervisor's `JOB_ID`, else null |
+| `request_run` | string \| null | (2026-11-08) `control.json` `job` as read, null when the request carried none |
+| `command` | string \| null | (2026-11-08) `control.json` `command` as read; null for an unreadable file |
+| `mode` | string \| null | (2026-11-08) `control.json` `mode` as read, else null |
 | `taken` | string | one of the texts below |
 | `reason` | string \| null | why, for `ignored` only |
 
@@ -250,14 +262,17 @@ after a successful write):
 | `startup_control` | anything with another `job` | `ignored` | `for another run` |
 | `startup_control` | anything without `job`, or a supervisor without `--job` | `ignored` | `left from before this supervisor started` |
 | `startup_control` | not `stop`, with this `--job` | `ignored` | `only stop is taken at startup` |
+| `startup_control` | (2026-11-08) a `control.json` that does not parse or is not an object; the file is unlinked | `ignored` | `unreadable request` |
+| `abandon_start` (2026-11-08; `main`'s early exits) | kept stop, the supervisor could not start | `ignored` | `the supervisor could not start` |
 | `run_job` (kept stop) | ends the run | `stopping before any task` | null |
 | `run_job` (kept stop) | suspends again (run.json or dirty tree) | `stopping now` | null |
-| `run_job` (kept stop) | returned before (no record, not working) | `ignored` | `the run is not working` |
+| `run_job` (kept stop; through `abandon_start`) | returned before (no record, not working) | `ignored` | `the run is not working` |
 | `Cycle.run` | `stop` `now`, no agent started | `stopping before any task` | null |
 | `Cycle.run` | `stop` `now` | `stopping now` | null |
 | `Cycle.run` | `stop` `after-task`, first, no agent started | `stopping before any task` | null |
 | `Cycle.run` | `stop` `after-task`, first | `stopping after the current task` | null |
 | `Cycle.run` | `stop` `after-task`, a stop already under way | `ignored` | `a stop after the current task is already under way` |
+| `Cycle.run` (2026-11-08, L5; `:386-397`) | the stop under way meets "no task is left in this run" (a second line for the same request) | `letting the run finish: no task left` | null |
 | `Cycle.run` | `resume`, `hold`, `release` | `ignored` | `only stop is taken while the run is going` |
 | `hold` | `resume` | `resuming` | null |
 | `hold` | anything else | `ignored` | `only resume is taken while held` |
@@ -267,14 +282,23 @@ after a successful write):
 | `wait_for_reset` | `stop`, with `--job` | `stopping now` | null |
 | `wait_for_reset` | `stop` without `--job`, or `resume` | `ignored` | `not taken during the usage wait` |
 
+`wait_for_reset` rows also cover the restarted wait (`restart_wait`, 2026-11-08, R17), which calls it.
+
 Helper in `bin/sdd-supervise.py`: `taken(logs, control, text, reason=None)` builds the taken line from the
-request it read and calls `sdd_control.log_control`. `Cycle.run` takes `logs` from `self.log_path.parent`.
+request it read (`id`, `request_run`, `command`, `mode` from it; `control` may be `{}` for an unreadable file) and
+calls `sdd_control.log_control`. `Cycle.run` takes `logs` from `self.log_path.parent`.
+
+Example of an ignored leftover (2026-11-08):
+
+```
+{"ts": 1794070801, "id": "41ab…", "run": "20261107-1900", "request_run": null, "command": "stop", "mode": "after-task", "taken": "ignored", "reason": "left from before this supervisor started"}
+```
 
 Example after a Stop pressed while preparing:
 
 ```
 {"ts": 1794070803, "id": "9f2c…", "run": "20261107-1900", "command": "stop", "mode": "after-task", "source": "dashboard", "outcome": "accepted", "reason": null}
-{"ts": 1794070805, "id": "9f2c…", "run": "20261107-1900", "taken": "stopping before any task", "reason": null}
+{"ts": 1794070805, "id": "9f2c…", "run": "20261107-1900", "request_run": "20261107-1900", "command": "stop", "mode": "after-task", "taken": "stopping before any task", "reason": null}
 ```
 
 ### §8.3 Reading the log (`sdd-control.py` `read_control_log(logs) -> dict`)
@@ -287,10 +311,14 @@ Returns `{run id: [request, …]}`, each list in file order. A request:
  "taken_ts": 1794070805}
 ```
 
-- Built from the request lines with a non-null `run`; `taken`, `taken_reason`, `taken_ts` come from the first taken
-  line after it with the same `id` and the same `run` (the stop-by id `until` repeats across runs), else null.
-- A taken line with no request line before it is added as its own entry with `command`, `mode`, `source`,
-  `outcome` null (a request left from another run and ignored at startup still shows on that run's card).
+- Built from the request lines with a non-null `run`. A taken line belongs to the latest request line before it
+  with the same `id` and the same `run` (the stop-by id `until` repeats across runs, and can repeat in one run).
+  `taken`, `taken_reason`, `taken_ts` come from the **last** taken line that belongs to the request (2026-11-08,
+  L5: a stop that first said "stopping after the current task" and then "letting the run finish: no task left"
+  shows the second), else null.
+- A taken line with no request line before it is added as its own entry, with `command` and `mode` from the taken
+  line (2026-11-08; null in lines written before) and `source`, `outcome` null (a request left from another run and
+  ignored at startup still shows on that run's card).
 - Lines that do not parse as a JSON object are skipped. A missing file is `{}`.
 
 ### §8.4 Run view `requests` (FR-034)
@@ -311,7 +339,9 @@ Requests list on a run's card (`jobRequestsHtml`), shown only when `requests` is
 - Row = `<time> · <command> · <source> · <outcome>[ · <taken>]`, parts joined by " · ".
 - `<time>`: `ts` as local `HH:MM:SS`.
 - `<command>`: `stop`+`after-task` "Stop after current task"; `stop`+`now` "Stop now"; `resume` "Resume"; `hold`
-  "Keep paused"; `release` "Let it resume" (the banner's own labels); null (a taken-only entry) "Request".
+  "Keep paused"; `release` "Let it resume" (the banner's own labels); null (an unreadable request, or a taken-only entry without
+  `command`) "Request". A taken-only entry with a `command` uses its label, e.g. "01:02:03 · Stop after current
+  task · ignored: left from before this supervisor started" (2026-11-08).
 - `<source>`: `dashboard` "dashboard"; `cli` "command line"; `until` "stop-by time"; null left out.
 - `<outcome>`: "accepted"; "refused: <reason>"; null left out.
 - `<taken>` (accepted or null outcome only): `taken`, plus ": <taken_reason>" when it has one; "not taken yet" when
@@ -327,9 +357,21 @@ Banner while a request is out (FR-033, R21):
   rejected fetch shows `request failed: <error>`.
 - After any ending the buttons follow `controls` again; the page never sends the request a second time by itself.
 
+Stop now confirmation (2026-11-08, M5, FR-006's exception; `renderJobBanner` `stopQuestion`):
+
+- While shown `preparing` and not `stopping`: `Stop the run now? No task has started yet, so the run ends with
+  nothing to land. If a resumed task's work is in the tree, the run is suspended instead.`
+- Otherwise unchanged: `Stop the run now? The current agent is stopped and its task is resumed from the journal on
+  the next start.`
+
 Supervisor `say` lines (in `launch.log`; tests compare them):
 
 - `stop requested before the run started: stopping before any task` (`run_job`, kept stop, ending)
 - `stop requested before the run started: suspending it again` (`run_job`, kept stop, run.json or dirty tree)
 - `stop now requested before any task: stopping the run` (`Cycle.run`, R18)
-- `deleted a leftover control.json` (`startup_control`, every ignored request; unchanged text)
+- `deleted a leftover control.json` (`startup_control`, every ignored request and an unreadable file; unchanged
+  text)
+- `an earlier supervisor was waiting for the <window> window: waiting until <HH:MM>` (`main`, unchanged text; now
+  also from a `starting` status carrying `resets_at`)
+- `stop requested after the current task, but no task is left in this run: letting it finish` (`Cycle.run`,
+  unchanged text; now with its second taken line)

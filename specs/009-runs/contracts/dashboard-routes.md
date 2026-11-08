@@ -67,3 +67,11 @@ Page behaviour:
   and every banner control button and the usage checkbox are disabled; after 10 s without an answer the request is
   aborted and the banner shows `request failed: no answer after 10 s` beside the buttons and in a toast. No
   automatic retry: pressing again is the retry.
+- **Stop now while preparing** (2026-11-08, FR-006's exception): its confirmation is the preparing text of
+  data-model §8.5 (the run ends with nothing to land, or is suspended if a resumed task's work is in the tree).
+- **Requests** (2026-11-08): a request ignored at startup shows its own command, e.g. "Stop after current task ·
+  ignored: left from before this supervisor started"; a request taken twice shows its last taken text.
+- A run whose supervisor exited before its first session (2026-11-08) is no longer shown `preparing`: the launcher
+  reaps it and its status is `stopped`, so `/api/run/current` offers no Stop. Its card shows it as today's dead
+  supervisor rules give (`shown_state`: `ended`, `stopped`, landing `pending` without a run.json; `suspended`
+  with one), with Merge or Continue/Drop, never "another run is going".
