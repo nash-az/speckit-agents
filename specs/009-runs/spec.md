@@ -79,6 +79,10 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
 - Q: Does the clean-tree condition of the first answer also apply to Stop after this task pressed during `preparing`?
   → A: Yes, already decided by that answer (applied after the second analyze pass, D2): a clean tree ends the run
   "stopped before any task"; uncommitted work keeps it `suspended` (FR-005, User Story acceptance 2).
+- Q: When a run is stopped before any task has started, should its session's short report still be committed and
+  land on the base branch? → A: No (user, third analyze pass B1): the engine writes no session report for a session
+  with no task entries, so such a run lands nothing and its landing is always `nothing to land` (FR-017). The run
+  summary still records it. The clean-tree clause of the first answer is applied to FR-032 too (I1).
 
 ## Terms
 
@@ -304,7 +308,9 @@ merged), upgrade; check each shows as described and the two open ones can be con
   duration and tokens when known, and the transcript path when one exists.
 - **FR-017**: Task histories MUST be committed with the session's report commit, and with the run's history and
   summary commits when the run ends or is dropped, so every history is in the repository once its run has ended. A task's own commit
-  holds only the task's files (constitution VI).
+  holds only the task's files (constitution VI). The engine MUST NOT write a session report for a session with no
+  task entries, so a run stopped before any task commits nothing on its branch and its landing is `nothing to land`
+  (FR-005, FR-006, FR-032).
 - **FR-018**: Task commits MUST carry trailers `Task: <id>`, `Run: <run id>`, `Attempts: <n>`, `Model: <implementer>`.
 - **FR-019**: The UI MUST show a task's history on the task (008 FR-033's step events read from it), newest last,
   with its links to full transcripts while they exist. Nothing the person needs MUST depend on Claude's transcripts.
@@ -362,7 +368,8 @@ merged), upgrade; check each shows as described and the two open ones can be con
   project tree changes, and a failing log write MUST NOT stop the request itself.
 - **FR-032**: From Start run until the new supervisor has written its state, Stop after this task and Stop now MUST
   be accepted, not refused: the request carries the run id the launcher created. At startup the supervisor MUST carry
-  out a request with its own run id (a stop ends the run `stopped`, "stopped before any task", nothing landed) and
+  out a request with its own run id (with a clean tree a stop ends the run `stopped`, "stopped before any task",
+  nothing landed; with uncommitted work in the tree the run stays `suspended`, FR-006) and
   MUST delete, without carrying it out, any request with another run id or none, logging it as ignored with its id,
   run id (or none), command and why (another run, or no run id) (FR-031).
 - **FR-033**: While a run-control request from the banner is unanswered, the pressed button MUST read "sending…" and
