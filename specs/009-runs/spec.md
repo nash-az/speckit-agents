@@ -1,6 +1,6 @@
 # Feature Specification: Runs: short-lived groupings of tasks, with the task as the record
 
-**Feature Branch**: `009-runs` | **Created**: 2026-11-06 | **Status**: Amended 2026-11-06 after run 20261106-1204 and its analyze pass (T001–T032 built); amended again 2026-11-07 (Stop while preparing and the run-control trace: FR-031 to FR-034, SC-009; clarified, plan and tasks to follow)
+**Feature Branch**: `009-runs` | **Created**: 2026-11-06 | **Status**: Amended 2026-11-06 after run 20261106-1204 and its analyze pass (T001–T032 built); amended again 2026-11-07 (Stop while preparing and the run-control trace: FR-031 to FR-034, SC-009; clarified, plan and tasks written; clarified again 2026-11-08 after analyze: Stop now before any task, ignored requests logged)
 
 **Input**: On 2026-11-06 the person stopped a Phase 3 Job of 008 with "Stop after current task" and pressed Merge. Merge
 refused with "a run is active": the stop had kept `.sdd/run.json` so the run could resume, and Merge refuses while that
@@ -67,6 +67,15 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
   seconds counts as failed (FR-033).
 - Q: Where can the person read the control log? → A: The file in the state directory, plus a Requests list on the
   run's card in the Runs view, live and past runs (user); not copied into the committed run summary (FR-034).
+
+### Session 2026-11-08 (amendment, after its analyze pass)
+- Q: When the person presses Stop now before any task of the run has started, should the run end, or be left
+  suspended? → A: End it (user): `stopped`, "stopped before any task", nothing landed, whenever no agent has started
+  yet (not only in FR-032's start window); if the tree holds uncommitted work (a resumed session's half-done task),
+  the run stays `suspended` instead (FR-006, FR-007).
+- Q: When a new supervisor finds a request meant for an earlier run (or with no run id), should the control log keep
+  what the request said, or only note that one was thrown away? → A: Keep it (user): the supervisor reads it, does
+  not carry it out, deletes it, and logs it as ignored with its id, run id, command and why (FR-031, FR-032).
 
 ## Terms
 
@@ -220,7 +229,9 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - Stop pressed in the second or two after Start run, before the new supervisor has written its state: the request is
   accepted and tagged with the new run's id; the supervisor carries it out as soon as it starts, so the run ends
   `stopped` with "stopped before any task" (FR-005, FR-032). A request left from an earlier run (another run id, or
-  none) is still deleted unread at startup and logged as ignored (FR-031).
+  none) is deleted at startup without being carried out, and logged as ignored with its id, command and why (FR-031).
+- Stop now before any agent has started: the run ends `stopped`, "stopped before any task", like Stop after this
+  task; but when a resumed session finds half-done work in the tree, the run stays `suspended` (FR-006).
 
 ## Requirements *(mandatory)*
 
@@ -248,10 +259,14 @@ merged), upgrade; check each shows as described and the two open ones can be con
   the boundary has left uncommitted edits, they MUST be saved as a patch in that task's history and stashed, and the
   run MUST still end cleanly; that task is open again.
 - **FR-006**: **Stop now** MUST stop at once and leave the run `suspended`, keeping `.sdd/run.json` and the tree.
+  Exception: pressed while no agent of the run's current session has started (during `preparing`, in FR-032's start
+  window, or before a resumed session's first agent) and with a clean tree, it MUST end the run `stopped` with the
+  reason "stopped before any task", nothing landed, as Stop after this task does (FR-005). With uncommitted work in
+  the tree, the run stays `suspended`.
 - **FR-007**: A run MUST become `suspended`, not ended, whenever it is cut off with a task started but not committed
   or blocked: Stop now, a usage limit it does not wait for, a session that crashed, or an in-session run whose
-  session closed. Cut off at a task boundary, it MUST end cleanly instead. Stop after this task is not a cut-off
-  (FR-005).
+  session closed. Cut off at a task boundary with a clean tree (before any task counts as a boundary, FR-006), it
+  MUST end cleanly instead. Stop after this task is not a cut-off (FR-005).
 - **FR-008**: At a usage limit the run MUST pause and continue after the reset, as 005 FR-004/FR-004a do today
   ("Continue when the limit resets"); left unchecked at the reset, the run becomes `suspended`.
 
@@ -342,7 +357,8 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - **FR-032**: From Start run until the new supervisor has written its state, Stop after this task and Stop now MUST
   be accepted, not refused: the request carries the run id the launcher created. At startup the supervisor MUST carry
   out a request with its own run id (a stop ends the run `stopped`, "stopped before any task", nothing landed) and
-  MUST delete unread any request with another run id or none.
+  MUST delete, without carrying it out, any request with another run id or none, logging it as ignored with its id,
+  run id (or none), command and why (another run, or no run id) (FR-031).
 - **FR-033**: While a run-control request from the banner is unanswered, the pressed button MUST read "sending…" and
   the banner's control buttons MUST be disabled. A request with no answer after 10 seconds MUST be abandoned and
   shown like a failed one (the existing `request failed: <error>` on the banner and in a toast, here with "no answer
