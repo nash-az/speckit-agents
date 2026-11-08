@@ -364,6 +364,10 @@ task (Principle IX). The 2026-11-08 additions (research R23) are marked "(2026-1
     `restart_wait`, the malformed-file deletion and the taken-line keys in T036; L1 in T037; the M5 confirmation
     and H2's placement in T040; the README's `:163` in T043; T041/T042 take H3, M4 and L9 as written above; T038's
     "no test reads the control log yet" (analyze L4) is reworded so the implementer leaves T036's assertions alone.
+    Task numbers in this note are those of the 2026-11-07 tasks. `/speckit-tasks` on 2026-11-08 split 15c in two
+    (T036 the kept stop and `startup_control`; T037 `abandon_start` and `restart_wait`), so 15d is T038, 15e T039,
+    15f T040, 15g T041, 15h T042 (process test), T043 (browser test) and T044 (README), and the `[manual]` task is
+    T045.
 
 ## Not in this pass
 
