@@ -76,6 +76,9 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
 - Q: When a new supervisor finds a request meant for an earlier run (or with no run id), should the control log keep
   what the request said, or only note that one was thrown away? → A: Keep it (user): the supervisor reads it, does
   not carry it out, deletes it, and logs it as ignored with its id, run id, command and why (FR-031, FR-032).
+- Q: Does the clean-tree condition of the first answer also apply to Stop after this task pressed during `preparing`?
+  → A: Yes, already decided by that answer (applied after the second analyze pass, D2): a clean tree ends the run
+  "stopped before any task"; uncommitted work keeps it `suspended` (FR-005, User Story acceptance 2).
 
 ## Terms
 
@@ -107,7 +110,8 @@ the second task is open, and a new run on the second task starts without any oth
    task (commit or blocked entry), starts no other task, ends, and its task commits land on the base branch with no
    click.
 2. **Given** Stop after this task is pressed while the run is still preparing (before any task has started),
-   **Then** the run ends at once with nothing to land, and says so ("stopped before any task").
+   **Then** with a clean tree the run ends at once with nothing to land, and says so ("stopped before any task");
+   with uncommitted work in the tree (a resumed session's half-done task), it stays `suspended`.
 3. **Given** a run ends because its scope is done, a limit is reached (task cap, stop-by time, no progress), or only
    items that need the person are left, **Then** it ends cleanly in the same way, with that reason.
 4. **Given** the base branch moved while the run worked (the person committed to it), **When** the run ends,
@@ -254,8 +258,10 @@ merged), upgrade; check each shows as described and the two open ones can be con
 
 **Stopping and ending**
 - **FR-005**: **Stop after this task** MUST let the current task finish (committed, or blocked after its retries)
-  and its group's commits complete, start nothing else, and end the run cleanly. Pressed during `preparing`, it
-  MUST end the run before any task starts, with the reason "stopped before any task". When a task that started after
+  and its group's commits complete, start nothing else, and end the run cleanly. Pressed during `preparing` with a
+  clean tree, it MUST end the run before any task starts, with the reason "stopped before any task"; with
+  uncommitted work in the tree (a resumed session's half-done task), the run stays `suspended` (FR-006, FR-007).
+  When a task that started after
   the boundary has left uncommitted edits, they MUST be saved as a patch in that task's history and stashed, and the
   run MUST still end cleanly; that task is open again.
 - **FR-006**: **Stop now** MUST stop at once and leave the run `suspended`, keeping `.sdd/run.json` and the tree.

@@ -217,7 +217,7 @@ later task that adds lines leaves them passing.
 
 ## Coverage (amendment: requirement → task)
 
-Already met by T001–T012 and unchanged: FR-001, FR-003, FR-004, FR-006, FR-008, FR-009, FR-011, FR-012,
+Already met by T001–T012 and unchanged: FR-001, FR-003, FR-004, FR-006 (except its exception, below), FR-008, FR-009, FR-011, FR-012,
 FR-014 (the MAY is not taken), FR-015, FR-018, FR-019, FR-022, SC-001, SC-004, SC-005. FR-026 (MAY) is not in this
 pass.
 
