@@ -55,7 +55,7 @@ FR-031 to FR-034; research R16–R21; exact shapes and texts in data-model §8.
 | POST | `/api/run/stop`, `/api/run/resume`, `/api/run/hold`, `/api/run/release` | Same body and answers (`202 {"ok": true, "id"}`, `409 {"error"}`, `400`). `_control` calls `sdd_control.request(project, command, mode, "dashboard")`, so every 202 and 409 leaves a request line in the control log; a 400 does not. While the new run's status is `starting` (data-model §8.1) `stop` answers 202, not 409 |
 | GET | `/api/run/current` | Same shape. While the status is `starting`: `controls.stop` true, `controls.reason` null, `job.shown.state` `preparing` |
 | POST | `/api/jobs/start` | Same answer; the 202 is sent only after the `starting` status is written, so the next `/api/run/current` already offers Stop |
-| GET | `/api/jobs`, `/api/jobs/<id>` | Each run view also has `requests` (data-model §8.4): `[{"id", "ts", "command", "mode", "source", "outcome", "reason", "taken", "taken_reason", "taken_ts"}, …]`, oldest first, `[]` when none |
+| GET | `/api/jobs`, `/api/jobs/<id>` | Each run view also has `requests` (data-model §8.4): `[{"id", "ts", "command", "mode", "source", "outcome", "reason", "taken", "taken_reason", "taken_ts"}, …]`, oldest first, `[]` when none, and `[]` when the state directory or the log cannot be read (2026-11-08, U2: the route still answers 200; so does `/api/run/current`) |
 
 Page behaviour:
 
@@ -69,6 +69,10 @@ Page behaviour:
   automatic retry: pressing again is the retry.
 - **Stop now while preparing** (2026-11-08, FR-006's exception): its confirmation is the preparing text of
   data-model §8.5 (the run ends with nothing to land, or is suspended if a resumed task's work is in the tree).
+  A resumed session (Continue) is shown `working` from its start and keeps the working confirmation, also before
+  its first agent (2026-11-08, A1, research R21: accepted; the card's reason and Requests row say how it ended).
+- **No answer** (2026-11-08, A5): the 10 s message is shown only when the page's own timer aborted the fetch
+  (a `timedOut` flag the timer sets before `abort()`); other rejections keep `request failed: <error>`.
 - **Requests** (2026-11-08): a request ignored at startup shows its own command, e.g. "Stop after current task ·
   ignored: left from before this supervisor started"; a request taken twice shows its last taken text.
 - A run whose supervisor exited before its first session (2026-11-08) is no longer shown `preparing`: the launcher

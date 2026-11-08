@@ -289,11 +289,17 @@ commands and routes in `contracts/`.
   `--job` is returned and kept as `args.startup_stop`; anything else (another run id, no `job` key, a plain
   supervisor without `--job`, or a command other than `stop`) is logged as ignored (R19) with `say("deleted a
   leftover control.json")` (the text `tests/test_supervise.py:648` already checks) and dropped.
-- `run_job` carries out `args.startup_stop` right after `JOB_ID = job_id` (`:883`), before the first session: it
-  logs the taken line, then ends the run with `end_run(…, "stopped", "stopped before any task")` when
-  `.sdd/run.json` is absent and `tree_clean(project)`; otherwise (a Continue whose half-done work is in the tree)
-  it calls `suspend_run(…, "stopped by you", 0)`, so the run is suspended again exactly as it was. No `claude -p`
-  starts. When `run_job` returns earlier (no record, `:877-879`; not `working`, `:880-882`), the kept request is
+- `run_job` carries out `args.startup_stop` right after `JOB_ID = job_id` (`:883`), before the first session,
+  deciding on `tree_clean(project)` alone (2026-11-08, second analyze pass I1). Clean: it logs taken "stopping
+  before any task", calls `close_session(sdd_job, project, job_id)` (`:789-811`: it archives a `.sdd/run.json` a
+  Continue left under `.sdd/runs/<session>/` and returns None when there is none), then `end_run(…, "stopped",
+  "stopped before any task")`. Dirty (a Continue whose half-done work is in the tree): taken "stopping now" and
+  `suspend_run(…, "stopped by you", 0)`, so the run is suspended again exactly as it was. No `claude -p` starts.
+  The earlier rule (end only when run.json is absent and the tree is clean) suspended a Continue with a clean tree
+  again, while FR-006's exception and FR-005 require it to end, and while the in-session `before-task` branch
+  (`:913-921`) ends that same case; the same press then gave a different outcome depending on whether the
+  supervisor had started. `close_session` comes first because `land` refuses while run.json exists
+  (`bin/sdd-job.py:431`, `_run_active`, through `_refuse_unsafe_checkout`, `:445-446`). When `run_job` returns earlier (no record, `:877-879`; not `working`, `:880-882`), the kept request is
   logged ignored with "the run is not working".
 - **Rationale**: FR-032 ("carry out a request with its own run id … MUST delete, without carrying it out, any
   request with another run id or none, logging it as ignored with its id, run id (or none), command and why";
@@ -366,7 +372,8 @@ commands and routes in `contracts/`.
   A 400 for a bad body or `mode` (`bin/sdd-dashboard.py:401-414`) never reaches `request()` and is not logged
   (FR-031 counts requests, not malformed posts).
 - Reader: `sdd-control.py` `read_control_log(logs) -> dict[str, list]` returns each run id's requests in file order
-  (data-model §8.3); lines that do not parse and request lines without a run id are skipped; a taken line without
+  (data-model §8.3); lines that do not parse, and request or taken lines without a run id, are skipped; a
+  taken line without
   a matching request line becomes its own entry (2026-11-08: it carries `command` and `mode`, R17).
 - **The stop mode on a request line (2026-11-08, analyze L2).** `request(project, "stop")` with no mode writes
   `"mode": "after-task"` into `control.json` (`write_control`, `bin/sdd-control.py:140-141`), so its request line
@@ -378,6 +385,15 @@ commands and routes in `contracts/`.
   `letting the run finish: no task left`. The reader keeps the last taken line of a request (data-model §8.3), so
   the card shows what finally happened. `Cycle` keeps the request it is carrying out (`self.stop_control`) for
   that second line.
+- **A stop before any task that meets a dirty tree (2026-11-08, second analyze pass I2).** `Cycle.run` logs a stop
+  taken before any agent as "stopping before any task", but `run_job`'s `before-task` branch then suspends the run
+  when the tree is not clean (R18). The same pattern as L5 applies: `Cycle` keeps the request as
+  `self.stop_control` for either mode, `run_cycles` hands it to `run_job` as `args.stop_control` with the
+  `before-task` outcome, and the dirty-tree suspend writes a second taken line `stopping now` for it. The startup
+  path (R17) already writes "stopping now" for the same outcome, so both paths end with the same text.
+- **Lines without a run (2026-11-08, second analyze pass A4).** A taken line whose `run` is null (a plain
+  supervisor without `--job` taking a request) is skipped by the reader, like a request line without a run id; it
+  stays in the file for anyone reading it by hand.
 - **Rationale**: FR-031 (one line per request, the outcome, the supervisor's line with the same id, nothing in the
   project tree, a failing write never stops the request) and FR-034 (the file is the only store). JSON lines
   because the dashboard reads it back (R20) and `launch.log` mixes every supervisor message.
@@ -393,6 +409,18 @@ commands and routes in `contracts/`.
   appends `jobRequestsHtml(job)`, which returns `''` for an empty list and otherwise a `Requests` title and one
   row per request (texts in data-model §8.5). It is shown on every card, live and past. `loadJobs`' redraw
   signature already includes the whole `jobs` list (`:3520`), so a new line redraws the card.
+- **Where `jobRequestsHtml` is defined (2026-11-08, second analyze pass U1).** Right after `jobSummaryHtml`
+  (`bin/sdd-dashboard.py:3021-3048`), inside the "Runs view" slice ("// Runs view (009 FR-021, FR-022)." at
+  `:2852` to "// End of the Runs view helpers." at `:3245`) that `JobsViewTest` (`tests/test_sdd_dashboard.py:
+  2545-2552`) and `JobBannerTest` (`:2828-2833`) run in node. `jobCardHtml` is called there by five existing
+  tests (`:2597`, `:2605`, `:2664`, `:2669`, `:2688`); outside the slice the new call throws a ReferenceError in
+  each. Same failure as R21's H2.
+- **Reading the log never fails a view (2026-11-08, second analyze pass U2).** `state_dir` calls `mkdir`
+  (`bin/sdd-tasks.py:60-66`) and can raise `OSError` (a sandbox); `get_status` (`:69-78`) already guards it. The
+  views read the log through one helper that catches that `OSError` and gives `{}`, and `read_control_log` gives
+  `{}` for any `OSError` on the read, so `requests` is `[]` and `/api/jobs`, `/api/jobs/<id>` and
+  `/api/run/current` (via `open_job_view`/`last_job_view`, `bin/sdd-views.py:337-354`) never answer 500 because
+  of it.
 - **Rationale**: FR-034. The card is where the person looks for a run; reading the file on each 3-second poll is
   cheap (a line is about 200 bytes and a run has a handful).
 
@@ -421,6 +449,22 @@ commands and routes in `contracts/`.
   (`:3784`) says "its task is resumed from the journal on the next start", which FR-006's exception makes wrong
   before any task. While shown `preparing` and not `stopping` the confirmation is the preparing text of data-model
   §8.5; otherwise it stays.
+- **A resumed session's Stop now confirmation (2026-11-08, second analyze pass A1). Decision: accept and keep the
+  working text.** FR-006's exception also covers "before a resumed session's first agent", but a Continue reads
+  `working` from its start, not `preparing`: run.json still names the earlier session's workflow, whose journal
+  has `started` lines (`_has_started_agent`, `bin/sdd-job.py:252-278`). The banner therefore asks the working
+  question ("… its task is resumed from the journal on the next start"). Rationale: (1) the page has no way to
+  tell that moment from an agent at work, short of a new field on the view, and the window lasts only until the
+  session's first agent starts (seconds); (2) the usual Continue has half-done work in the tree, and then the run
+  is suspended, as the text says; (3) with a clean tree the run ends `stopped` "stopped before any task" with
+  nothing lost (no task was half done; its tasks stay open for the next run), and the card's reason and its
+  Requests row ("stopping before any task") then say what happened (FR-031). Alternatives rejected: a working
+  text that names both outcomes (vaguer for the common case, an agent mid-task, where only suspension is
+  possible); a new `resumed_not_started` flag in the view (more code for a seconds-long window).
+- **How the timeout is told apart (2026-11-08, second analyze pass A5).** `postControl` keeps a local `timedOut`
+  flag; the timer sets it and then calls `controller.abort()`; the `catch` shows "request failed: no answer after
+  10 s" when the flag is set, else today's `'request failed: ' + e`. Chosen over `e.name === 'AbortError'`,
+  which says only that some abort happened, not that this page's timer did it.
 - **Rationale**: FR-033 and its clarification (an error beside the buttons, press again to retry, no automatic
   retry). The browser cannot tell an unanswered request from one the server took slowly; 10 s is the spec's
   number.
@@ -498,3 +542,31 @@ LOW. Code line numbers were re-checked on `49b0d90` (`bin/`, `tests/` and `READM
 
 The 2026-11-08 clarification that an ignored request keeps what it said (FR-032) adds `command`, `mode` and
 `request_run` to every taken line (R17, data-model §8.2).
+
+## R24. The second analyze pass of the amendment (2026-11-08)
+
+`/speckit-analyze` on `2e205ce` (report `.sdd/scratch/analyze-009-2.md`) found 0 CRITICAL, 1 HIGH, 6 MEDIUM and 10
+LOW. Line numbers re-checked on `f1ea4ae` (`bin/`, `tests/` and `README.md` unchanged since `735714b`). Design
+findings are settled in these documents; test-design and wording findings go straight into the tasks.
+
+| Finding | Settled in | Where |
+|---|---|---|
+| I1 a kept stop chose its ending by `.sdd/run.json`, so a clean Continue was suspended again | decide on `tree_clean` alone; clean → `close_session`, `end_run` | R17, plan 15c, data-model §8.2, §8.5, runs-cli contract, quickstart §8 step 10 |
+| I2 the taken line said "stopping before any task" for a run then suspended | second taken line "stopping now" via `args.stop_control` | R19, plan 15e, data-model §8.2 |
+| U1 `jobRequestsHtml` outside the node slice | placement right after `jobSummaryHtml` | R20, plan 15f |
+| U2 `OSError` from `state_dir` or the read | `requests` `[]`, never a 500 | R20, plan 15f, data-model §8.3, §8.4, dashboard-routes contract |
+| A1 a resumed session's Stop now confirmation | accepted: the working text stays | R21, plan 15g, data-model §8.5, dashboard-routes contract |
+| A4 a taken line with `run` null | skipped by the reader | R19, plan 15f, data-model §8.3 |
+| A5 telling the timer's abort apart | a `timedOut` flag set by the timer | R21, plan 15g, data-model §8.5 |
+| D1 the note after 15h used the old task numbers; "15a–15g" | rewritten with T034–T045; "15a–15h" | plan |
+| README "Stop and resume" is `:131`, not `:134` | `:131` (its Stopping bullet is `:134`) | plan 15h |
+| D2 FR-005 lacked the clean-tree clause | spec (`f1ea4ae`) | spec FR-005 |
+| T1 T038's stop-by "1 s ahead" is flaky | tasks: +2 to 3 s and a 5 s session sleep, as `tests/test_supervise.py:827` | T038 |
+| T2 T043 test (2) does not prove the startup path | tasks: assert the startup say line in `launch.log` and no `$FAKE_DIR/calls` | T043 |
+| A2 in-process `main`/`run_job` need `XDG_STATE_HOME` on `os.environ` | tasks: patch `os.environ`, build `args` with `parse_args` | T037 |
+| A3 "control.json had job" cannot be observed | tasks: assert the request line's `run` and the taken line's `request_run` | T039 |
+| A6 the toy project and the Start run dialog | tasks: `build_toy_project` in the test's own folder, git init, commit, `start_dashboard(project)`; accept the dialog as `tests/ui/test_start_run.py` | T043 |
+| C1 400/403/415 tests should assert no log file | tasks | T035 |
+| C2 "no task ticked" not asserted | tasks: every task still `- [ ]` | T042, T043 |
+| C3 checkbox-flip tests not named | tasks: `tests/ui/test_banner.py:438-480` must still pass | T041 |
+| K1 "what done looks like" in manual.md T045 | manual.md: "Done: the last line is `OK`, with no skipped tests." | manual.md |

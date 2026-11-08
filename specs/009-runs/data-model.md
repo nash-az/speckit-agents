@@ -181,7 +181,7 @@ several entries (for example `started` and `implemented`) come from the same tra
 ## §8. Run control: the start window, the request, the control log (amendment 2026-11-07)
 
 FR-031 to FR-034, research R15–R22; updated 2026-11-08 for the analyze findings and the spec's Clarifications
-"Session 2026-11-08" (research R23). Every file here is in the supervisor's state directory (`sdd-tasks.py`
+"Session 2026-11-08" (research R23), and again for the second analyze pass (research R24). Every file here is in the supervisor's state directory (`sdd-tasks.py`
 `state_dir(project)`, outside the project); nothing in the project tree changes.
 
 ### §8.1 `status.json` state `starting` (R16)
@@ -264,10 +264,11 @@ after a successful write):
 | `startup_control` | not `stop`, with this `--job` | `ignored` | `only stop is taken at startup` |
 | `startup_control` | (2026-11-08) a `control.json` that does not parse or is not an object; the file is unlinked | `ignored` | `unreadable request` |
 | `abandon_start` (2026-11-08; `main`'s early exits) | kept stop, the supervisor could not start | `ignored` | `the supervisor could not start` |
-| `run_job` (kept stop) | ends the run | `stopping before any task` | null |
-| `run_job` (kept stop) | suspends again (run.json or dirty tree) | `stopping now` | null |
+| `run_job` (kept stop) | clean tree (2026-11-08, I1: whether or not a Continue left `.sdd/run.json`; `close_session`, then ends the run) | `stopping before any task` | null |
+| `run_job` (kept stop) | dirty tree: suspends again | `stopping now` | null |
 | `run_job` (kept stop; through `abandon_start`) | returned before (no record, not working) | `ignored` | `the run is not working` |
 | `Cycle.run` | `stop` `now`, no agent started | `stopping before any task` | null |
+| `run_job` `before-task` branch (2026-11-08, I2; a second line for the request `Cycle.run` took before any agent, `args.stop_control`) | dirty tree: suspends instead of ending | `stopping now` | null |
 | `Cycle.run` | `stop` `now` | `stopping now` | null |
 | `Cycle.run` | `stop` `after-task`, first, no agent started | `stopping before any task` | null |
 | `Cycle.run` | `stop` `after-task`, first | `stopping after the current task` | null |
@@ -319,12 +320,17 @@ Returns `{run id: [request, …]}`, each list in file order. A request:
 - A taken line with no request line before it is added as its own entry, with `command` and `mode` from the taken
   line (2026-11-08; null in lines written before) and `source`, `outcome` null (a request left from another run and
   ignored at startup still shows on that run's card).
-- Lines that do not parse as a JSON object are skipped. A missing file is `{}`.
+- (2026-11-08, A4) A taken line whose `run` is null (a plain supervisor without `--job`) is skipped, like a
+  request line without a run.
+- Lines that do not parse as a JSON object are skipped. A missing file is `{}`, and so is any other `OSError` on
+  the read (a directory, no permission; 2026-11-08, U2).
 
 ### §8.4 Run view `requests` (FR-034)
 
 `sdd-views.py` `job_view` adds `"requests": [request, …]` (§8.3, that run's list, `[]` when none) for every run,
-live or past. Nothing is added to the run record or the run summary (§6).
+live or past. Nothing is added to the run record or the run summary (§6). (2026-11-08, U2) When the state
+directory cannot be made (`state_dir` raises `OSError`) or the log cannot be read, `requests` is `[]`; the view
+never fails because of the log.
 
 ### §8.5 Page texts (exact)
 
@@ -363,11 +369,19 @@ Stop now confirmation (2026-11-08, M5, FR-006's exception; `renderJobBanner` `st
   nothing to land. If a resumed task's work is in the tree, the run is suspended instead.`
 - Otherwise unchanged: `Stop the run now? The current agent is stopped and its task is resumed from the journal on
   the next start.`
+- (2026-11-08, A1, research R21) A resumed session (Continue) is shown `working` from its start, so it gets the
+  second text even before its first agent. Accepted: with half-done work in the tree it is suspended as the text
+  says; with a clean tree it ends `stopped` "stopped before any task", and the card's reason and Requests row say
+  so.
+
+No answer after 10 s (2026-11-08, A5): `postControl`'s timer sets a local `timedOut = true` and then calls
+`controller.abort()`; the rejection shows `request failed: no answer after 10 s` only when `timedOut` is true.
 
 Supervisor `say` lines (in `launch.log`; tests compare them):
 
 - `stop requested before the run started: stopping before any task` (`run_job`, kept stop, ending)
-- `stop requested before the run started: suspending it again` (`run_job`, kept stop, run.json or dirty tree)
+- `stop requested before the run started: suspending it again` (`run_job`, kept stop, dirty tree; 2026-11-08,
+  I1: a clean tree ends the run with the line above, run.json or not)
 - `stop now requested before any task: stopping the run` (`Cycle.run`, R18)
 - `deleted a leftover control.json` (`startup_control`, every ignored request and an unreadable file; unchanged
   text)

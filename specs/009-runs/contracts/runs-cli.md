@@ -105,7 +105,8 @@ request(project, command, mode=None, source="cli") -> {"ok": True, "id"} | {"err
 log_control(logs, entry) -> bool
     appends json.dumps(entry) + "\n" to <logs>/control-log.jsonl with one os.write on an O_APPEND fd; no lock;
     any OSError/ValueError → False; never raises
-read_control_log(logs) -> {run id: [request, …]}      (data-model §8.3; {} for a missing file)
+read_control_log(logs) -> {run id: [request, …]}      (data-model §8.3; {} for a missing or unreadable file;
+    lines without a run, request or taken, are skipped; 2026-11-08)
 controls(project)
     the "running" row also covers status "starting" (stop True, reason None)
 ```
@@ -140,11 +141,15 @@ taken(logs, control, text, reason=None) -> None
 deleted `control.json` after them before), and keeps a dead supervisor's usage wait from a `waiting` or a
 `starting` status with `resets_at`, unless a stop was kept (with `--job` through `restart_wait`). Exit codes of the
 early exits are unchanged (2).
-`run_job` carries it out right after setting `JOB_ID` (research R17); the endings are the existing `end_run`
-("stopped", "stopped before any task") and `suspend_run` ("stopped by you"). A `stop` with `mode: now` read in
+`run_job` carries it out right after setting `JOB_ID` (research R17), deciding on `tree_clean` alone (2026-11-08,
+I1): a clean tree → `close_session` (archives a `.sdd/run.json` a Continue left; nothing when there is none), then
+the existing `end_run` ("stopped", "stopped before any task"); a dirty tree → `suspend_run` ("stopped by you").
+Whether `.sdd/run.json` exists does not decide it. A `stop` with `mode: now` read in
 `Cycle.run` while no agent has started ends like an after-task one (`before-task`, research R18), and `run_job`'s
 `before-task` branch suspends instead when the tree is not clean (reason the stop-by time's when that stop came
-from it, else "stopped by you"; 2026-11-08). A `startup_outcome` of `held` or `stop-wait` suspends the run before
+from it, else "stopped by you"; 2026-11-08) and first writes a second taken line `stopping now` for the request
+`Cycle.run` took (`args.stop_control`, set by `run_cycles` with the `before-task` outcome; 2026-11-08, I2). A
+`startup_outcome` of `held` or `stop-wait` suspends the run before
 its first session with the existing reasons.
 
 Exit codes are unchanged: 0 for `stopped` and for a suspend from a stop.

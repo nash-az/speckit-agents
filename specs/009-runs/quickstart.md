@@ -120,6 +120,12 @@ Automated in `tests/test_supervise.py` `StartWindowTest` (always runs) and `test
    unknown role"), and launch: within a few seconds `status.json` says `"state": "stopped"`, `"reason": "the
    supervisor could not start"`, `controls` offers no stop, and `show` no longer says `preparing`. In the
    dashboard the same, started with Start run (the dashboard is the parent that must reap it). Revert the commit.
+10. (2026-11-08, I1) A Continue with a clean tree: take a run suspended at a task boundary with nothing
+    uncommitted (Stop now pressed between two tasks; `.sdd/run.json` is kept), write `control.json` with `"command":
+    "stop"` and `"job": "<its id>"`, then Continue it (`sdd-launch.py … --continue <id>` or the card's Continue):
+    no `claude` starts, the run ends `stopped` "stopped before any task", `.sdd/run.json` is archived under
+    `.sdd/runs/<session>/`, and the landing is not refused for an active run. With an uncommitted file in the tree
+    instead, the same steps leave it `suspended` "stopped by you".
 
 In the dashboard: Start run, and while the banner says "Preparing <title>" press Stop after current task; the run
 ends as above, and its card in Runs shows a **Requests** list with one row: "<time> · Stop after current task ·
