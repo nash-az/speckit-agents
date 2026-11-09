@@ -374,7 +374,7 @@ commands and routes in `contracts/`.
   `before-task` (`:678-679`). `run_job`'s `before-task` branch (`:913-921`) first checks the tree: when
   `tree_clean(project)` is False (a resumed session's half-done work) it returns `suspend_run(…,
   SUSPEND_REASONS["stop-now"], 0)`; otherwise it closes the session and ends as today.
-- **Rationale**: FR-007 ("Cut off at a task boundary, it MUST end cleanly"; before the first task is a boundary)
+- **Rationale** (FR-007 has since been narrowed, 2026-11-09; R27 keeps this decision): FR-007 ("Cut off at a task boundary, it MUST end cleanly"; before the first task is a boundary)
   and FR-032 (a stop in the start window, either mode, ends `stopped` "stopped before any task"). The tree check
   fixes the same gap for an after-task stop early in a Continue session, which today would archive `run.json` and
   end over half-done work (landing then refuses the dirty tree). The spec now says this outright (Clarifications
@@ -497,8 +497,8 @@ commands and routes in `contracts/`.
   question ("… its task is resumed from the journal on the next start"). Rationale: (1) the page has no way to
   tell that moment from an agent at work, short of a new field on the view, and the window lasts only until the
   session's first agent starts (seconds); (2) the usual Continue has half-done work in the tree, and then the run
-  is suspended, as the text says; (3) with a clean tree the run ends `stopped` "stopped before any task" with
-  nothing lost (no task was half done; its tasks stay open for the next run), and the card's reason and its
+  is suspended, as the text says; (3) with a clean tree the run ends `stopped` "stopped before any task" (since
+  2026-11-09 usually "stopped before its next task", R27) with nothing lost (no task was half done; its tasks stay open for the next run), and the card's reason and its
   Requests row ("stopping before any task") then say what happened (FR-031). Alternatives rejected: a working
   text that names both outcomes (vaguer for the common case, an agent mid-task, where only suspension is
   possible); a new `resumed_not_started` flag in the view (more code for a seconds-long window).
@@ -695,3 +695,95 @@ findings are settled in these documents; task-wording findings go into `tasks.md
 | A5 where T037's `startup_outcome` suspend goes | task wording: right after T036's kept-stop block, before `while True` | `tasks.md` T037 |
 | T1 `run_job` with `startup_outcome` `stop-wait` untested | task wording: one more case | `tasks.md` T037 |
 | A6 a plain supervisor's "stopping before any task" | accepted | above |
+
+## R27. The fifth analyze pass and the 2026-11-09 clarifications
+
+`/speckit-analyze` on `4b1e738` (report `.sdd/scratch/analyze-009-5.md`) found 0 CRITICAL, 1 HIGH, 5 MEDIUM and 12
+LOW. M1 and M2 went back through `/speckit-clarify` (spec `bc89c66`, Clarifications "Session 2026-11-09"). Line
+numbers re-checked on `bc89c66` (`git diff 735714b bc89c66 -- bin tests README.md` is empty). Design findings are
+settled here; task-wording findings (H1, M3–M5, L1, L3–L7, L9–L11) go into `tasks.md` with `/speckit-tasks`.
+
+- **M1, decided by the person: "stopped before its next task".** Today the only ending "stopped before any task"
+  is `run_job`'s `before-task` branch (`bin/sdd-supervise.py:921`), and 15c adds the kept stop. Both can meet a
+  run whose earlier sessions did work: a Continue, or a session after a usage-limit wait in the same supervisor
+  (`run_job`'s loop, `:886-956`), stopped before its first agent. `Cycle.journal_counts` (`:267-275`) counts only
+  the current workflow, so "no agent started" says nothing about earlier sessions, and their commits, histories
+  and short reports still land (`end`, `bin/sdd-job.py:562-594`; `finalize`, `bin/sdd-history.py:356-370`).
+  **Decision**: the reason is "stopped before its next task" when the run has task-history entries from any
+  session, else "stopped before any task". The stopped session itself has none (no agent of it started), so "any
+  session" is the same as "an earlier session" in the spec's words.
+  - **How the engine knows.** New `sdd-history.py` `has_task_entries(project, record) -> bool`: `harvest(project,
+    record)` (`:188-200`; it appends only lines whose `key` is new, so calling it again in `finalize` adds nothing),
+    then `bool(_run_task_entries(project, record))` (`:211-221`: entries whose `run` is the record's id, any
+    session). Never raises: an exception from `harvest` is ignored and the entries already in the files decide; an
+    exception from the read gives False. Harvesting first matters: a session cut off by a usage limit or a crash
+    wrote no report, and its journal steps reach the histories only at the next `harvest`. `suspended` and
+    `resumed` steps (`record_in_flight`, `bin/sdd-job.py:612-628`) count too: they are written only for tasks that
+    had started.
+  - **Where.** New `sdd-supervise.py` `before_any_task_reason(sdd_job, project, job_id) -> str`, using the loaded
+    `sdd_job.sdd_history` (`bin/sdd-job.py:49`), with constants `BEFORE_ANY_TASK = "stopped before any task"` and
+    `BEFORE_NEXT_TASK = "stopped before its next task"`. It is called after `close_session` (which adds the
+    session to `runs` and archives run.json, `:789-811`), right before `end_run`, in both places: the kept stop's
+    clean branch (15c) and the `before-task` branch (`:921`). Never before `tree_clean`: `harvest` writes history
+    files into the tree, and both branches decide on the tree first. The stop-by-time ending (`:919-920`, a
+    `limit` reason) is unchanged.
+  - **What stays.** The taken text "stopping before any task" and the say lines ("stop requested before any task:
+    stopping the run", "stop requested before the run started: stopping before any task") are about the session
+    and stay as they are (spec FR-031 names only the four common taken texts; I6, R26). The run card's reason
+    says "stopped before its next task", and its landing (usually `landed`) shows what landed.
+  - **Alternatives rejected**: `tasks_done(project, record) > 0` (`bin/sdd-job.py:397-400`; counts ticks, so a run
+    whose earlier sessions only blocked tasks would read "before any task", and a task ticked by hand would
+    count); `len(record["runs"]) > 0` before this session (a session can be in `runs` with no task entries, for
+    example one stopped by `rejected` usage before any agent, `:336-340`); checking only the history files without
+    `harvest` (misses a cut-off session's steps). The analyze report's other option, keeping one reason and
+    recording the limitation, was not chosen.
+- **M2, applied without a question (spec FR-007 narrowed).** The design already does what the narrowed FR-007
+  says, so no code changes: Stop now after an agent started returns `stop-now` (`run_cycles`, `:680`) and
+  suspends (`SUSPEND_REASONS`, `:860-867`, `:935-936`) whatever the tree holds; the kept pause at the reset returns
+  `held` (in a session) or `restart_wait`'s `held` (15c), both suspend; only a stop the supervisor detects before
+  any agent of the session (`before-task`, and the kept stop of 15c) looks at the tree. Quickstart §8 step 10's
+  "Stop now pressed between two tasks" (a suspended run with a clean tree) is therefore what FR-007 now says, not a
+  contradiction. Research R18's rationale quoted the old FR-007 ("before the first task is a boundary"); the
+  decision there stands, on FR-006's exception and the narrowed FR-007.
+- **Found while checking M2, not in this pass (for the person).** FR-007's remaining boundary clause ("Cut off at
+  a task boundary with a clean tree by a crash, a closed session or a usage limit it does not wait for, it MUST
+  end cleanly instead") is older than the amendment, and the code does not do it: a supervised session that ends
+  with `.sdd/run.json` left returns `cut-off` (`:687-691`) and `run_job` suspends it (`:933-934`) whether or not
+  a task was in flight, and an in-session run whose session closed reads `suspended` (`shown_state` rule 4,
+  data-model §3). Only the dirty boundary stop was built for FR-007 (T026, `tasks.md` coverage table). The
+  person then gets Continue and Drop instead of an ended run, and nothing is lost. Not designed here: it is
+  outside the amendment's findings and changes the base 009 behaviour; whether to build it, or to narrow FR-007
+  further, is the person's call.
+- **L2.** Plan 15g said the `PausedJobBannerTest` flip tests "are not touched", while T041 adds a wait between
+  flips (the checkbox is disabled while a request is out). Reworded in 15g: their assertions are unchanged; T041
+  adds only that wait.
+- **L8, decided: one reorder-free fix and one acceptance.**
+  - `restart_wait` (15c, M2) writes a `waiting` status with the supervisor's own pid before `run_job`'s no-record
+    and not-working checks (`:877-882`), so `abandon_start` would find `waiting`, not `starting`, and leave a
+    `waiting` status whose pid then dies. **Decision**: `abandon_start` replaces its own status when the state is
+    `starting` or `waiting` and `pid == os.getpid()` (both can only be this process's: `write_starting_status`
+    writes the spawned pid, `write_status` writes `os.getpid()`, `:468`). Any other status is still left alone.
+    Not reordered: moving the record checks before the restart check would split `run_job`'s checks between
+    `main` and `run_job`. Test: `restart_wait` has written its `waiting` status, then `run_job` with no record →
+    `status.json` is `stopped` "the run is not working".
+  - The kept stop (15c) runs before `run_job`'s branch check (`:889-890`). **Accepted**: with a clean tree it ends
+    through the same `end_run` the branch check would call (`"stopped"`), only with the stop's reason; with a dirty
+    tree it suspends, which keeps the person's work where the branch check would have ended the run over it. The
+    person asked for a stop, and the reason says so.
+- **Page text while preparing (from M1).** `preparing` is also shown for a later session of a run with earlier
+  work (a new session after a usage-limit wait, before its first agent; data-model §3 rule 2), where "the run ends
+  with nothing to land" is false. The preparing Stop now confirmation (data-model §8.5) now says the stop adds no
+  work and that earlier finished work still lands. README "Runs" (T044) says the same.
+
+| Finding | Settled in | Where |
+|---|---|---|
+| H1 T041's browser tests fail on the harness's error check | task wording: `ignore=` on `open_page` | `tasks.md` T041 |
+| M1 "nothing landed" false for a run with earlier sessions' work | spec 2026-11-09 Q1; reason "stopped before its next task" via `has_task_entries` | plan 15j, data-model §4, §8.5, quickstart §1, §8, contracts |
+| M2 FR-007 vs the suspends whatever the tree holds | spec FR-007 narrowed; design unchanged | above; plan 15d note |
+| M3 the 10 s wait races `TIMEOUT_MS` | task wording | `tasks.md` T041 |
+| M4 the `state_dir` patch target | task wording: `dash.sdd_views.sdd_tasks.state_dir` | `tasks.md` T040 |
+| M5 how T042 loads the launcher, control and job modules | task wording | `tasks.md` T042 |
+| L1, L3–L7, L9–L11 | task wording | `tasks.md` |
+| L2 "not touched" vs T041's waits | plan wording | plan 15g |
+| L8 `abandon_start` after `restart_wait`; the kept stop before the branch check | `starting` or `waiting` with own pid; the branch order accepted | above; plan 15c, data-model §8.1 |
+| L12 stale spec Status line, Q1 superseded note, FR-032 clause | spec (`bc89c66`); the tasks.md header is `/speckit-tasks`' | spec |

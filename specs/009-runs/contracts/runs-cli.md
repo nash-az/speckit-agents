@@ -145,7 +145,9 @@ deleted `control.json` after them before), and keeps a dead supervisor's usage w
 early exits are unchanged (2).
 `run_job` carries it out right after setting `JOB_ID` (research R17), deciding on `tree_clean` alone (2026-11-08,
 I1): a clean tree → `close_session` (archives a `.sdd/run.json` a Continue left; nothing when there is none), then
-the existing `end_run` ("stopped", "stopped before any task"); a dirty tree → `suspend_run` ("stopped by you").
+the existing `end_run` ("stopped", "stopped before any task", or "stopped before its next task" when the run has
+task entries from an earlier session: `before_any_task_reason`, 2026-11-09, research R27); a dirty tree →
+`suspend_run` ("stopped by you").
 Whether `.sdd/run.json` exists does not decide it. A `stop` with `mode: now` read in
 `Cycle.run` while no agent has started ends like an after-task one (`before-task`, research R18), and `run_job`'s
 `before-task` branch suspends instead when the tree is not clean (reason the stop-by time's when that stop came

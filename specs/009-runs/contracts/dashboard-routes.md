@@ -68,7 +68,8 @@ Page behaviour:
   aborted and the banner shows `request failed: no answer after 10 s` beside the buttons and in a toast. No
   automatic retry: pressing again is the retry.
 - **Stop now while preparing** (2026-11-08, FR-006's exception): its confirmation is the preparing text of
-  data-model §8.5 (the run ends with nothing to land, or is suspended if a resumed task's work is in the tree).
+  data-model §8.5 (the stop adds no work and earlier finished work still lands, 2026-11-09; or the run is
+  suspended if a resumed task's work is in the tree).
   A resumed session (Continue) is shown `working` from its start and keeps the working confirmation, also before
   its first agent (2026-11-08, A1, research R21: accepted; the card's reason and Requests row say how it ended).
 - **No answer** (2026-11-08, A5): the 10 s message is shown only when the page's own timer aborted the fetch

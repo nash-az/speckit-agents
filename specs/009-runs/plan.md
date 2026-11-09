@@ -12,7 +12,9 @@ FR-032 wording): research R23 lists every finding and where it is resolved. Upda
 third analyze pass `.sdd/scratch/analyze-009-3.md` and the spec's clarification on B1 (FR-017: no session report
 for a session with no task entries, `56c8ffb`): research R25, Engine changes 15i. Updated again 2026-11-08 for
 the fourth analyze pass `.sdd/scratch/analyze-009-4.md` (C1, I1, I3, I4, I5, A6, I6): research R26, Engine changes
-15a.
+15a. Updated 2026-11-09 for the spec's Clarifications "Session 2026-11-09" (`bc89c66`: "stopped before its next
+task" when an earlier session did work; FR-007 narrowed) and the fifth analyze pass `.sdd/scratch/analyze-009-5.md`
+(M1, M2, L2, L8): research R27, Engine changes 15j and notes in 15c, 15d, 15g, 15h.
 
 ## Summary
 
@@ -81,7 +83,7 @@ before research and again after the design (data-model §8, contracts).
 | Principle | Check | Result |
 |---|---|---|
 | I. Spec Kit stays the source of truth | No change to Spec Kit's files or formats; the amendment is in `spec.md` and these documents | Pass |
-| II. Safe without a person watching | The `starting` status, `control.json` and the control log are in the state directory outside the project (`sdd-tasks.py` `state_dir`, `bin/sdd-tasks.py:60-66`); nothing in the tree changes, so the run guard and the clean-tree checks are untouched. A stop before any task lands nothing (`end` finds no commit the base lacks); a stop with half-done work in the tree suspends instead of ending (research R17, R18), so work is never dropped. No push, no history rewrite | Pass |
+| II. Safe without a person watching | The `starting` status, `control.json` and the control log are in the state directory outside the project (`sdd-tasks.py` `state_dir`, `bin/sdd-tasks.py:60-66`); nothing in the tree changes, so the run guard and the clean-tree checks are untouched. A stop before any task adds no commit (`end` finds no commit the base lacks; 2026-11-09: earlier sessions' finished work still lands, 15j); a stop with half-done work in the tree suspends instead of ending (research R17, R18), so work is never dropped. No push, no history rewrite | Pass |
 | III. Never guess on a person's behalf | A stop is carried out only for the run it names; a request for another run, or one left from an earlier supervisor, is deleted and logged as ignored, never applied (R17). The browser never retries by itself (R21) | Pass |
 | IV. Verified, not reported | No task is ticked or landed by a stop before any task; the control log reports what the supervisor did, written by the supervisor itself at the point it acts (R19) | Pass |
 | V. Deterministic where possible | Request matching, the start-window rule and the log are plain code with exact texts (data-model §8.2, §8.5) | Pass |
@@ -129,6 +131,15 @@ write at the same moment can no longer make the supervisor's `os.replace` raise 
 written yet). III, V: A6 is accepted (R26): a plain supervisor's taken line is only in the state directory's log,
 with `run` null. Pass.
 
+Re-checked 2026-11-09 after the fifth analyze pass (`.sdd/scratch/analyze-009-5.md`, research R27). VIII: it found 0
+CRITICAL and 1 HIGH (H1, wording in `tasks.md` T041); M1 and M2 went back through `/speckit-clarify` (spec
+`bc89c66`). The gate stays closed until `/speckit-tasks` and a fresh `/speckit-analyze` report no CRITICAL or HIGH.
+IX: 15j names its tests in the same sub-item; L8's `abandon_start` change has its test in 15c. II: 15j only
+chooses a reason; the `harvest` it calls writes the same history lines `finalize` writes a moment later, after the
+tree check, and lands nothing by itself. III, IV: the reason now says what happened (earlier finished work landed),
+instead of claiming nothing landed. A gap older than the amendment was found (FR-007's crash-at-a-boundary clause
+is not built; R27) and is left to the person, not designed here. Pass.
+
 ## Project Structure
 
 ### Documentation (this feature)
@@ -137,7 +148,7 @@ with `run` null. Pass.
 specs/009-runs/
 ├── spec.md          # amended 2026-11-06
 ├── plan.md          # this file
-├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23–R26 (analyze findings)
+├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23–R26; 2026-11-09: R27 (analyze findings)
 ├── data-model.md    # §1 run record, §2 normalize, §3 shown state, §4 lifecycle, §5 task history, §6 run summary, §7 task summary line,
 │                    # §8 run control: starting status, control.json job, control log, Requests, page texts (2026-11-07)
 ├── quickstart.md    # validation with the fake claude
@@ -169,6 +180,8 @@ bin/sdd-control.py    # write_control(job), request(source), log_control, read_c
 bin/sdd-supervise.py  # write_starting_status, startup_control, taken, run_job start-window stop, Cycle.run Stop now
                       # before any task, taken lines in Cycle.run/hold/wait_for_reset, --claude from SDD_CLAUDE
                       # (2026-11-08) abandon_start on every early exit, restart_wait from a starting status
+                      # (2026-11-09, 15j) before_any_task_reason: "stopped before its next task"
+bin/sdd-history.py    # (2026-11-09, 15j) has_task_entries
 bin/sdd-launch.py     # _start_supervisor(job_id) writes the starting status and reaps its child
 bin/sdd-tasks.py      # current_state: "starting" reads as running
 bin/sdd-views.py      # job_view / list_job_views: requests
@@ -330,6 +343,12 @@ R25) are marked "(2026-11-08)".
       this process's pid and no `.sdd/config.toml` → `main` returns 2 and `status.json` is `stopped` "the supervisor
       could not start", and a kept stop has its ignored line; the same with a `starting` status of another pid →
       `status.json` unchanged; `run_job` with no record → `stopped` "the run is not working".
+      (2026-11-09, fifth analyze pass L8; research R27) `abandon_start` replaces its own status when its state is
+      `starting` **or `waiting`** with `pid == os.getpid()`: `restart_wait` (below) writes a `waiting` status of
+      this process before `run_job`'s record checks, and that status must not be left behind with a dead pid. Test:
+      a `waiting` status with this process's pid (as `restart_wait` writes it), then `run_job` with no record →
+      `stopped` "the run is not working"; a `waiting` status of another pid → unchanged. The kept stop running
+      before `run_job`'s branch check (`:889-890`) is accepted (R27): no reorder.
       (2026-11-08, M2) `main`'s restart check (`:633-643`) reads `state in ("waiting", "starting")` with a
       `resets_at` (R16 carries it), and is skipped when a stop was kept at startup. With `--job` the wait goes
       through new `restart_wait(args, logs, status, last) -> str`: it writes a `waiting` status of its own
@@ -354,6 +373,10 @@ R25) are marked "(2026-11-08)".
       (2026-11-08, L1) In that dirty-tree suspend, the reason is `limit_reason("until", record["limits"])` when
       `by_time` (the stop came from the stop-by time), else `SUSPEND_REASONS["stop-now"]`. Test: a stop-by time
       already past with a dirty tree before any agent → suspended with the stop-by reason.
+      (2026-11-09, spec FR-007 narrowed, fifth analyze pass M2; R27) No design change: only the stops detected
+      before any agent of the session (this branch and 15c's kept stop) look at the tree; Stop now after an agent
+      started (`stop-now`) and the kept pause (`held`) suspend whatever the tree holds, as the code already does.
+      The clean branch's reason comes from 15j.
     - **15e. Taken lines wherever a request is read** (FR-031; R19; data-model §8.2 table). `Cycle.run`
       (`:348-365`; `logs = self.log_path.parent`), `hold` (`:525-531`), `wait_for_reset` (`:542-555`): one
       `taken(…)` call per request read, with the texts of the table. Tests (`tests/test_supervise.py`
@@ -455,7 +478,12 @@ R25) are marked "(2026-11-08)".
       test needs (no run.json, so the run reads ended with landing pending), and gains
       `test_preparing_job_names_the_job_and_offers_both_stops`: a `running` status, banner text "Preparing " +
       `JOB_TITLE`, enabled labels "Stop after current task" and "Stop now" (FR-005, FR-032 in the browser), and no
-      run id shown. The flip tests of `PausedJobBannerTest` (`:438-470`) are not touched.
+      run id shown. The flip tests of `PausedJobBannerTest` (`:438-480`) keep their assertions; the only change to
+      them is a wait, between two flips, until the checkbox is enabled again, since it is disabled while a request
+      is out (2026-11-09, fifth analyze pass L2; T041).
+      (2026-11-09, from M1; R27) The preparing Stop now confirmation is the new text of data-model §8.5 ("… the stop
+      adds no work to the run; work finished earlier in this run still lands. …"), because `preparing` is also
+      shown for a later session of a run with earlier work.
     - **15h. Stop while preparing end to end** (SC-009; R22). `bin/sdd-supervise.py` `parse_args` (`:591`):
       `--claude` default `os.environ.get("SDD_CLAUDE") or "claude"`. No harness change (2026-11-08, L9): the
       browser test passes its environment the way `tests/ui/test_banner.py:85-86` already does, with
@@ -475,7 +503,10 @@ R25) are marked "(2026-11-08)".
       requested before any task: stopping the run", not the startup one, so it tests the in-session path every time.
       README "Runs" (`## Runs` is `README.md:154`, not :138; 2026-11-08, L6): the control log file and the Requests
       list in one sentence each; and (M5) the cut-off bullet at `:163` says Stop now before any task has started, with
-      a clean tree, ends the run **stopped** "stopped before any task" instead of suspending it. "### Stop and resume"
+      a clean tree, ends the run **stopped** "stopped before any task" instead of suspending it. (2026-11-09, 15j)
+      Both README sentences name the second reason: "stopped before any task", or "stopped before its next task"
+      when an earlier session of the run did tasks, whose finished work still lands; the stopped session adds
+      nothing. README `:162` today ends "with nothing to land", which T044 replaces. "### Stop and resume"
       (`README.md:131`; its "Stopping" bullet with Stop now is `:134`; plain supervised runs without a run record,
       which hold on Stop now) stays true and is not changed. A `[manual]` task runs the browser tests with
       `SDD_UI_TESTS=1` outside a run and records the result (R22 item 3).
@@ -518,6 +549,44 @@ R25) are marked "(2026-11-08)".
       are true as written. README "Run summary" (`README.md:172`): "A session that ended without its own report (a
       stop at a boundary, a Drop) gets a short one written from its journal" gains ", unless no task was started in
       it" (in T044, with the other README edits).
+      (2026-11-09, spec Clarifications 2026-11-09 Q1) 15i is unchanged: a session with no task entries still gets
+      no report. What changed is the spec's claim about the whole run: a run whose earlier sessions have task
+      entries still lands their commits, reports and histories (FR-017), and its reason is 15j's.
+
+    - **15j. "Stopped before its next task" when an earlier session did work** (2026-11-09; spec Clarifications
+      2026-11-09 Q1, FR-005, FR-006, FR-017, FR-032; fifth analyze pass M1; research R27). Today the clean
+      `before-task` branch ends every such run with "stopped before any task" (`bin/sdd-supervise.py:921`), and 15c
+      adds the same ending for the kept stop, though a Continue or a later session of the run (after a usage-limit
+      wait, `run_job`'s loop `:886-956`) may follow sessions that did tasks, whose work then lands.
+      `bin/sdd-history.py`: new `has_task_entries(project, record) -> bool` beside `_run_task_entries`
+      (`:211-221`): call `harvest(project, record)` (`:188-200`) inside its own `try` (an exception is ignored), then
+      return `bool(_run_task_entries(project, record))` (any exception → False). Never raises.
+      `bin/sdd-supervise.py`: constants `BEFORE_ANY_TASK = "stopped before any task"` and `BEFORE_NEXT_TASK =
+      "stopped before its next task"` beside `SUSPEND_REASONS` (`:860-867`), and new `before_any_task_reason(sdd_job,
+      project, job_id) -> str`: loads the record (`sdd_job.load`), returns `BEFORE_NEXT_TASK` when it exists and
+      `sdd_job.sdd_history.has_task_entries(project, record)` (the history module `bin/sdd-job.py:49` loaded), else
+      `BEFORE_ANY_TASK`; never raises (an exception gives `BEFORE_ANY_TASK`). Called after `close_session` and
+      right before `end_run`, never before the tree check (`harvest` writes history files), in both places: the
+      `before-task` branch's clean ending (`:921`; the stop-by ending `:919-920` is unchanged) and 15c's kept stop
+      with a clean tree. Taken texts and say lines are unchanged (R27).
+      Tests: `tests/test_sdd_history.py` (`HistoryTestCase` helpers, `:22-61`): `has_task_entries` is False for a
+      record with no history files; True when `.sdd/tasks/<feature>/T001.jsonl` holds one entry with `run` = the
+      record's id and a session other than any in `runs`; False when its only entry has another `run`; True when no
+      history file exists yet but the record's session has a workflow with `started` lines for T012
+      (`self.workflow("20261106-1015", "wf_one", self.retry_journal())`, `:34-61`; the harvest inside makes it so),
+      and `.sdd/tasks/008-standalone-server/T012.jsonl` then exists; and with
+      `harvest` patched to raise, the entries already in the files still decide. `tests/test_supervise.py` `JobTest`
+      (the fake writes no `workflows.json`, so the earlier work is a history file committed on the run branch in
+      the test: `.sdd/tasks/005-jobs/T001.jsonl` with one `started` entry, `run` `JOB_ID`, `session` `e1`, a unique
+      `key`; and `save_job(runs=["e1"])`): (1) a session `[{"transcript": True}, {"run": "r2"}, {"control":
+      {"command": "stop", "mode": "after-task"}}, {"sleep": 30}, …]` → the say line "stop requested before any task:
+      stopping the run", ended `stopped` "stopped before its next task", landing `landed`, `.sdd/runs/e1.md` on
+      `main` (`git show main:.sdd/runs/e1.md`), no `.sdd/runs/r2.md`, and a subject `chore(run): <JOB_ID> history`
+      in `git log main`; (2) the same earlier work, `.sdd/run.json` `{"run_id": "s0", "job": JOB_ID, "branch": …}`
+      and a clean tree, and a kept stop in `control.json` (15c) → no `claude` call, ended `stopped` "stopped before
+      its next task", landing `landed`, taken "stopping before any task". The existing and 15c/15d/15h tests with
+      no earlier task entries keep asserting "stopped before any task" (their records have no history files and
+      the fake writes no `workflows.json`).
 
     Note for `/speckit-tasks` (rewritten 2026-11-08 after the second analyze pass, D1; task numbers are those of
     `tasks.md` since `2e205ce`). Split by file so each change ships with its test (Principle IX):
@@ -561,6 +630,14 @@ R25) are marked "(2026-11-08)".
     `#start-job-btn`), A4 (T036/T037: `mock.patch.object` on `JOB_ID` around in-process supervisor calls), A5 (T037:
     right after T036's kept-stop block, before `while True`), T1 (T037: a `stop-wait` case) and I2 (T038 also
     updates the module docstring at `bin/sdd-supervise.py:41-44`). Research R26 lists every finding.
+    (2026-11-09, after the fifth analyze pass and spec `bc89c66`) **T046** also adds `has_task_entries` and its
+    `tests/test_sdd_history.py` tests (15j; same file as 15i). **T036** adds `BEFORE_ANY_TASK`, `BEFORE_NEXT_TASK`
+    and `before_any_task_reason`, uses it in its kept stop and in the existing clean `before-task` ending (`:921`,
+    a one-line change), with 15j's two `JobTest` cases; T038 keeps that call when it adds the dirty-tree suspend
+    above it, and T038's docstring sentence names both reasons. **T037** takes L8 (`abandon_start` on `starting`
+    or `waiting` with its own pid, and its test). **T041** takes L2 (only the flip waits) and the new preparing
+    Stop now text (data-model §8.5). **T044**'s README sentences name both reasons (15h). H1, M3–M5, L1, L3–L7 and
+    L9–L11 are task wording only; research R27 lists every finding. M2 needs no task (15d note).
 
 ## Not in this pass
 

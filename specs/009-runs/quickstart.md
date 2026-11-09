@@ -33,7 +33,8 @@ Scenario, one cycle: `{"run": "<session>"}`, a transcript, journal `started` `im
    `.sdd/tasks/001-x/T002.jsonl` ends with a `dropped` entry whose `diff` holds the edit (FR-005).
 4. Start a second run on T002 straight away: it starts (no refusal).
 5. Stop pressed before any agent starts: the run ends `stopped` with reason "stopped before any task" and landing
-   `nothing`.
+   `nothing`. (2026-11-09) In a run whose earlier session did tasks (a Continue, or the next session after a
+   usage-limit wait), the reason is "stopped before its next task" and that earlier work lands (§8 step 11).
 
 ## 2. Cut off, Continue, Drop (US2, SC-002)
 
@@ -122,20 +123,29 @@ Automated in `tests/test_supervise.py` `StartWindowTest` (always runs) and `test
    unknown role"), and launch: within a few seconds `status.json` says `"state": "stopped"`, `"reason": "the
    supervisor could not start"`, `controls` offers no stop, and `show` no longer says `preparing`. In the
    dashboard the same, started with Start run (the dashboard is the parent that must reap it). Revert the commit.
-10. (2026-11-08, I1) A Continue with a clean tree: take a run suspended at a task boundary with nothing
-    uncommitted (Stop now pressed between two tasks; `.sdd/run.json` is kept), write `control.json` with `"command":
-    "stop"` and `"job": "<its id>"`, then Continue it (`sdd-launch.py … --continue <id>` or the card's Continue):
-    no `claude` starts, the run ends `stopped` "stopped before any task", `.sdd/run.json` is archived under
-    `.sdd/runs/<session>/`, and the landing is not refused for an active run. With an uncommitted file in the tree
-    instead, the same steps leave it `suspended` "stopped by you". (2026-11-08, B1) The earlier session did tasks,
-    so it has task entries and still gets its short report and histories committed (`chore(run): <id> history`,
-    FR-017) when they are not committed yet, and the landing is then `landed`; only a run whose sessions have no
-    task entries lands nothing.
+10. (2026-11-08, I1; updated 2026-11-09) A Continue with a clean tree: take a run suspended at a task boundary
+    with nothing uncommitted (Stop now pressed between two tasks, after an agent had started, so FR-007 suspends it
+    whatever the tree holds; `.sdd/run.json` is kept), write `control.json` with `"command": "stop"` and `"job":
+    "<its id>"`, then Continue it (`sdd-launch.py … --continue <id>` or the card's Continue): no `claude` starts,
+    the run ends `stopped` with "stopped before its next task" (the earlier session did tasks; spec Clarifications
+    2026-11-09), `.sdd/run.json` is archived under `.sdd/runs/<session>/`, and the landing is not refused for an
+    active run. With an uncommitted file in the tree instead, the same steps leave it `suspended` "stopped by
+    you". (2026-11-08, B1) The earlier session has task entries, so its short report and histories are committed
+    (`chore(run): <id> history`, FR-017) when they are not committed yet, and the landing is then `landed` (or
+    `nothing` when all of it was already on the base); the stopped session itself adds no commit.
+11. (2026-11-09, plan 15j) The next session after earlier work: a run with two sessions, the first doing T001
+    (committed), the second stopped with `stop` after its `run` step and before any agent: the run ends `stopped`
+    "stopped before its next task", T001 and the first session's report are on `main` (landing `landed`), there is
+    no `.sdd/runs/<second session>.md`, and the control log's taken line still says "stopping before any task" (it
+    is about the session). By hand this needs a real `claude`: the fake writes no `workflows.json`, so its
+    sessions leave no task entries and the reason would read "stopped before any task". `tests/test_supervise.py`
+    `JobTest` covers it with a committed history file standing in for the first session (plan 15j).
 
 In the dashboard: Start run, and while the banner says "Preparing <title>" press Stop after current task; the run
 ends as above, and its card in Runs shows a **Requests** list with one row: "<time> · Stop after current task ·
 dashboard · accepted · stopping before any task". Pressing Stop now while preparing asks "Stop the run now? No task
-has started yet, so the run ends with nothing to land. …" (data-model §8.5) and also ends the run `stopped`.
+has started yet, so the stop adds no work to the run; work finished earlier in this run still lands. …" (data-model
+§8.5, 2026-11-09) and also ends the run `stopped`.
 
 ## 9. Sending state and the trace of a refusal (FR-031, FR-033, FR-034)
 

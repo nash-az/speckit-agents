@@ -96,12 +96,15 @@ working ──usage wait──> paused (shown only) ──reset──> working
 working ──Stop after this task / limit / done / waiting / no progress──> [boundary]
    [boundary], tree clean ─────────────> close session, end(outcome) ──> land ──> summary
    [boundary], tree dirty (later task) ─> stash_and_end: patch to history, stash, close session, end, land, summary
-   Stop pressed before any agent (either mode), tree clean ─> close session, end("stopped", "stopped before any task")
-   Stop pressed before any agent (either mode), tree dirty ─> suspend("stopped by you", or the stop-by reason)
+   Stop pressed before any agent of the session (either mode), tree clean ─> close session, end("stopped", R)
+   Stop pressed before any agent of the session (either mode), tree dirty ─> suspend("stopped by you", or the stop-by reason)
 start/Continue ──stop kept at startup (control.json names this run; §8.2)──> before any session:
-   tree clean ─> close session (archives a Continue's run.json), end("stopped", "stopped before any task")
+   tree clean ─> close session (archives a Continue's run.json), end("stopped", R)
    tree dirty ─> suspend("stopped by you")
-working ──Stop now / cut-off / kept paused / crash──> suspend: history `suspended`, land_ready
+     R = "stopped before its next task" when the run has task entries from an earlier session, else
+         "stopped before any task" (2026-11-09; below)
+working ──Stop now after an agent started / cut-off / kept paused / crash──> suspend (whatever the tree holds):
+   history `suspended`, land_ready
 suspended ──Continue──> history `resumed`, working (same id, branch)
 suspended ──Drop──> drop_suspended: patch to history `dropped`, stash, archive run.json, end("dropped"), land, summary
 ended(needs-merge|pending) ──Merge/Land──> land ──> summary
@@ -115,6 +118,22 @@ least one task-history entry in this run (`write_session_reports`, `bin/sdd-hist
 none (a run stopped before any task, whether or not it wrote `.sdd/run.json`) gets no report, so `finalize` makes
 no commit for it and the landing is `nothing`. The session id stays in the record's `runs` and in the summary's
 `sessions`; the summary's `reports` lists only reports that exist (`:281`).
+(2026-11-09, spec Clarifications 2026-11-09, FR-005, FR-006, FR-017, FR-032; research R27; plan 15j) A stop the
+supervisor detects before any agent of the session has started, with a clean tree, adds no commit for that session,
+but the run's earlier sessions are not undone: their task commits, task histories and short reports land as usual
+(`landed`, or `nothing` when all of it was already on the base). Only a run none of whose sessions has task entries
+lands `nothing` for sure. The reason tells the two apart:
+
+| The run has task-history entries (`sdd-history.py` `has_task_entries`: `harvest`, then any entry with `run` = the id) | `reason` |
+|---|---|
+| no | `stopped before any task` |
+| yes (an earlier session did tasks: a Continue, or a session after a usage-limit wait) | `stopped before its next task` |
+
+The stop-by time still ends such a run as `limit` with its own reason. FR-007 (narrowed 2026-11-09): only these
+before-any-agent stops look at the tree; Stop now after an agent of the session started, and the kept pause at the
+reset, suspend whatever the tree holds; a crash, a closed session or an unwaited usage limit at a boundary with a
+clean tree should end the run, which the code does not do yet (`bin/sdd-supervise.py:687-691`, `:933-934`; research
+R27, outside this amendment).
 
 ## §5. Task history entry (`.sdd/tasks/<feature folder>/<task id>.jsonl`, committed)
 
@@ -191,7 +210,8 @@ several entries (for example `started` and `implemented`) come from the same tra
 
 FR-031 to FR-034, research R15–R22; updated 2026-11-08 for the analyze findings and the spec's Clarifications
 "Session 2026-11-08" (research R23), and again for the second analyze pass (research R24) and the fourth
-(research R26: §4's diagram, §8.1's temporary file). Every file here is in the supervisor's state directory (`sdd-tasks.py`
+(research R26: §4's diagram, §8.1's temporary file), and again 2026-11-09 for the spec's Clarifications "Session
+2026-11-09" and the fifth pass (research R27: §4's reason, §8.1's `waiting`, §8.5's preparing text). Every file here is in the supervisor's state directory (`sdd-tasks.py`
 `state_dir(project)`, outside the project); nothing in the project tree changes.
 
 ### §8.1 `status.json` state `starting` (R16)
@@ -219,8 +239,8 @@ pid)` right after the supervisor process is spawned for a run (`launch_job`, `co
 - The supervisor overwrites it with its own first `write_status` (`running` at the cycle start, `waiting` from
   `restart_wait`, or `done`/`stopped` when it ends or suspends at once).
 - (2026-11-08, R16, R17) A supervisor that exits before its first session (no config, config errors, unknown
-  profile, no record, record not `working`) replaces its own `starting` status (same `pid` as `os.getpid()`, only
-  then) with `{"state": "stopped", "reason": "the supervisor could not start" | "the run is not working", …}`
+  profile, no record, record not `working`) replaces its own `starting` status, or its own `waiting` status from
+  `restart_wait` (2026-11-09, fifth analyze pass L8, R27) (same `pid` as `os.getpid()`, only then), with `{"state": "stopped", "reason": "the supervisor could not start" | "the run is not working", …}`
   (`abandon_start`). The launcher reaps the process it spawned (a daemon thread on `proc.wait()`), so a dead
   supervisor never reads as alive.
 - Readers: `controls()` treats `starting` as `running` (`stop` True, `reason` None); `current_state` maps it to
@@ -281,7 +301,7 @@ without `--job` logs "left from before this supervisor started" even for a reque
 | `startup_control` | anything with another `job` | `ignored` | `for another run` |
 | `startup_control` | not `stop`, with this `--job` | `ignored` | `only stop is taken at startup` |
 | `abandon_start` (2026-11-08; `main`'s early exits) | kept stop, the supervisor could not start | `ignored` | `the supervisor could not start` |
-| `run_job` (kept stop) | clean tree (2026-11-08, I1: whether or not a Continue left `.sdd/run.json`; `close_session`, then ends the run) | `stopping before any task` | null |
+| `run_job` (kept stop) | clean tree (2026-11-08, I1: whether or not a Continue left `.sdd/run.json`; `close_session`, then ends the run with §4's reason, "stopped before any task" or "stopped before its next task"; the taken text stays the same in both, 2026-11-09) | `stopping before any task` | null |
 | `run_job` (kept stop) | dirty tree: suspends again | `stopping now` | null |
 | `run_job` (kept stop; through `abandon_start`) | returned before (no record, not working) | `ignored` | `the run is not working` |
 | `Cycle.run` | `stop` `now`, no agent started | `stopping before any task` | null |
@@ -382,21 +402,24 @@ Banner while a request is out (FR-033, R21):
 
 Stop now confirmation (2026-11-08, M5, FR-006's exception; `renderJobBanner` `stopQuestion`):
 
-- While shown `preparing` and not `stopping`: `Stop the run now? No task has started yet, so the run ends with
-  nothing to land. If a resumed task's work is in the tree, the run is suspended instead.`
+- While shown `preparing` and not `stopping`: `Stop the run now? No task has started yet, so the stop adds no work
+  to the run; work finished earlier in this run still lands. If a resumed task's work is in the tree, the run is
+  suspended instead.` (2026-11-09, research R27: `preparing` is also shown for a later session of a run with earlier
+  work, where the 2026-11-08 text "the run ends with nothing to land" was false.)
 - Otherwise unchanged: `Stop the run now? The current agent is stopped and its task is resumed from the journal on
   the next start.`
 - (2026-11-08, A1, research R21) A resumed session (Continue) is shown `working` from its start, so it gets the
   second text even before its first agent. Accepted: with half-done work in the tree it is suspended as the text
-  says; with a clean tree it ends `stopped` "stopped before any task", and the card's reason and Requests row say
-  so.
+  says; with a clean tree it ends `stopped`, usually "stopped before its next task" (2026-11-09: a Continue
+  mostly follows a session that did tasks; §4), and the card's reason and Requests row say so.
 
 No answer after 10 s (2026-11-08, A5): `postControl`'s timer sets a local `timedOut = true` and then calls
 `controller.abort()`; the rejection shows `request failed: no answer after 10 s` only when `timedOut` is true.
 
 Supervisor `say` lines (in `launch.log`; tests compare them):
 
-- `stop requested before the run started: stopping before any task` (`run_job`, kept stop, ending)
+- `stop requested before the run started: stopping before any task` (`run_job`, kept stop, ending; also when the
+  reason is "stopped before its next task", 2026-11-09)
 - `stop requested before the run started: suspending it again` (`run_job`, kept stop, dirty tree; 2026-11-08,
   I1: a clean tree ends the run with the line above, run.json or not)
 - `stop now requested before any task: stopping the run` (`Cycle.run`, R18)
