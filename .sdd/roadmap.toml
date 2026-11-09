@@ -69,7 +69,7 @@ note = "not written yet: 008 FR-034, FR-035 (T070, T073 proofs)"
 id = "006-spec-cycle"
 title = ""
 state = ""
-note = "check against 009 when it comes up"
+note = "check against 009 when it comes up; re-specify on the 009 amendment's multi-pass flow and logs/2026-11-07-lessons.md (note at the top of its spec)"
 
 [[feature]]
 id = "004-feedback-chat"

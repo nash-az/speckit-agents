@@ -2,6 +2,16 @@
 
 **Feature Branch**: `006-spec-cycle` | **Created**: 2026-10-31 | **Status**: Draft (clarified 2026-10-31; not yet reviewed)
 
+> **Note for re-specifying (person, 2026-11-09).** Before this feature is planned, re-specify it against the 009
+> amendment of 2026-11-07 to 2026-11-09, which ran this flow by hand and is its model: every step as the real
+> `/speckit-*` command, run headless; clarify's questions put to the person one at a time with a recommended option;
+> analyze run again after each fix round until no CRITICAL or HIGH is left (six passes there, which also matches
+> constitution VIII: this spec's "only CRITICAL findings block" must change); one commit per step. Use the lessons in
+> `logs/2026-11-07-lessons.md`: a usage-limit pause and one retry for every command (three runs were lost to limits
+> and the network), the full report read from the command's transcript, not only its last message, plain commands
+> instead of pipes and heredocs, a cost cap and per-pass cost shown, and code facts the operator passes along with an
+> answer.
+
 **Input**: The dashboard and runs only see the open tasks of one feature's `tasks.md`. Everything before that,
 writing the spec, answering clarify questions, the plan and the tasks, happens in a chat session at a terminal,
 so it is invisible in the dashboard and needs the person there. The person wants to start and steer Spec Kit's
