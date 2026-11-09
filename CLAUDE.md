@@ -31,7 +31,20 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 - **`templates/`**: `sdd-config.toml`, `settings.json` (sandbox and allow/deny rules), `agent-tags.md`.
 
 ## Progress
-- **Handoff (2026-11-07, afternoon) — start here.** Build order: `.sdd/roadmap.toml`.
+- **Handoff (2026-11-09) — start here.** Checkout on `main`, clean, no run. Code unchanged since `735714b`; only
+  `specs/009-runs/` moved.
+  - **009 amendment (Stop while preparing and the run-control trace):** FR-031–FR-034, SC-009, the FR-005/006/007/017
+    changes and tasks T034–T046 (Phases 16–21; T045 `[manual]`). Every step ran as the real `/speckit-*` command,
+    headless (`claude -p` in this repo, clarify questions relayed to the person; method and costs in
+    `logs/2026-11-07-lessons.md`). Six analyze passes; the sixth has no CRITICAL or HIGH, so constitution VIII's
+    gate is open. Reports: `.sdd/scratch/analyze-009-<n>.md`; raw command results in
+    `.sdd/scratch/009-amendment-runs/` (both git-ignored).
+  - **Before the run (optional, the person's call):** pass 6's M1 (FR-007's crash-at-a-boundary clause is a MUST with
+    no task: drop it to Out of Scope through `/speckit-clarify`, or add a task) and M2 (a 0.3 s sleep in five Stop-now
+    test fixtures, a race), plus L1–L5 wording, through `/speckit-plan`/`/speckit-tasks`, then analyze again.
+  - **Then:** the person starts the run from the dashboard's Start run on 009 Phases 16–20 (supervisor only).
+    After it: T045 and T033 (the person's), then `/speckit-specify` 010.
+- **Handoff (2026-11-07, afternoon; superseded by the one above).** Build order: `.sdd/roadmap.toml`.
   - **State:** checkout on `main` (009-runs is at the same commit), clean, no remote. All `auto/*` run branches were
     merged and are deleted. The old background worktree's uncommitted v0.1 eval-lane edits are kept under the tag
     `archive/eval-lane-2026-10-14`; the worktree and its branch are gone.
