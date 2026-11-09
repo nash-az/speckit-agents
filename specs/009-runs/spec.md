@@ -1,6 +1,8 @@
 # Feature Specification: Runs: short-lived groupings of tasks, with the task as the record
 
-**Feature Branch**: `009-runs` | **Created**: 2026-11-06 | **Status**: Amended 2026-11-06 after run 20261106-1204 and its analyze pass (T001–T032 built); amended again 2026-11-07 (Stop while preparing and the run-control trace: FR-031 to FR-034, SC-009; clarified, plan and tasks written; clarified again 2026-11-08 after analyze: Stop now before any task, ignored requests logged)
+**Feature Branch**: `009-runs` | **Created**: 2026-11-06 | **Status**: Amended 2026-11-06 after run 20261106-1204 and its analyze pass (T001–T032 built); amended again 2026-11-07 (Stop while preparing and the run-control trace: FR-031 to FR-034, SC-009; clarified, plan and tasks written; clarified again 2026-11-08 after analyze: Stop now before any task, ignored requests logged, no empty session
+report; clarified again 2026-11-09 after the fifth analyze pass: the reason when earlier sessions did work, FR-007
+narrowed)
 
 **Input**: On 2026-11-06 the person stopped a Phase 3 Job of 008 with "Stop after current task" and pressed Merge. Merge
 refused with "a run is active": the stop had kept `.sdd/run.json` so the run could resume, and Merge refuses while that
@@ -59,7 +61,8 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
 - Q: Stop after this task pressed after Start run but before the new supervisor has written its state: refuse it,
   keep it, or hide the buttons? → A: Keep it (user). The request is accepted, tagged with the run id the launcher
   created; the supervisor carries it out at startup ("stopped before any task") and deletes only a request for a
-  different run.
+  different run. (Superseded in part by 2026-11-08 Q2: a request with no run id is deleted too, and a deleted
+  request is logged as ignored; FR-032.)
 - Q: What does the banner show when a run-control request gets no answer (network failure, timeout, server error)?
   → A: An error beside the buttons, and pressing again is the retry; no automatic retry (user). Already built: a
   refused or failed request shows `request failed: <error>` on the banner and in a toast. New: the pressed button
@@ -72,7 +75,8 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
 - Q: When the person presses Stop now before any task of the run has started, should the run end, or be left
   suspended? → A: End it (user): `stopped`, "stopped before any task", nothing landed, whenever no agent has started
   yet (not only in FR-032's start window); if the tree holds uncommitted work (a resumed session's half-done task),
-  the run stays `suspended` instead (FR-006, FR-007).
+  the run stays `suspended` instead (FR-006, FR-007). (2026-11-09 Q1 refines "nothing landed" and the reason when
+  earlier sessions of the run did work.)
 - Q: When a new supervisor finds a request meant for an earlier run (or with no run id), should the control log keep
   what the request said, or only note that one was thrown away? → A: Keep it (user): the supervisor reads it, does
   not carry it out, deletes it, and logs it as ignored with its id, run id, command and why (FR-031, FR-032).
@@ -82,7 +86,18 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
 - Q: When a run is stopped before any task has started, should its session's short report still be committed and
   land on the base branch? → A: No (user, third analyze pass B1): the engine writes no session report for a session
   with no task entries, so such a run lands nothing and its landing is always `nothing to land` (FR-017). The run
-  summary still records it. The clean-tree clause of the first answer is applied to FR-032 too (I1).
+  summary still records it. The clean-tree clause of the first answer is applied to FR-032 too (I1). (2026-11-09
+  Q1: this holds for a run with no task entries in any session; earlier sessions' work still lands.)
+
+### Session 2026-11-09 (after the fifth analyze pass)
+- Q: When a run that already finished tasks in an earlier session (before a usage-limit wait or a Continue) is
+  stopped before its next session starts any agent, what reason should the ended run show? → A: A different reason
+  (user, analyze M1): "stopped before its next task" when an earlier session of the run has task entries;
+  "stopped before any task" only when no session has. The stopped session adds no commit; the finished work of
+  earlier sessions still lands (FR-005, FR-006, FR-017, FR-032).
+- Applied without a question (analyze M2, L12): FR-007's boundary clause is narrowed to stops the supervisor detects
+  before any agent of the session has started; Stop now after an agent started and FR-008's kept pause suspend
+  whatever the tree holds. FR-032 says a request for its own run that is not a stop is ignored at startup.
 
 ## Terms
 
@@ -114,8 +129,9 @@ the second task is open, and a new run on the second task starts without any oth
    task (commit or blocked entry), starts no other task, ends, and its task commits land on the base branch with no
    click.
 2. **Given** Stop after this task is pressed while the run is still preparing (before any task has started),
-   **Then** with a clean tree the run ends at once with nothing to land, and says so ("stopped before any task");
-   with uncommitted work in the tree (a resumed session's half-done task), it stays `suspended`.
+   **Then** with a clean tree the run ends at once, adds no commit, and says so ("stopped before any task", or
+   "stopped before its next task" when an earlier session did work, which still lands); with uncommitted work in
+   the tree (a resumed session's half-done task), it stays `suspended`.
 3. **Given** a run ends because its scope is done, a limit is reached (task cap, stop-by time, no progress), or only
    items that need the person are left, **Then** it ends cleanly in the same way, with that reason.
 4. **Given** the base branch moved while the run worked (the person committed to it), **When** the run ends,
@@ -222,7 +238,9 @@ merged), upgrade; check each shows as described and the two open ones can be con
 
 - Stop after this task during a retry: the task finishes its retries (approved, or blocked after `max_retries`).
 - Stop after this task while a group's bookkeeper is committing several tasks: the group's commits finish first.
-- A run cut off between a task's commit and the next task's start is not suspended: it ends cleanly.
+- A run cut off between a task's commit and the next task's start by a crash, a closed session or a usage limit it
+  does not wait for is not suspended: it ends cleanly. Stop now and a kept pause at the reset suspend it, whatever
+  the tree holds (FR-007).
 - A suspended run whose half-done work was changed or removed by hand: Continue resumes from the checkpoint as
   today; Drop removes whatever uncommitted changes are in the tree, after a confirm that lists them.
 - Two suspended runs cannot exist: a new run is refused while one is suspended (US2 scenario 6).
@@ -237,9 +255,13 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - Stop pressed in the second or two after Start run, before the new supervisor has written its state: the request is
   accepted and tagged with the new run's id; the supervisor carries it out as soon as it starts, so the run ends
   `stopped` with "stopped before any task" (FR-005, FR-032). A request left from an earlier run (another run id, or
-  none) is deleted at startup without being carried out, and logged as ignored with its id, command and why (FR-031).
+  none), or a request for its own run that is not a stop, is deleted at startup without being carried out, and
+  logged as ignored with its id, command and why (FR-031).
 - Stop now before any agent has started: the run ends `stopped`, "stopped before any task", like Stop after this
   task; but when a resumed session finds half-done work in the tree, the run stays `suspended` (FR-006).
+- A Continue, or a session after a usage-limit wait, stopped before its first agent when an earlier session of the
+  run did tasks: the run ends `stopped` with "stopped before its next task"; the stopped session adds no commit, and
+  the earlier sessions' finished work lands as usual (`landed`) (FR-006, FR-017).
 
 ## Requirements *(mandatory)*
 
@@ -263,20 +285,24 @@ merged), upgrade; check each shows as described and the two open ones can be con
 **Stopping and ending**
 - **FR-005**: **Stop after this task** MUST let the current task finish (committed, or blocked after its retries)
   and its group's commits complete, start nothing else, and end the run cleanly. Pressed during `preparing` with a
-  clean tree, it MUST end the run before any task starts, with the reason "stopped before any task"; with
-  uncommitted work in the tree (a resumed session's half-done task), the run stays `suspended` (FR-006, FR-007).
-  When a task that started after
+  clean tree, it MUST end the run before any task starts, with the reason "stopped before any task" ("stopped
+  before its next task" when an earlier session of the run has task entries); with uncommitted work in the tree (a
+  resumed session's half-done task), the run stays `suspended` (FR-006, FR-007). When a task that started after
   the boundary has left uncommitted edits, they MUST be saved as a patch in that task's history and stashed, and the
   run MUST still end cleanly; that task is open again.
 - **FR-006**: **Stop now** MUST stop at once and leave the run `suspended`, keeping `.sdd/run.json` and the tree.
   Exception: pressed while no agent of the run's current session has started (during `preparing`, in FR-032's start
-  window, or before a resumed session's first agent) and with a clean tree, it MUST end the run `stopped` with the
-  reason "stopped before any task", nothing landed, as Stop after this task does (FR-005). With uncommitted work in
-  the tree, the run stays `suspended`.
+  window, or before a resumed session's first agent) and with a clean tree, it MUST end the run `stopped` as Stop
+  after this task does (FR-005): the reason is "stopped before any task", or "stopped before its next task" when an
+  earlier session of the run has task entries; the stopped session adds no commit, and earlier sessions' finished
+  work still lands. With uncommitted work in the tree, the run stays `suspended`.
 - **FR-007**: A run MUST become `suspended`, not ended, whenever it is cut off with a task started but not committed
   or blocked: Stop now, a usage limit it does not wait for, a session that crashed, or an in-session run whose
-  session closed. Cut off at a task boundary with a clean tree (before any task counts as a boundary, FR-006), it
-  MUST end cleanly instead. Stop after this task is not a cut-off (FR-005).
+  session closed. Cut off at a task boundary with a clean tree by a crash, a closed session or a usage limit it does
+  not wait for, it MUST end cleanly instead. A stop the supervisor detects before any agent of the session has
+  started follows FR-005 and FR-006 (ends with a clean tree). Stop now after an agent of the session has started, and
+  FR-008's kept pause at the reset, MUST suspend the run whatever the tree holds. Stop after this task is not a
+  cut-off (FR-005).
 - **FR-008**: At a usage limit the run MUST pause and continue after the reset, as 005 FR-004/FR-004a do today
   ("Continue when the limit resets"); left unchecked at the reset, the run becomes `suspended`.
 
@@ -309,8 +335,9 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - **FR-017**: Task histories MUST be committed with the session's report commit, and with the run's history and
   summary commits when the run ends or is dropped, so every history is in the repository once its run has ended. A task's own commit
   holds only the task's files (constitution VI). The engine MUST NOT write a session report for a session with no
-  task entries, so a run stopped before any task commits nothing on its branch and its landing is `nothing to land`
-  (FR-005, FR-006, FR-032).
+  task entries, so a session stopped before any task adds no commit on the run branch. A run none of whose sessions
+  has task entries therefore lands `nothing to land`; a run whose earlier sessions have task entries still lands
+  their commits, reports and histories (FR-005, FR-006, FR-032).
 - **FR-018**: Task commits MUST carry trailers `Task: <id>`, `Run: <run id>`, `Attempts: <n>`, `Model: <implementer>`.
 - **FR-019**: The UI MUST show a task's history on the task (008 FR-033's step events read from it), newest last,
   with its links to full transcripts while they exist. Nothing the person needs MUST depend on Claude's transcripts.
@@ -368,10 +395,11 @@ merged), upgrade; check each shows as described and the two open ones can be con
   project tree changes, and a failing log write MUST NOT stop the request itself.
 - **FR-032**: From Start run until the new supervisor has written its state, Stop after this task and Stop now MUST
   be accepted, not refused: the request carries the run id the launcher created. At startup the supervisor MUST carry
-  out a request with its own run id (with a clean tree a stop ends the run `stopped`, "stopped before any task",
-  nothing landed; with uncommitted work in the tree the run stays `suspended`, FR-006) and
-  MUST delete, without carrying it out, any request with another run id or none, logging it as ignored with its id,
-  run id (or none), command and why (another run, or no run id) (FR-031).
+  out a stop request with its own run id (with a clean tree the run ends `stopped` with FR-006's reason and the
+  stopped session adds no commit; with uncommitted work in the tree the run stays `suspended`, FR-006) and MUST
+  delete, without carrying it out, any request with another run id or none, and any request for its own run that is
+  not a stop, logging it as ignored with its id, run id (or none), command and why (another run, no run id, or only
+  stop is taken at startup) (FR-031).
 - **FR-033**: While a run-control request from the banner is unanswered, the pressed button MUST read "sending…" and
   the banner's control buttons MUST be disabled. A request with no answer after 10 seconds MUST be abandoned and
   shown like a failed one (the existing `request failed: <error>` on the banner and in a toast, here with "no answer
