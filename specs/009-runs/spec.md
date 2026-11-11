@@ -2,7 +2,8 @@
 
 **Feature Branch**: `009-runs` | **Created**: 2026-11-06 | **Status**: Amended 2026-11-06 after run 20261106-1204 and its analyze pass (T001–T032 built); amended again 2026-11-07 (Stop while preparing and the run-control trace: FR-031 to FR-034, SC-009; clarified, plan and tasks written; clarified again 2026-11-08 after analyze: Stop now before any task, ignored requests logged, no empty session
 report; clarified again 2026-11-09 after the fifth analyze pass: the reason when earlier sessions did work, FR-007
-narrowed)
+narrowed; clarified again 2026-11-11 after the sixth analyze pass: FR-007's crash-at-a-boundary clause moved to Out of
+Scope, for 010)
 
 **Input**: On 2026-11-06 the person stopped a Phase 3 Job of 008 with "Stop after current task" and pressed Merge. Merge
 refused with "a run is active": the stop had kept `.sdd/run.json` so the run could resume, and Merge refuses while that
@@ -99,13 +100,23 @@ hand-over that speak of Jobs). Builds on `specs/003-plugin-redesign/` (superviso
   before any agent of the session has started; Stop now after an agent started and FR-008's kept pause suspend
   whatever the tree holds. FR-032 says a request for its own run that is not a stop is ignored at startup.
 
+### Session 2026-11-11 (after the sixth analyze pass)
+- Q: When a run is cut off between two tasks with nothing uncommitted (by a crash, a closed session, or a usage
+  limit it doesn't wait for), should this amendment make the run end cleanly as FR-007 now requires, or should that
+  clause move to a later feature and the run stay suspended as the code does today? → A: Move it to a later feature
+  (user, analyze M1, option A): the clause goes to Out of Scope, for 010 server core. Until then such a cut-off leaves
+  the run `suspended`, with Continue and Drop (FR-007).
+- Applied without a question (analyze L6): US1 scenario 2 says "the stopped session adds no commit", since earlier
+  sessions' work still lands with its report and history commits.
+
 ## Terms
 
 - **Run**: what the person starts (scope, limits, branch), from start until it ends. Short-lived. Afterwards it is a
   summary record, not something to act on.
 - **Session**: one `claude -p` (or interactive `/sdd-run`) process inside a run.
 - **Clean end**: a run ends at a task boundary with a clean tree; its finished tasks land on the base branch.
-- **Suspended**: a run cut off mid-task, with its half-done work kept in the tree for Continue or Drop.
+- **Suspended**: a run cut off mid-task, with its half-done work kept in the tree for Continue or Drop (for now also
+  a run a crash, a closed session or an unwaited usage limit cuts off between tasks, FR-007).
 - **Task history**: the per-task, append-only record of everything that happened to one task, across runs.
 - **Land**: bring a run's task commits into its base branch.
 
@@ -129,7 +140,7 @@ the second task is open, and a new run on the second task starts without any oth
    task (commit or blocked entry), starts no other task, ends, and its task commits land on the base branch with no
    click.
 2. **Given** Stop after this task is pressed while the run is still preparing (before any task has started),
-   **Then** with a clean tree the run ends at once, adds no commit, and says so ("stopped before any task", or
+   **Then** with a clean tree the run ends at once, the stopped session adds no commit, and the run says so ("stopped before any task", or
    "stopped before its next task" when an earlier session did work, which still lands); with uncommitted work in
    the tree (a resumed session's half-done task), it stays `suspended`.
 3. **Given** a run ends because its scope is done, a limit is reached (task cap, stop-by time, no progress), or only
@@ -239,8 +250,9 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - Stop after this task during a retry: the task finishes its retries (approved, or blocked after `max_retries`).
 - Stop after this task while a group's bookkeeper is committing several tasks: the group's commits finish first.
 - A run cut off between a task's commit and the next task's start by a crash, a closed session or a usage limit it
-  does not wait for is not suspended: it ends cleanly. Stop now and a kept pause at the reset suspend it, whatever
-  the tree holds (FR-007).
+  does not wait for is `suspended` for now, like a cut-off mid-task: Continue or Drop it. Ending such a run cleanly
+  is out of scope here (010 server core). Stop now after an agent started, and a kept pause at the reset, suspend it
+  whatever the tree holds (FR-007).
 - A suspended run whose half-done work was changed or removed by hand: Continue resumes from the checkpoint as
   today; Drop removes whatever uncommitted changes are in the tree, after a confirm that lists them.
 - Two suspended runs cannot exist: a new run is refused while one is suspended (US2 scenario 6).
@@ -299,7 +311,8 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - **FR-007**: A run MUST become `suspended`, not ended, whenever it is cut off with a task started but not committed
   or blocked: Stop now, a usage limit it does not wait for, a session that crashed, or an in-session run whose
   session closed. Cut off at a task boundary with a clean tree by a crash, a closed session or a usage limit it does
-  not wait for, it MUST end cleanly instead. A stop the supervisor detects before any agent of the session has
+  not wait for, the run is left `suspended` for now (Continue or Drop); ending it cleanly is out of scope here (010
+  server core). A stop the supervisor detects before any agent of the session has
   started follows FR-005 and FR-006 (ends with a clean tree). Stop now after an agent of the session has started, and
   FR-008's kept pause at the reset, MUST suspend the run whatever the tree holds. Stop after this task is not a
   cut-off (FR-005).
@@ -448,6 +461,8 @@ merged), upgrade; check each shows as described and the two open ones can be con
 - Running several runs at once on one project (007 parallelism).
 - Rebasing run commits onto a moved base branch (history is never rewritten; a merge commit is used).
 - Pushing to a remote.
+- Ending a run cleanly when a crash, a closed session or a usage limit it does not wait for cuts it off at a task
+  boundary with a clean tree; such a run stays `suspended` (FR-007). Follow-up: 010 server core.
 - Changing how a task is implemented or verified (003's workflow stays; only what it records changes).
 
 ## Assumptions
