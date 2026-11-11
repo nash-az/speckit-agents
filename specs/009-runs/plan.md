@@ -14,7 +14,10 @@ for a session with no task entries, `56c8ffb`): research R25, Engine changes 15i
 the fourth analyze pass `.sdd/scratch/analyze-009-4.md` (C1, I1, I3, I4, I5, A6, I6): research R26, Engine changes
 15a. Updated 2026-11-09 for the spec's Clarifications "Session 2026-11-09" (`bc89c66`: "stopped before its next
 task" when an earlier session did work; FR-007 narrowed) and the fifth analyze pass `.sdd/scratch/analyze-009-5.md`
-(M1, M2, L2, L8): research R27, Engine changes 15j and notes in 15c, 15d, 15g, 15h.
+(M1, M2, L2, L8): research R27, Engine changes 15j and notes in 15c, 15d, 15g, 15h. Updated 2026-11-11 for the
+spec's Clarifications "Session 2026-11-11" (`f3e20d4`: FR-007's crash-at-a-boundary clause moved to Out of Scope,
+for 010 server core; such a run stays `suspended`) and the sixth analyze pass `.sdd/scratch/analyze-009-6.md`
+(L5, L7, L8 and the plan side of M1, M2, L4): research R28, data-model §4, §8.2, §8.5, quickstart §2 step 6.
 
 ## Summary
 
@@ -90,7 +93,7 @@ before research and again after the design (data-model §8, contracts).
 | VI. One task, one commit | No commit is added or changed by the amendment | Pass |
 | VII. AI-free at the core | `sdd-control.py`, `sdd-supervise.py`, `sdd-launch.py` and `sdd-views.py` stay stdlib Python with no model in the path; the Requests list is read from a file | Pass |
 | VIII. Every spec through the Spec Kit flow | The amendment went through `/speckit-specify` (as an amendment of 009) and `/speckit-clarify` (3 questions, the person's answers, `fc63f0d`); this `/speckit-plan` adds research, data model, contracts and quickstart; `/speckit-tasks` and `/speckit-analyze` follow. No run starts on 009 until analyze reports no CRITICAL or HIGH finding | Pass (gate for the run: analyze) |
-| IX. Tests for every change | Every behaviour in Engine changes item 15 names its tests in the same item (15a–15i); SC-009 has a process test that always runs, a browser test, and a `[manual]` task to run the browser tests outside a run, because a run's agents may not start a browser (`.sdd/learnings.md` line 20; R22) | Pass |
+| IX. Tests for every change | Every behaviour in Engine changes item 15 names its tests in the same item (15a–15j); SC-009 has a process test that always runs, a browser test, and a `[manual]` task to run the browser tests outside a run, because a run's agents may not start a browser (`.sdd/learnings.md` line 20; R22) | Pass |
 | Development: runs start through the supervisor | Unchanged; the amendment makes the supervisor's own start window controllable | Pass |
 
 Re-checked after the design: no violation, no complexity to justify. One test hook is added (`SDD_CLAUDE` as the
@@ -140,6 +143,16 @@ tree check, and lands nothing by itself. III, IV: the reason now says what happe
 instead of claiming nothing landed. A gap older than the amendment was found (FR-007's crash-at-a-boundary clause
 is not built; R27) and is left to the person, not designed here. Pass.
 
+Re-checked 2026-11-11 after the sixth analyze pass (`.sdd/scratch/analyze-009-6.md`, research R28). VIII: it found
+0 CRITICAL and 0 HIGH, so the gate is open; M1 went back through `/speckit-clarify` (spec `f3e20d4`): the person
+moved FR-007's crash-at-a-boundary clause to Out of Scope, for 010 server core. The spec now asks for what the
+code does (such a run stays `suspended`, `bin/sdd-supervise.py:687-691`, `:933-934`), so the one MUST without a
+task is gone and no design changes. M2 and L1–L4 are task wording for `/speckit-tasks`; a fresh `/speckit-analyze`
+follows it. IX: no new behaviour; the IX row now names 15a–15j (L5); the boundary cut-off is the same code path as
+the mid-task cut-off that `tests/test_supervise.py:1069` tests (R28). II, III: L7 and L8 are accepted (R17,
+data-model §8.2, §8.5): a stop is still carried out only for the run it names, the page never retries by itself,
+and nothing in the tree changes. Pass.
+
 ## Project Structure
 
 ### Documentation (this feature)
@@ -148,7 +161,7 @@ is not built; R27) and is left to the person, not designed here. Pass.
 specs/009-runs/
 ├── spec.md          # amended 2026-11-06
 ├── plan.md          # this file
-├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23–R26; 2026-11-09: R27 (analyze findings)
+├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23–R26; 2026-11-09: R27; 2026-11-11: R28 (analyze findings)
 ├── data-model.md    # §1 run record, §2 normalize, §3 shown state, §4 lifecycle, §5 task history, §6 run summary, §7 task summary line,
 │                    # §8 run control: starting status, control.json job, control log, Requests, page texts (2026-11-07)
 ├── quickstart.md    # validation with the fake claude
@@ -276,6 +289,10 @@ R25) are marked "(2026-11-08)".
       is byte for byte what it was, and no `status.json.*.tmp` is left in the folder; `launch_job` with the same
       patch and the `_spawn` Mock still returns its result (no exception); a successful write leaves no temporary
       file.
+      (2026-11-11, sixth analyze pass L4; research R28) Docstrings in the same task: `current_state`'s rule 3
+      (`bin/sdd-tasks.py:844-845`, "`running` or `stopping` -> running") names `starting` too, and the launcher's
+      module docstring (`bin/sdd-launch.py:6-9`, the state directory "carries `status.json` and `control.json`")
+      says that `launch_job` and `continue_job` write a `starting` status for the supervisor they spawn.
     - **15b. Requests carry the run id and leave a request line** (FR-031, FR-032; R17, R19; data-model §8.2).
       `bin/sdd-control.py`: `write_control(…, job=None)`; new `log_control(logs, entry)`; `request(project,
       command, mode=None, source="cli")` reads `job` from a live, not `done`/`stopped` status, passes it to
@@ -638,6 +655,15 @@ R25) are marked "(2026-11-08)".
     or `waiting` with its own pid, and its test). **T041** takes L2 (only the flip waits) and the new preparing
     Stop now text (data-model §8.5). **T044**'s README sentences name both reasons (15h). H1, M3–M5, L1, L3–L7 and
     L9–L11 are task wording only; research R27 lists every finding. M2 needs no task (15d note).
+    (2026-11-11, after the sixth analyze pass and spec `f3e20d4`) No task is added or removed: M1 is settled in the
+    spec (FR-007's crash-at-a-boundary clause is out of scope, for 010), so the tasks.md coverage row for FR-007 no
+    longer reads "Partial". **T038** takes M2 (`{"sleep": 0.3}` between `started(...)` and the control step in the
+    five Stop-now fixtures it names; assertions unchanged). **T034** takes L4 (the two docstrings, 15a). **T041**
+    takes L1 (`#toasts .toast`, read right after `.run-banner-error` appears, before `toast()` removes it at 3 s),
+    **T037** L2 (`main` gets the argv list; `run_job` and `restart_wait` the parsed namespace), **T043** L3 (the
+    15 s from when the supervisor starts, or `proc.wait(timeout=25)` alone) and, if `/speckit-tasks` takes it, L9
+    (`tearDown` ends a leftover run with `sdd_job.end`). L5 is this plan's; L6 is the spec's; L7 and L8 are
+    accepted (research R28).
 
 ## Not in this pass
 
@@ -651,6 +677,14 @@ R25) are marked "(2026-11-08)".
   `launch` (no run record) gets no `starting` status. (2026-11-08) A malformed `control.json` met in the middle of a
   run (`Cycle.run`, `hold`, `wait_for_reset`) is still left in place as today; only startup deletes it (M3). A
   plain supervisor (no `--job`) restarted during a usage wait keeps today's `sleep_until`, reading no requests.
+- (2026-11-11, spec Clarifications "Session 2026-11-11", Out of Scope; research R28) Ending a run cleanly when a
+  crash, a closed session or a usage limit it does not wait for cuts it off at a task boundary with a clean tree:
+  such a run stays `suspended` with Continue and Drop, as today. Follow-up: 010 server core.
+- (2026-11-11, sixth analyze pass L8) Showing a stop accepted in the start window as `stopping` on the banner
+  before the supervisor takes it (today the banner keeps "Preparing" and both Stop buttons, and a second press is
+  refused "a request is already pending"; data-model §8.5). Follow-up: 013 new UI.
+- (2026-11-11, sixth analyze pass L7) An age check on a kept stop's `requested_at` (research R17: it would drop
+  the start-window stop FR-032 requires).
 
 ## Complexity Tracking
 

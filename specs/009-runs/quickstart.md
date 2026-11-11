@@ -50,6 +50,11 @@ left (a cut-off).
    `dropped`, landing `landed`.
 4. In the dashboard, Drop's confirm names T002 and the changed files (contracts "Page texts").
 5. While suspended, `--job` again is refused with "a run is suspended: Continue or Drop it first".
+6. (2026-11-11, spec Clarifications "Session 2026-11-11", FR-007; research R28) A cut-off at a task boundary: the
+   same scenario, but the session exits (`{"exit": 1}`, `.sdd/run.json` left) right after `commit:T001`'s result
+   and `{"tick": "T001"}`, before `impl:T002` starts, so the tree is clean. Expected: shown `suspended`, reason
+   "the run was cut off", Continue and Drop offered, `main` has T001; the run is **not** ended. Ending it cleanly
+   is out of scope here (010 server core).
 
 ## 3. Conflict, Merge and Land (US1 scenario 4, SC-004)
 

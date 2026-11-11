@@ -131,9 +131,13 @@ lands `nothing` for sure. The reason tells the two apart:
 
 The stop-by time still ends such a run as `limit` with its own reason. FR-007 (narrowed 2026-11-09): only these
 before-any-agent stops look at the tree; Stop now after an agent of the session started, and the kept pause at the
-reset, suspend whatever the tree holds; a crash, a closed session or an unwaited usage limit at a boundary with a
-clean tree should end the run, which the code does not do yet (`bin/sdd-supervise.py:687-691`, `:933-934`; research
-R27, outside this amendment).
+reset, suspend whatever the tree holds. (2026-11-11, spec Clarifications "Session 2026-11-11", FR-007, Out of
+Scope; research R28) A crash, a closed session or an unwaited usage limit at a task boundary with a clean tree
+leaves the run `suspended` (reason "the run was cut off", `sdd-job.py` `CUT_OFF_REASON`, `bin/sdd-job.py:188`),
+with Continue and Drop, exactly as a cut-off mid-task: the supervisor reads `cut-off` from a session that ended
+with `.sdd/run.json` still there (`bin/sdd-supervise.py:687-691`) and `run_job` suspends it without looking at the
+tree (`:933-934`); an in-session run whose session closed reads `suspended` by §3 rule 4. Ending such a run cleanly
+is out of scope here, for 010 server core; this amendment changes none of it.
 
 ## §5. Task history entry (`.sdd/tasks/<feature folder>/<task id>.jsonl`, committed)
 
@@ -211,7 +215,9 @@ several entries (for example `started` and `implemented`) come from the same tra
 FR-031 to FR-034, research R15–R22; updated 2026-11-08 for the analyze findings and the spec's Clarifications
 "Session 2026-11-08" (research R23), and again for the second analyze pass (research R24) and the fourth
 (research R26: §4's diagram, §8.1's temporary file), and again 2026-11-09 for the spec's Clarifications "Session
-2026-11-09" and the fifth pass (research R27: §4's reason, §8.1's `waiting`, §8.5's preparing text). Every file here is in the supervisor's state directory (`sdd-tasks.py`
+2026-11-09" and the fifth pass (research R27: §4's reason, §8.1's `waiting`, §8.5's preparing text), and again
+2026-11-11 for the spec's Clarifications "Session 2026-11-11" and the sixth pass (research R28: §4's boundary
+cut-off, §8.2's kept stop and its age, §8.5's banner with a pending request). Every file here is in the supervisor's state directory (`sdd-tasks.py`
 `state_dir(project)`, outside the project); nothing in the project tree changes.
 
 ### §8.1 `status.json` state `starting` (R16)
@@ -322,6 +328,13 @@ without `--job` logs "left from before this supervisor started" even for a reque
 
 `wait_for_reset` rows also cover the restarted wait (`restart_wait`, 2026-11-08, R17), which calls it.
 
+(2026-11-11, sixth analyze pass L7; research R17, R28) `startup_control` does not look at `requested_at`: a
+`stop` naming this supervisor's `--job` is kept however old it is. So a stop for its own run that a supervisor
+never read before it died (it crashed inside one poll) is kept by the supervisor that Continue starts, and that run
+ends or suspends at once as the rows above say. Accepted: a stop accepted in FR-032's start window is always older
+than the supervisor that carries it out, so ignoring requests older than the supervisor's start would throw away
+exactly the stop FR-032 requires it to keep.
+
 Helper in `bin/sdd-supervise.py`: `taken(logs, control, text, reason=None)` builds the taken line from the
 request it read (`id`, `request_run`, `command`, `mode` from it; `control` may be `{}` for an unreadable file) and
 calls `sdd_control.log_control`. `Cycle.run` takes `logs` from `self.log_path.parent`.
@@ -399,6 +412,13 @@ Banner while a request is out (FR-033, R21):
 - Other failures keep today's texts: a non-202 answer shows its `error` (else `request failed (<status>)`), a
   rejected fetch shows `request failed: <error>`.
 - After any ending the buttons follow `controls` again; the page never sends the request a second time by itself.
+- (2026-11-11, sixth analyze pass L8; research R28) After a stop is accepted in the start window, the banner keeps
+  "Preparing <title>" with both Stop buttons enabled until the supervisor starts and takes the request: the
+  `preparing` branch of `renderJobBanner` (`bin/sdd-dashboard.py:3788-3792`) draws them from `controls().stop`,
+  which a `starting` status answers True (§8.1), and the page does not know a request is pending. A second press is
+  refused "a request is already pending" (`bin/sdd-control.py:49`, `write_control` `:137-138`), shown as a failed
+  request, and logged as refused (§8.2). Accepted: FR-033 is met, and nothing is lost. Showing a pending request as
+  `stopping` belongs to 013 new UI.
 
 Stop now confirmation (2026-11-08, M5, FR-006's exception; `renderJobBanner` `stopQuestion`):
 

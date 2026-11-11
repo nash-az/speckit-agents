@@ -215,6 +215,7 @@ commands and routes in `contracts/`.
   3. **Stop now before any task suspends.** In `Cycle.run` a `stop` with `mode: now` sets `stop_reason =
      "operator"` without `boundary` (`bin/sdd-supervise.py:350-354`); `run_cycles` returns `stop-now` (`:680`) and
      `run_job` suspends the run "stopped by you" (`:935-936`, `SUSPEND_REASONS`), although no task started. FR-007
+     (as written then; narrowed 2026-11-09 and 2026-11-11, R27, R28)
      says a run cut off at a task boundary ends cleanly, and FR-032 says a stop in the start window ends it
      `stopped`. → R18.
   4. **No trace.** A refused request is answered 409 and logged nowhere; a taken request is only a `say` line in
@@ -365,6 +366,18 @@ commands and routes in `contracts/`.
   point of view; the line's `request_run` still says which run it was meant for. Test (`JobTest` or
   `RunControlTest`): a supervisor without `--job` and `control.json` with `"job": "20200101-0000"` → taken
   `ignored` "left from before this supervisor started", `request_run` `20200101-0000`.
+- **A stop the previous supervisor never read (2026-11-11, sixth analyze pass L7; accepted).** `control.json`
+  carries `requested_at` (`write_control`, `bin/sdd-control.py:142`), and `startup_control` does not check it. A
+  stop for run R that R's supervisor never read before it died (it crashed inside one 0.1 s poll) is still in the
+  state directory when the person presses Continue (`continue_job`, `bin/sdd-launch.py:358-441`); the new
+  supervisor for R keeps it and the continued run ends or suspends at once. **Decision**: accept, no age check.
+  The analyze report's alternative (ignore stops older than the supervisor's start) would contradict FR-032: the
+  start-window stop is accepted after `_spawn` and before the new supervisor reads it, so it is always older than
+  that supervisor's start, and FR-032 says it MUST be carried out. Any cut-off that is not a start-window stop
+  would need another marker (the launcher's spawn time in the starting status, say), which is more design for a
+  case that needs a crash inside one poll and that ends with the person's own stop carried out: the run is not
+  lost (a clean tree ends it with its work landed, a dirty one suspends it again), and its Requests row says
+  "stopping before any task" or "stopping now". The person can Continue again.
 
 ## R18. Stop now before any task ends the run, as Stop after this task does
 
@@ -374,7 +387,8 @@ commands and routes in `contracts/`.
   `before-task` (`:678-679`). `run_job`'s `before-task` branch (`:913-921`) first checks the tree: when
   `tree_clean(project)` is False (a resumed session's half-done work) it returns `suspend_run(…,
   SUSPEND_REASONS["stop-now"], 0)`; otherwise it closes the session and ends as today.
-- **Rationale** (FR-007 has since been narrowed, 2026-11-09; R27 keeps this decision): FR-007 ("Cut off at a task boundary, it MUST end cleanly"; before the first task is a boundary)
+- **Rationale** (FR-007 has since been narrowed, 2026-11-09, and its crash-at-a-boundary clause moved to Out of
+  Scope, 2026-11-11; R27 and R28 keep this decision): FR-007 ("Cut off at a task boundary, it MUST end cleanly"; before the first task is a boundary)
   and FR-032 (a stop in the start window, either mode, ends `stopped` "stopped before any task"). The tree check
   fixes the same gap for an after-task stop early in a Continue session, which today would archive `run.json` and
   end over half-done work (landing then refuses the dirty tree). The spec now says this outright (Clarifications
@@ -753,7 +767,7 @@ settled here; task-wording findings (H1, M3–M5, L1, L3–L7, L9–L11) go into
   data-model §3). Only the dirty boundary stop was built for FR-007 (T026, `tasks.md` coverage table). The
   person then gets Continue and Drop instead of an ended run, and nothing is lost. Not designed here: it is
   outside the amendment's findings and changes the base 009 behaviour; whether to build it, or to narrow FR-007
-  further, is the person's call.
+  further, is the person's call. (2026-11-11: decided by the person, moved to Out of Scope for 010; R28.)
 - **L2.** Plan 15g said the `PausedJobBannerTest` flip tests "are not touched", while T041 adds a wait between
   flips (the checkbox is disabled while a request is out). Reworded in 15g: their assertions are unchanged; T041
   adds only that wait.
@@ -787,3 +801,56 @@ settled here; task-wording findings (H1, M3–M5, L1, L3–L7, L9–L11) go into
 | L2 "not touched" vs T041's waits | plan wording | plan 15g |
 | L8 `abandon_start` after `restart_wait`; the kept stop before the branch check | `starting` or `waiting` with own pid; the branch order accepted | above; plan 15c, data-model §8.1 |
 | L12 stale spec Status line, Q1 superseded note, FR-032 clause | spec (`bc89c66`); the tasks.md header is `/speckit-tasks`' | spec |
+
+## R28. The sixth analyze pass and the 2026-11-11 clarification
+
+`/speckit-analyze` on `ed9ed8f` (report `.sdd/scratch/analyze-009-6.md`) found 0 CRITICAL, 0 HIGH, 2 MEDIUM and 9
+LOW, so constitution VIII's gate was already open. M1 went back through `/speckit-clarify` (spec `f3e20d4`,
+Clarifications "Session 2026-11-11", which also applied L6). Line numbers re-checked on `f3e20d4` by reading the
+cited lines (`bin/sdd-supervise.py:604-646`, `:687-691`, `:925-936`; `bin/sdd-launch.py:358-441`;
+`bin/sdd-control.py:49`, `:127-148`; `bin/sdd-dashboard.py:3780-3795`; `bin/sdd-job.py:188`;
+`tests/test_supervise.py:1062-1081`): they match the report and the plan. `git diff` could not be run in this
+session (no shell), so "unchanged since `735714b`" rests on the three commits since `ed9ed8f` being spec and doc
+commits by their subjects (`9415737` docs: handoff, `7cac7ad` docs(006), `f3e20d4` spec(009)) and on the cited
+lines still reading as the report quotes them; a `git diff 735714b -- bin tests README.md` before the run confirms it.
+
+- **M1, decided by the person: FR-007's crash-at-a-boundary clause goes to Out of Scope, for 010 server core.**
+  FR-007 now says such a run "is left `suspended` for now (Continue or Drop)", which is what the code does: a
+  supervised session that ends with `.sdd/run.json` left returns `cut-off` (`bin/sdd-supervise.py:687-691`) and
+  `run_job` suspends it with `CUT_OFF_REASON` (`:933-934`; `bin/sdd-job.py:188`) without reading the tree; an
+  in-session run whose session closed reads `suspended` (`shown_state` rule 4, data-model §3). **No design or task
+  change**: the spec and the code now agree. Data-model §4's "should end the run, which the code does not do yet"
+  is replaced by what happens and where it goes (010). The spec's Terms, Edge Cases and Out of Scope already say
+  it. Test coverage (IX): the suspend is the same code path whether or not a task was in flight (the tree is not
+  read), and `JobTest.test_a_cut_off_suspends_the_run_and_fast_forwards_the_finished_commits`
+  (`tests/test_supervise.py:1069`) covers it mid-task; a boundary variant would test the same lines, so none is
+  added. Quickstart §2 gains the boundary case as a by-hand check.
+  - **For 010 (not designed here).** Ending such a run cleanly needs the supervisor to tell "no task in flight"
+    from the journal of a session that is gone (every `started` key has a `commit:` or blocked result) and to
+    call `close_session` and `end_run` as the clean `before-task` branch does (`:929-931`). The in-session case
+    has no supervisor at all; 010's server is what would notice it.
+- **M2: task wording** (T038 adds `{"sleep": 0.3}` between `started(...)` and the control step in the five Stop-now
+  fixtures). No plan change: 15d says the existing Stop-now tests with an agent started keep passing, and the
+  pause is what makes that hold every time.
+- **L1–L4: task wording** (T041's toast selector, T037's argv vs namespace, T043's 15 s clock, T034's two
+  docstrings). L4 is noted in 15a too, since it names the files T034 changes.
+- **L5, plan wording.** The v1.3.0 Constitution Check IX row said "15a–15i"; it now says "15a–15j".
+- **L6, spec** (`f3e20d4`): US1 scenario 2 says "the stopped session adds no commit".
+- **L7, accepted** (R17 "A stop the previous supervisor never read"; data-model §8.2): an age check on
+  `requested_at` would drop the start-window stop FR-032 requires.
+- **L8, accepted** (data-model §8.5): the banner stays "Preparing" with both Stop buttons until the supervisor
+  takes the request; a second press is refused "a request is already pending" and logged. FR-033 is met. Showing
+  a pending request as `stopping` belongs to 013 new UI (plan "Not in this pass").
+- **L9: task wording or accepted** (T043's `tearDown` may end a leftover run with `sdd_job.end`); `/speckit-tasks`'
+  call.
+
+| Finding | Settled in | Where |
+|---|---|---|
+| M1 FR-007's crash-at-a-boundary clause not built | spec 2026-11-11 (Out of Scope, 010); no design change | above; data-model §4; quickstart §2 step 6 |
+| M2 Stop-now fixtures race the stream reader | task wording | `tasks.md` T038 |
+| L1–L4 | task wording (L4 also plan 15a) | `tasks.md` T041, T037, T043, T034 |
+| L5 IX row "15a–15i" | "15a–15j" | plan Constitution Check |
+| L6 US1 "the run adds no commit" | spec (`f3e20d4`) | spec |
+| L7 a never-read stop kept by the next supervisor | accepted; an age check contradicts FR-032 | R17; data-model §8.2 |
+| L8 banner keeps Preparing while a request is pending | accepted; for 013 | data-model §8.5; plan "Not in this pass" |
+| L9 a failed browser test leaves its run open | task wording or accepted | `tasks.md` T043 |
