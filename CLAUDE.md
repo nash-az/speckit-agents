@@ -31,7 +31,18 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 - **`templates/`**: `sdd-config.toml`, `settings.json` (sandbox and allow/deny rules), `agent-tags.md`.
 
 ## Progress
-- **Handoff (2026-11-09) — start here.** Checkout on `main`, clean, no run. Code unchanged since `735714b`; only
+- **Handoff (2026-11-12) — start here.** Checkout on `main`, clean, no run. Code unchanged since `735714b`; only
+  `specs/009-runs/` moved. Lessons: `logs/2026-11-11-lessons.md`.
+  - **009 amendment, rounds 7–9** (real `/speckit-*` commands, headless; Fable 5.2 from round 8, the person's choice):
+    FR-007's crash-at-a-boundary clause moved to Out of Scope for 010 (the person's answer, `f3e20d4`); plan
+    `4883696`; tasks `7250d73`, `aa17d4c`, `e384e9b`. Analyze pass 9: no CRITICAL or HIGH, 1 MEDIUM, 10 LOW; the gate
+    is open. Reports: `.sdd/scratch/analyze-009-7.md` to `-9.md`.
+  - **Waiting on the person's choice:** (1) a last round: `/speckit-plan` for pass 9's M1 and L7–L10, `/speckit-tasks`
+    for L1–L6, analyze pass 10, then stop analyzing unless a HIGH appears; (2) `/speckit-tasks` for L1–L6 only; or
+    (3) start the run now.
+  - **Then:** the person starts the run from the dashboard's Start run on 009 Phases 16–20 (supervisor only). After
+    it: T045 and T033 (the person's), then `/speckit-specify` 010.
+- **Handoff (2026-11-09; superseded by the one above).** Checkout on `main`, clean, no run. Code unchanged since `735714b`; only
   `specs/009-runs/` moved.
   - **009 amendment (Stop while preparing and the run-control trace):** FR-031–FR-034, SC-009, the FR-005/006/007/017
     changes and tasks T034–T046 (Phases 16–21; T045 `[manual]`). Every step ran as the real `/speckit-*` command,
