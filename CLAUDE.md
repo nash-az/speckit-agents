@@ -31,15 +31,20 @@ The user (Nash) wanted their Spec Kit projects to be developed by Claude subagen
 - **`templates/`**: `sdd-config.toml`, `settings.json` (sandbox and allow/deny rules), `agent-tags.md`.
 
 ## Progress
-- **Handoff (2026-11-12) — start here.** Checkout on `main`, clean, no run. Code unchanged since `735714b`; only
-  `specs/009-runs/` moved. Lessons: `logs/2026-11-11-lessons.md`.
+- **Handoff (2026-11-12, after round 10) — start here.** Checkout on `main`, clean, no run. Code unchanged since
+  `735714b`; only `specs/009-runs/` moved. Lessons: `logs/2026-11-11-lessons.md`.
   - **009 amendment, rounds 7–9** (real `/speckit-*` commands, headless; Fable 5.2 from round 8, the person's choice):
     FR-007's crash-at-a-boundary clause moved to Out of Scope for 010 (the person's answer, `f3e20d4`); plan
     `4883696`; tasks `7250d73`, `aa17d4c`, `e384e9b`. Analyze pass 9: no CRITICAL or HIGH, 1 MEDIUM, 10 LOW; the gate
     is open. Reports: `.sdd/scratch/analyze-009-7.md` to `-9.md`.
-  - **Waiting on the person's choice:** (1) a last round: `/speckit-plan` for pass 9's M1 and L7–L10, `/speckit-tasks`
-    for L1–L6, analyze pass 10, then stop analyzing unless a HIGH appears; (2) `/speckit-tasks` for L1–L6 only; or
-    (3) start the run now.
+  - **Round 10 (2026-11-12, the person's choice: a last round):** plan `8174804` (pass 9's M1, L7–L10), tasks
+    `7f7fcba` (L1–L6). Analyze pass 10: no CRITICAL or HIGH, 1 MEDIUM, 9 LOW; the gate is open and analyzing has
+    stopped. Report: `.sdd/scratch/analyze-009-10.md`.
+  - **Waiting on the person's choice:** (1) one `/speckit-tasks` round with no further analyze (recommended): G1 (no
+    test that `main` hands `restart_wait`'s result to `run_job`), R1 (T037's `resets_at` 1 s race, use 2 s), A1–A3
+    (T044, T039, T034 wording), with G2 and G3; or (2) start the run now. Unconfirmed: `manual.md` sends T045's
+    result to a `## Validation (amendment 2026-11-07)` heading that `research.md` does not have.
+  - **If Fable 5.2 credits run out during a headless step:** rerun that step on Opus 5.5 (the person, 2026-11-12).
   - **Then:** the person starts the run from the dashboard's Start run on 009 Phases 16–20 (supervisor only). After
     it: T045 and T033 (the person's), then `/speckit-specify` 010.
 - **Handoff (2026-11-09; superseded by the one above).** Checkout on `main`, clean, no run. Code unchanged since `735714b`; only
