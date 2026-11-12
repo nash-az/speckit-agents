@@ -257,7 +257,8 @@ commands and routes in `contracts/`.
   a daemon `threading.Thread(target=proc.wait)` right after `_spawn`, so the child is reaped whoever the parent
   is; (2) the supervisor's early exits (`main`'s no config, config errors, unknown profile, `bin/sdd-supervise.py:
   606-622`; `run_job`'s no record, not working, `:877-882`) call `abandon_start` (R17), which replaces its own
-  `starting` status with `stopped` and logs a kept request as ignored. Both are needed: (2) alone is not enough,
+  `starting` status (since 2026-11-09 also its own `waiting` status from `restart_wait`, R27) with `stopped` and
+  logs a kept request as ignored. Both are needed: (2) alone is not enough,
   because `shown_state` checks the pid only (`bin/sdd-job.py` `_pid_alive`, `:169-177`), so a zombie still reads
   `preparing` whatever the status says, and (2) cannot run for a supervisor killed before its first line of
   Python; (1) alone leaves a `starting` status with a dead pid, which every reader treats as dead, but no reason
@@ -342,6 +343,10 @@ commands and routes in `contracts/`.
   could not start") and `run_job`'s two (reason "the run is not working"): it writes `stopped` with the reason only
   when `status.json` is `starting` with `pid == os.getpid()` (the launcher's status for this very process; a status
   of any other supervisor is left alone), and logs taken `ignored` with the reason for a kept `args.startup_stop`.
+  (2026-11-12, ninth analyze pass M1: superseded on 2026-11-09 by R27's L8.) `abandon_start` acts on a status in
+  state `starting` **or `waiting`** with `pid == os.getpid()`: `restart_wait` (next bullet) writes a `waiting`
+  status of this process before `run_job`'s record checks. R27 has the decision; data-model §8.1, plan 15c, the
+  runs-cli contract and T037 say the same.
 - **The restarted usage wait (2026-11-08, analyze M2; R16).** `main`'s restart check reads `state in ("waiting",
   "starting")` with a `resets_at` and is skipped when a stop was kept at startup (the stop wins; R16's carried
   reset only delays a session, and a stopped run starts none). With `--job` the wait goes through new
@@ -354,6 +359,22 @@ commands and routes in `contracts/`.
   writes no `starting` status, so its `waiting` status survives. Alternative rejected: keep `sleep_until` with the
   `starting` status in place (the run would read `preparing` for hours, and a Stop sent then would wait unread
   until the reset).
+- **A stop read during the restarted usage wait (2026-11-12, ninth analyze pass L7; accepted).** `wait_for_reset`
+  returns `stop` for a stop it reads with `--job` (`bin/sdd-supervise.py:551-553`), `restart_wait` hands it on as
+  `stop-wait`, and `run_job` then suspends the run with `SUSPEND_REASONS["stop-wait"]` ("stopped by you during the
+  usage wait", `:862`) before its first session, without reading the tree. FR-006's exception, read literally (a
+  stop before any agent of the session, with a clean tree, ends the run), would end a clean-tree run here; the
+  spec never names a stop during the usage wait. **Decision**: accept, the run is suspended whatever the tree
+  holds, and `spec.md` is not changed. Reasons: (1) it is what the usage wait inside a session already does
+  (`run_cycles` returns `stop-wait`, `:719-720`, and `run_job` suspends, `:935-936`), so one wait has one outcome
+  wherever it started; (2) it is reachable only in a short gap: `controls()` offers only Keep paused or Let it
+  resume while the status is `waiting` (`bin/sdd-control.py:97-103`), so a stop can only be accepted while the
+  status still says `starting`, before `restart_wait` writes its own, and a stop already pending at startup is
+  kept and wins (the restart check is skipped, above); (3) nothing is lost and the person still decides: the run
+  shows `suspended` with a reason that says what happened, Continue or Drop, and its Requests row says "stopping
+  now" (data-model §8.2, the `wait_for_reset` rows). Alternative rejected: a tree check in `run_job` for
+  `stop-wait` that ends a clean run (a second ending for the same wait, and a test, for a gap of well under a
+  second). No task change: T037's `stop-wait` case already asserts the suspend.
 - **The order of the startup checks (2026-11-08, third analyze pass A4).** A plain supervisor (no `--job`) that
   meets a request carrying a `job` matched both "for another run" and "left from before this supervisor started".
   `startup_control(logs, job_id)` checks in this order, first match wins: (1) no `control.json` → None, nothing
@@ -551,7 +572,9 @@ commands and routes in `contracts/`.
      spawns without the delay (the same patched `_spawn` that keeps the `Popen`, with no delay prefix; fourth
      analyze pass A1), with a fake session `[{"transcript": true}, {"run": "s1"}, {"sleep": 30}]`, waits
      until the session has started, that is `<project>/.sdd/run.json` exists (the fake writes it on the `run`
-     step, `tests/fake/claude:56-57`) while `shown_state` is still `preparing`, then sends the request and asserts
+     step, `tests/fake/claude:56-57`; no `shown_state` check, 2026-11-12, ninth analyze pass L8: that step writes
+     no `workflow_dir`, so the run reads `preparing` for as long as the supervisor lives, `bin/sdd-job.py:261-263`,
+     `:296-297`, and the check could never fail; T042 dropped it after the fifth pass's L5), then sends the request and asserts
      the same ending within 15 s (`proc.wait(timeout=15)`: no delay here; here `$FAKE_DIR/calls` exists, and there
      is no `.sdd/runs/s1.md`, research R25) plus the `Cycle.run` say line "stop requested
      before any task: stopping the run" in `launch.log`. (2026-11-08, analyze M4: waiting only for `preparing` is
@@ -854,3 +877,58 @@ lines still reading as the report quotes them; a `git diff 735714b -- bin tests 
 | L7 a never-read stop kept by the next supervisor | accepted; an age check contradicts FR-032 | R17; data-model §8.2 |
 | L8 banner keeps Preparing while a request is pending | accepted; for 013 | data-model §8.5; plan "Not in this pass" |
 | L9 a failed browser test leaves its run open | task wording or accepted | `tasks.md` T043 |
+
+## R29. The seventh, eighth and ninth analyze passes (2026-11-11 to 2026-11-12)
+
+Three more `/speckit-analyze` passes followed R28. None found a CRITICAL or HIGH, so constitution VIII's gate
+stayed open throughout. The first two changed only `tasks.md`; this section is their record in the design
+documents (ninth pass L10).
+
+| Pass | Report | Found | Settled by |
+|---|---|---|---|
+| 7 | `.sdd/scratch/analyze-009-7.md` | 0 CRITICAL, 0 HIGH, 2 MEDIUM, 6 LOW | `/speckit-tasks` (`aa17d4c`): M1 and M2 were tests Principle IX requires and the tasks did not ask for (M2: a kept stop skips the restart check, now a T037 case); L1–L6 task wording. No design change |
+| 8 | `.sdd/scratch/analyze-009-8.md` | 0 CRITICAL, 0 HIGH, 0 MEDIUM, 5 LOW | `/speckit-tasks` (`e384e9b`): wording and test robustness in T039, T040, T041 and the Phase 16 intro. No design change |
+| 9 | `.sdd/scratch/analyze-009-9.md` | 0 CRITICAL, 0 HIGH, 1 MEDIUM, 10 LOW | this round (M1, L7–L10) and `/speckit-tasks` (L1–L6) |
+
+Line numbers for this round were re-checked on `13cdc13` by reading the cited lines (`bin/sdd-supervise.py:
+461-473`, `:535-556`, `:604-646`, `:719-720`, `:860-867`, `:870-936`; `bin/sdd-control.py:84-104`;
+`bin/sdd-job.py:252-305`; `tests/fake/claude`, the whole file): they match the report. No shell was available in
+this session, so `git diff 735714b -- bin tests README.md` was not run; "unchanged since `735714b`" rests on the
+commit subjects since `f3e20d4` (`4883696` plan, `7250d73`, `aa17d4c`, `e384e9b` tasks, `13cdc13` docs) and on those
+lines reading as cited. Running that diff before the run confirms it.
+
+- **M1, a stale contract line.** The runs-cli contract and R17's "Startup order and early exits" still said
+  `abandon_start` acts only on a `starting` status with its own pid. R27 (L8) had made it `starting` or `waiting`,
+  and data-model §8.1, plan 15c and T037 (with its `waiting` test) already said so. The contract now says the
+  same, and R17 has a dated note pointing at R27; R16's sentence about the early exits names the `waiting` status
+  too. No code or task change.
+- **L7, accepted.** A stop read during the restarted usage wait suspends the run whatever the tree holds (R17, "A
+  stop read during the restarted usage wait"). `spec.md` is not changed.
+- **L8, stale wording.** Four plan sentences and one here predated later decisions and now say what `tasks.md`
+  says: 15c's kept stop ends with `before_any_task_reason`'s reason, not the literal "stopped before any task";
+  15g's note on a clean Continue says "usually 'stopped before its next task'"; 15h and R22 item 1 no longer ask
+  for a `shown_state` check before the stop (T042 dropped it); 15i's "true as written" is dated, since the spec,
+  README and page texts it named were replaced on 2026-11-09 (15j).
+- **L9.** Quickstart §8 step 10 expected "stopped before its next task" in a section set up with the fake
+  `claude`, whose sessions leave no task entries (it writes no `workflows.json`; the whole of `tests/fake/claude`
+  has no such step). Step 10 now carries the sentence step 11 has: by hand that reason needs a real `claude`; with
+  the fake the run ends "stopped before any task", landing `nothing`.
+- **L10, three small gaps.** (1) This section and the plan's 2026-11-12 constitution re-check record passes 7 to
+  9. (2) T034's rule that `write_starting_status` writes nothing for a `pid` that is not a positive int (a bool
+  does not count) was in no design document; it is in data-model §8.1, the contract and plan 15a now. Reason for
+  the rule: a `starting` status must name a process a reader can probe; a Mock or `True` (which is an `int` in
+  Python) would be written as a pid that `supervisor_alive` then probes. (3) The contract's taken-line key list
+  now starts with `ts`, as data-model §8.2 has it.
+
+| Finding (ninth pass) | Settled in | Where |
+|---|---|---|
+| M1 `abandon_start` on `starting` only | `starting` or `waiting` with its own pid | runs-cli contract; R17 note; R16 |
+| L1, L2 T039's second stop and its "lets the run finish" scenario | task wording | `tasks.md` T039 |
+| L3 T041's escaped apostrophe and `controlSending` | task wording | `tasks.md` T041 |
+| L4 where T044's README bullet goes | task wording | `tasks.md` T044 |
+| L5 where T043's environment points | task wording | `tasks.md` T043 |
+| L6 the `tasks.md` header's pass count | task wording | `tasks.md` header |
+| L7 a stop during the restarted usage wait | accepted; spec unchanged | R17 |
+| L8 four plan sentences, one research sentence | reworded | plan 15c, 15g, 15h, 15i; R22 item 1 |
+| L9 quickstart §8 step 10 with the fake | "needs a real `claude`" sentence | quickstart §8 step 10 |
+| L10 passes 7–9 unrecorded; the positive-int rule; `ts` | this section and a re-check line; data-model §8.1; contract | plan Constitution Check, 15a; data-model §8.1; runs-cli contract |

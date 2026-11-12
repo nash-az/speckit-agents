@@ -119,7 +119,8 @@ during the start window (a `starting` status, data-model §8.1) is accepted: `{"
 
 ```
 write_starting_status(path, job_id, pid) -> bool
-    data-model §8.1; False (nothing written) when status.json already has "pid": pid; copies "window" and
+    data-model §8.1; False (nothing written) when pid is not a positive int (a bool does not count;
+    2026-11-12) or when status.json already has "pid": pid; copies "window" and
     "resets_at" from a previous "waiting" status (2026-11-08); writes through its own status.json.<own pid>.tmp,
     never status.json.tmp; never raises: an OSError from the write or the replace → False, status.json
     unchanged, no temporary file left (2026-11-08, fourth analyze pass C1)
@@ -129,12 +130,14 @@ startup_control(logs, job_id) -> dict | None
     returns None at once when there is no control.json; (2026-11-08) a control.json that read_control could
     not use (still there after it returned None) is unlinked and logged ignored "unreadable request"
 abandon_start(logs, status, args, reason) -> None                         (2026-11-08)
-    status.json "starting" with pid == os.getpid() → write_status(state="stopped", reason=reason); a kept
-    args.startup_stop → taken "ignored" with reason; called on every exit before the first session
+    status.json "starting" or "waiting" with pid == os.getpid() (its own start window, or the waiting status
+    restart_wait wrote; 2026-11-09, research R27; any other status is left alone) →
+    write_status(state="stopped", reason=reason); a kept args.startup_stop → taken "ignored" with reason;
+    called on every exit before the first session; never raises
 restart_wait(args, logs, status, last) -> "go" | "held" | "stop-wait"   (2026-11-08, --job only)
     writes a "waiting" status (window, resets_at), then wait_for_reset(…); the result is args.startup_outcome
 taken(logs, control, text, reason=None) -> None
-    one taken line (data-model §8.2: id, run, request_run, command, mode, taken, reason) through
+    one taken line (data-model §8.2: ts, id, run, request_run, command, mode, taken, reason) through
     sdd_control.log_control
 --claude  hidden; default os.environ.get("SDD_CLAUDE") or "claude"   (tests only, research R22)
 ```

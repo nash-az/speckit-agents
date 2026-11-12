@@ -217,7 +217,8 @@ FR-031 to FR-034, research R15–R22; updated 2026-11-08 for the analyze finding
 (research R26: §4's diagram, §8.1's temporary file), and again 2026-11-09 for the spec's Clarifications "Session
 2026-11-09" and the fifth pass (research R27: §4's reason, §8.1's `waiting`, §8.5's preparing text), and again
 2026-11-11 for the spec's Clarifications "Session 2026-11-11" and the sixth pass (research R28: §4's boundary
-cut-off, §8.2's kept stop and its age, §8.5's banner with a pending request). Every file here is in the supervisor's state directory (`sdd-tasks.py`
+cut-off, §8.2's kept stop and its age, §8.5's banner with a pending request), and 2026-11-12 for the ninth pass
+(research R29: §8.1's positive-int rule). Every file here is in the supervisor's state directory (`sdd-tasks.py`
 `state_dir(project)`, outside the project); nothing in the project tree changes.
 
 ### §8.1 `status.json` state `starting` (R16)
@@ -236,6 +237,9 @@ pid)` right after the supervisor process is spawned for a run (`launch_job`, `co
   `write_status` uses, `bin/sdd-supervise.py:471-473`; 2026-11-08, fourth analyze pass C1, R16), then
   `os.replace`. Not written when the current `status.json` already has `"pid": <that pid>` (read it first; a
   missing or unreadable file counts as "not yet").
+- (2026-11-12, ninth analyze pass L10; research R29) Not written either, and False returned, when `pid` is not a
+  positive int: 0, a negative number, a bool (`True` is an `int` in Python and does not count) or any other
+  object, such as a test's Mock. A `starting` status always names a process a reader can probe.
 - Never raises (C1): an `OSError` from the write or the replace removes its temporary file if it is there and
   returns False; `status.json` stays as it was, and the run reads as the supervisor's own first status says.
   Returns True only when the `starting` status was written.

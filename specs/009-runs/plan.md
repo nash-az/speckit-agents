@@ -18,6 +18,9 @@ task" when an earlier session did work; FR-007 narrowed) and the fifth analyze p
 spec's Clarifications "Session 2026-11-11" (`f3e20d4`: FR-007's crash-at-a-boundary clause moved to Out of Scope,
 for 010 server core; such a run stays `suspended`) and the sixth analyze pass `.sdd/scratch/analyze-009-6.md`
 (L5, L7, L8 and the plan side of M1, M2, L4): research R28, data-model §4, §8.2, §8.5, quickstart §2 step 6.
+Updated 2026-11-12 for the ninth analyze pass `.sdd/scratch/analyze-009-9.md` (M1, L7–L10; the seventh and eighth
+passes changed only `tasks.md`): research R29, the runs-cli contract, data-model §8.1, quickstart §8 step 10, and
+wording in 15a, 15c, 15g, 15h and 15i. No design change.
 
 ## Summary
 
@@ -153,6 +156,15 @@ the mid-task cut-off that `tests/test_supervise.py:1069` tests (R28). II, III: L
 data-model §8.2, §8.5): a stop is still carried out only for the run it names, the page never retries by itself,
 and nothing in the tree changes. Pass.
 
+Re-checked 2026-11-12 after the seventh, eighth and ninth analyze passes (`.sdd/scratch/analyze-009-7.md` to
+`-9.md`, research R29). VIII: none of the three found a CRITICAL or HIGH, so the gate stays open. The seventh (2
+MEDIUM, 6 LOW) and the eighth (5 LOW) were task wording and tests, settled by `/speckit-tasks` (`aa17d4c`,
+`e384e9b`); the ninth (1 MEDIUM, 10 LOW) has M1 and L7–L10 for this plan and L1–L6 for `/speckit-tasks`. IX: the
+seventh pass's two MEDIUMs were tests the tasks did not ask for and are in `tasks.md` now; this round adds no behaviour,
+so no test. II, III: M1 only makes the contract say what data-model §8.1 and T037 already say (`abandon_start`
+replaces only a status with its own pid); L7 is accepted (R17): a stop read during the restarted usage wait
+suspends the run, so nothing is ended over work in the tree and the person decides with Continue or Drop. Pass.
+
 ## Project Structure
 
 ### Documentation (this feature)
@@ -161,7 +173,7 @@ and nothing in the tree changes. Pass.
 specs/009-runs/
 ├── spec.md          # amended 2026-11-06
 ├── plan.md          # this file
-├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23–R26; 2026-11-09: R27; 2026-11-11: R28 (analyze findings)
+├── research.md      # R1–R14; amendment 2026-11-07: R15–R22; 2026-11-08: R23–R26; 2026-11-09: R27; 2026-11-11: R28; 2026-11-12: R29 (analyze findings)
 ├── data-model.md    # §1 run record, §2 normalize, §3 shown state, §4 lifecycle, §5 task history, §6 run summary, §7 task summary line,
 │                    # §8 run control: starting status, control.json job, control log, Requests, page texts (2026-11-07)
 ├── quickstart.md    # validation with the fake claude
@@ -293,6 +305,10 @@ R25) are marked "(2026-11-08)".
       (`bin/sdd-tasks.py:844-845`, "`running` or `stopping` -> running") names `starting` too, and the launcher's
       module docstring (`bin/sdd-launch.py:6-9`, the state directory "carries `status.json` and `control.json`")
       says that `launch_job` and `continue_job` write a `starting` status for the supervisor they spawn.
+      (2026-11-12, ninth analyze pass L10; data-model §8.1) `write_starting_status` also writes nothing and returns
+      False when `pid` is not a positive int (a bool does not count), so a mocked `_spawn` or a failed spawn can
+      never leave a status that names no real process. Test (T034 has it): the pids 0, -1 and True on a folder
+      with no `status.json` each give False and no file.
     - **15b. Requests carry the run id and leave a request line** (FR-031, FR-032; R17, R19; data-model §8.2).
       `bin/sdd-control.py`: `write_control(…, job=None)`; new `log_control(logs, entry)`; `request(project,
       command, mode=None, source="cli")` reads `job` from a live, not `done`/`stopped` status, passes it to
@@ -318,7 +334,9 @@ R25) are marked "(2026-11-08)".
       deciding on `tree_clean(project)` (`:779-786`) alone (2026-11-08, analyze I1; FR-005, FR-006's exception,
       FR-007): clean → taken "stopping before any task", `close_session(sdd_job, project, job_id)` (`:789-811`;
       it archives `.sdd/run.json` under `.sdd/runs/<session>/` when a Continue left one and returns None when
-      there is none), then `end_run(…, "stopped", "stopped before any task")`; dirty → taken "stopping now" and
+      there is none), then `end_run(…, "stopped", <reason>)`, where the reason is 15j's `before_any_task_reason`
+      ("stopped before any task", or "stopped before its next task" when the run has task entries; 2026-11-09,
+      reworded 2026-11-12, ninth analyze pass L8); dirty → taken "stopping now" and
       `suspend_run(…, "stopped by you", 0)`. Whether `.sdd/run.json` exists does not decide the ending: a Continue
       whose run was cut off at a boundary (clean tree, run.json kept) ends like a new run, exactly as the
       in-session `before-task` branch (`:913-921`) ends it, and `close_session` comes first because `land` refuses
@@ -475,8 +493,10 @@ R25) are marked "(2026-11-08)".
       `started` lines (`_has_started_agent`, `bin/sdd-job.py:252-278`). Its Stop now confirmation therefore stays
       the working text, unchanged. Accepted, not reworded: the page cannot tell that moment apart from an agent at
       work, and both outcomes keep the person's work. With half-done work in the tree (the usual Continue) the
-      run is suspended as the text says; with a clean tree it ends `stopped` "stopped before any task", and the
-      card's reason and its Requests row ("stopping before any task") say so. No test changes beyond M5's.
+      run is suspended as the text says; with a clean tree it ends `stopped`, usually "stopped before its next
+      task" (15j: a Continue mostly follows a session that did tasks; "stopped before any task" when the run has
+      no task entries; reworded 2026-11-12, ninth analyze pass L8), and the card's reason and its Requests row
+      ("stopping before any task") say so. No test changes beyond M5's.
       (2026-11-08, analyze A5) The timer's abort is told apart by a flag: `postControl` keeps `var timedOut =
       false`; the `setTimeout` callback sets `timedOut = true`, then calls `controller.abort()`; the `catch` gives
       "request failed: no answer after 10 s" when `timedOut` is true, else today's `'request failed: ' + e`. Not
@@ -516,8 +536,12 @@ R25) are marked "(2026-11-08)".
       `delay(seconds)` (research R22 item 1): 3 s in `StartWindowTest`, 10 s in the browser test, where the page must
       load and take the click inside the window; the wait is `proc.wait(timeout=seconds + 15)`. **M4** the preparing
       case sends the stop only after the session has started (`<project>/.sdd/run.json` exists, written by the fake's
-      `{"run": "s1"}` step) while `shown_state` is still `preparing`, and asserts the `Cycle.run` say line "stop
+      `{"run": "s1"}` step), and asserts the `Cycle.run` say line "stop
       requested before any task: stopping the run", not the startup one, so it tests the in-session path every time.
+      (2026-11-12, ninth analyze pass L8) The test makes no `shown_state` check at that moment, as T042 has it
+      since the fifth pass (L5): the fake's `run` step writes only `run_id` (`tests/fake/claude:56-57`), no
+      `workflow_dir`, so `_has_started_agent` is False (`bin/sdd-job.py:261-263`) and the run reads `preparing` for
+      as long as the supervisor lives (`:296-297`); such a check could never fail.
       README "Runs" (`## Runs` is `README.md:154`, not :138; 2026-11-08, L6): the control log file and the Requests
       list in one sentence each; and (M5) the cut-off bullet at `:163` says Stop now before any task has started, with
       a clean tree, ends the run **stopped** "stopped before any task" instead of suspending it. (2026-11-09, 15j)
@@ -563,7 +587,10 @@ R25) are marked "(2026-11-08)".
       With 15i, the landing `nothing` that 15c (the clean Continue, whose fixture run.json must name a session with
       no task entries), 15d and 15h (the preparing case with `{"run": "s1"}`) assert holds, and the spec's "nothing
       landed" (FR-005, FR-006, FR-032, SC-009), the README sentence and the preparing Stop now text (data-model §8.5)
-      are true as written. README "Run summary" (`README.md:172`): "A session that ended without its own report (a
+      were true as they stood on 2026-11-08. (2026-11-12, ninth analyze pass L8) Those texts have since been
+      replaced: since 2026-11-09 "nothing landed" holds only for a run with no task entries from any session, and
+      the spec, the README sentences (15h) and the preparing Stop now text (15g, data-model §8.5) name the second
+      reason and say that earlier finished work still lands (15j). README "Run summary" (`README.md:172`): "A session that ended without its own report (a
       stop at a boundary, a Drop) gets a short one written from its journal" gains ", unless no task was started in
       it" (in T044, with the other README edits).
       (2026-11-09, spec Clarifications 2026-11-09 Q1) 15i is unchanged: a session with no task entries still gets
@@ -664,6 +691,13 @@ R25) are marked "(2026-11-08)".
     15 s from when the supervisor starts, or `proc.wait(timeout=25)` alone) and, if `/speckit-tasks` takes it, L9
     (`tearDown` ends a leftover run with `sdd_job.end`). L5 is this plan's; L6 is the spec's; L7 and L8 are
     accepted (research R28).
+    (2026-11-12, after the ninth analyze pass) No task is added, removed or changed by this plan round: M1 and
+    L8–L10 are document fixes here (T037 and T034 already say what the documents now say), and L7 is accepted
+    (research R17, R29). The ninth pass's L1–L6 are task wording for `/speckit-tasks`: **T039** L1 (a
+    `{"sleep": 0.3}` between its two after-task control steps) and L2 (the "lets the run finish" case names its
+    scenario, feature and scope), **T041** L3 (`task&#39;s` in `data-confirm`; how the buttons case sets
+    `controlSending`), **T044** L4 (where the new README bullet goes), **T043** L5 (where `XDG_STATE_HOME`,
+    `FAKE_DIR` and `FAKE_TASKS` point) and L6 (the `tasks.md` header's pass count).
 
 ## Not in this pass
 

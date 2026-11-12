@@ -138,6 +138,12 @@ Automated in `tests/test_supervise.py` `StartWindowTest` (always runs) and `test
     you". (2026-11-08, B1) The earlier session has task entries, so its short report and histories are committed
     (`chore(run): <id> history`, FR-017) when they are not committed yet, and the landing is then `landed` (or
     `nothing` when all of it was already on the base); the stopped session itself adds no commit.
+    (2026-11-12, ninth analyze pass L9) By hand this needs a real `claude`, as step 11 does: the fake writes no
+    `workflows.json`, so its sessions leave no task entries, and with the fake the run ends `stopped` with
+    "stopped before any task" and landing `nothing` instead. Everything else in this step (no `claude` starts,
+    `.sdd/run.json` archived, the landing not refused, the dirty-tree suspend) shows with the fake too.
+    `tests/test_supervise.py` `JobTest` covers the reason with a committed history file standing in for the
+    earlier session (plan 15j, case 2).
 11. (2026-11-09, plan 15j) The next session after earlier work: a run with two sessions, the first doing T001
     (committed), the second stopped with `stop` after its `run` step and before any agent: the run ends `stopped`
     "stopped before its next task", T001 and the first session's report are on `main` (landing `landed`), there is
